@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(psql postgresql://legaladmin:testpass123@204.168.160.193:5432/legaldb -c ':*)"
+    ]
+  }
+}

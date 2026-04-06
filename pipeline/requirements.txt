@@ -1,0 +1,11 @@
+pandas
+pyarrow
+psycopg2-binary
+sqlalchemy
+pymupdf
+boto3
+voyageai
+pgvector
+numpy
+python-dotenv
+tqdm

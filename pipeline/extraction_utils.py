@@ -441,7 +441,13 @@ def extract_cases_cited(text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def extract_acts_cited(text: str) -> list[str]:
-    """Extract acts from 'List of Acts' section."""
+    """Extract acts from 'List of Acts' section.
+
+    List of Acts sections in SCR judgments are semicolon-separated, with
+    internal newlines purely from PDF word-wrap. Collapse newlines first,
+    then split on semicolons only. Drop any entry that doesn't look like
+    an act/statute name.
+    """
     try:
         section = _extract_section(
             text,
@@ -451,18 +457,44 @@ def extract_acts_cited(text: str) -> list[str]:
         if not section:
             return []
 
-        # Split on newlines, semicolons, or numbered entries
-        entries = re.split(r'\s*;\s*|\s*\n\s*|\s*\d+\.\s*', section)
+        # Collapse word-wrap newlines into spaces, then split on semicolons.
+        flat = _collapse_newlines(section)
+        entries = [e.strip() for e in flat.split(';')]
+
         acts = []
         for entry in entries:
-            entry = _collapse_newlines(entry).strip('–').strip('-').strip()
-            if entry and len(entry) > 3:
+            entry = entry.strip('–').strip('-').strip().rstrip('.').strip()
+            if _looks_like_act(entry):
                 acts.append(entry)
 
         return acts
     except Exception as e:
         logger.debug(f"extract_acts_cited failed: {e}")
         return []
+
+
+# Keywords that indicate a string is an act/statute/regulation name.
+_ACT_KEYWORD_RE = re.compile(
+    r'\b(Act|Code|Rules?|Regulations?|Constitution|Ordinance|'
+    r'Bill|Order|Scheme|Notification|Bye[- ]?laws?|Statute)\b',
+    re.IGNORECASE,
+)
+
+
+def _looks_like_act(entry: str) -> bool:
+    """Return True if entry plausibly names an act/statute."""
+    if not entry or len(entry) < 5:
+        return False
+    # Bare year (e.g., "2018") or bare number.
+    if re.fullmatch(r'\d{2,4}', entry):
+        return False
+    # Must contain an act-shaped keyword.
+    if not _ACT_KEYWORD_RE.search(entry):
+        return False
+    # Reject case citations that accidentally leaked in.
+    if re.search(r'\bv\.\s', entry):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------

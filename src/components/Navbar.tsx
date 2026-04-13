@@ -8,25 +8,44 @@ export default function Navbar() {
   const { user, loading, signOut } = useAuth();
 
   return (
-    <nav className="border-b border-slate-200 bg-white">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <nav className="border-b border-ivory-200 bg-ivory-50">
+      <div className="max-w-[1200px] mx-auto px-6 sm:px-8">
         <div className="flex items-center justify-between h-16">
-          <Link href="/" className="text-xl font-bold text-slate-900">
-            NyayaSearch
+          <Link href="/" className="flex items-baseline gap-1">
+            <span className="font-serif text-2xl text-charcoal-900 leading-none">
+              Nyaya
+            </span>
+            <span className="text-lg text-charcoal-900 tracking-tight">
+              Search
+            </span>
           </Link>
 
-          <div className="hidden sm:flex items-center gap-6">
+          <div className="hidden sm:flex items-center gap-8">
             <Link
-              href="/pricing"
-              className="text-sm text-slate-600 hover:text-slate-900"
+              href="/#features"
+              className="text-[14px] text-charcoal-600 hover:text-charcoal-900 transition-colors"
+            >
+              Features
+            </Link>
+            <Link
+              href="/#pricing"
+              className="text-[14px] text-charcoal-600 hover:text-charcoal-900 transition-colors"
             >
               Pricing
             </Link>
+            {user && (
+              <Link
+                href="/judgments"
+                className="text-[14px] text-charcoal-600 hover:text-charcoal-900 transition-colors"
+              >
+                Judgments
+              </Link>
+            )}
             <Link
               href="/team"
-              className="text-sm text-slate-600 hover:text-slate-900"
+              className="text-[14px] text-charcoal-600 hover:text-charcoal-900 transition-colors"
             >
-              Team
+              About
             </Link>
           </div>
 
@@ -37,26 +56,27 @@ export default function Navbar() {
               <>
                 <Link href="/chat">
                   <Button variant="primary" size="sm">
-                    Go to Chat
+                    Go to Research →
                   </Button>
                 </Link>
                 <button
                   onClick={signOut}
-                  className="text-sm text-slate-600 hover:text-slate-900"
+                  className="text-[14px] text-charcoal-600 hover:text-charcoal-900 transition-colors"
                 >
                   Sign Out
                 </button>
               </>
             ) : (
               <>
-                <Link href="/login">
-                  <Button variant="ghost" size="sm">
-                    Log In
-                  </Button>
+                <Link
+                  href="/login"
+                  className="text-[14px] text-charcoal-600 hover:text-charcoal-900 transition-colors"
+                >
+                  Sign In
                 </Link>
                 <Link href="/signup">
                   <Button variant="primary" size="sm">
-                    Sign Up
+                    Start Free →
                   </Button>
                 </Link>
               </>

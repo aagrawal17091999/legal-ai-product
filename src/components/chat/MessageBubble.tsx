@@ -38,18 +38,20 @@ export default function MessageBubble({
   };
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
+    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-5`}>
       <div
-        className={`max-w-[80%] rounded-lg px-4 py-3 ${
+        className={`max-w-[85%] rounded-xl px-5 py-4 ${
           isUser
-            ? "bg-slate-100 text-slate-900"
-            : "bg-white border border-slate-200 text-slate-800"
+            ? "bg-navy-950 text-ivory-50"
+            : "bg-ivory-100 border border-ivory-200 text-charcoal-900"
         }`}
       >
         {isUser ? (
-          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+          <p className="text-[15px] whitespace-pre-wrap leading-relaxed">
+            {message.content}
+          </p>
         ) : (
-          <div className="prose prose-sm prose-slate max-w-none">
+          <div className="prose prose-sm max-w-none prose-p:text-charcoal-900 prose-p:leading-relaxed prose-headings:font-serif prose-headings:text-charcoal-900 prose-strong:text-charcoal-900 prose-li:text-charcoal-900 prose-a:text-gold-600 hover:prose-a:text-gold-700">
             <ReactMarkdown
               components={{
                 a: ({ href, children, ...rest }) => {
@@ -61,7 +63,7 @@ export default function MessageBubble({
                           e.preventDefault();
                           handleCitationHref(href);
                         }}
-                        className="inline-flex align-super text-[0.65rem] font-semibold text-primary-700 hover:text-primary-900 bg-primary-50 hover:bg-primary-100 rounded px-1 py-0.5 mx-0.5 no-underline"
+                        className="inline-flex align-super text-[0.7rem] font-semibold text-gold-700 hover:text-gold-600 bg-gold-100 hover:bg-gold-100/80 rounded px-1.5 py-0.5 mx-0.5 no-underline"
                       >
                         {children}
                       </button>
@@ -78,7 +80,9 @@ export default function MessageBubble({
               {prepared}
             </ReactMarkdown>
             {message.status === "error" && message.error && (
-              <p className="text-xs text-red-600 mt-2">Error: {message.error}</p>
+              <p className="text-xs text-burgundy-700 mt-2">
+                Error: {message.error}
+              </p>
             )}
           </div>
         )}
@@ -87,9 +91,9 @@ export default function MessageBubble({
         {!isUser &&
           message.cited_cases &&
           message.cited_cases.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-slate-100">
-              <p className="text-xs font-medium text-slate-500 mb-2">
-                Referenced Cases:
+            <div className="mt-4 pt-4 border-t border-ivory-200">
+              <p className="text-[11px] font-medium text-charcoal-400 uppercase tracking-wider mb-3">
+                Referenced Cases
               </p>
               <div className="flex flex-wrap gap-2">
                 {message.cited_cases.map((c, i) => (
@@ -97,7 +101,7 @@ export default function MessageBubble({
                     key={i}
                     id={`case-${i + 1}`}
                     onClick={() => onCaseClick?.(c)}
-                    className="text-xs bg-primary-50 text-primary-700 px-2 py-1 rounded hover:bg-primary-100 transition-colors truncate max-w-xs"
+                    className="text-[12px] bg-gold-100 text-gold-700 hover:bg-gold-100/80 hover:text-gold-600 px-2.5 py-1 rounded transition-colors truncate max-w-xs font-medium"
                   >
                     [{i + 1}] {c.title}
                   </button>
@@ -110,9 +114,9 @@ export default function MessageBubble({
         {!isUser &&
           message.cited_cases &&
           message.cited_cases.filter((c) => c.pdf_url).length > 0 && (
-            <div className="mt-3 pt-3 border-t border-slate-100">
-              <p className="text-xs font-medium text-slate-500 mb-2">
-                PDF Downloads:
+            <div className="mt-4 pt-4 border-t border-ivory-200">
+              <p className="text-[11px] font-medium text-charcoal-400 uppercase tracking-wider mb-3">
+                PDF Downloads
               </p>
               <div className="space-y-1.5">
                 {message.cited_cases
@@ -123,10 +127,10 @@ export default function MessageBubble({
                       href={c.pdf_url!}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex items-center gap-2 text-xs text-primary-700 hover:text-primary-800 bg-primary-50 hover:bg-primary-100 rounded px-2.5 py-1.5 transition-colors"
+                      className="flex items-center gap-2 text-[13px] text-charcoal-900 hover:text-gold-700 bg-ivory-50 hover:bg-gold-100/60 border border-ivory-200 rounded-lg px-3 py-2 transition-colors"
                     >
                       <svg
-                        className="w-4 h-4 flex-shrink-0"
+                        className="w-4 h-4 flex-shrink-0 text-gold-500"
                         fill="none"
                         stroke="currentColor"
                         viewBox="0 0 24 24"
@@ -134,7 +138,7 @@ export default function MessageBubble({
                         <path
                           strokeLinecap="round"
                           strokeLinejoin="round"
-                          strokeWidth={2}
+                          strokeWidth={1.5}
                           d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
                         />
                       </svg>

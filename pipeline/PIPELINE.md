@@ -298,8 +298,12 @@ Generates vector embeddings for cases and stores them in `case_chunks`. The chat
 
 **Env vars required:** `DATABASE_URL`, `VOYAGE_API_KEY`
 
+**Chunking strategy:** Each chunk is prefixed with a structured metadata header built from the case's **extraction columns** (title, citation, court, judges, parties, acts_cited, keywords, headnotes, issue_for_consideration, etc.) so the embedding vector captures semantic signal from both the judgment prose and the structured metadata. A user searching "Section 304A cases" gets high cosine similarity even if the chunk body only says "rash and negligent act", because the header includes the act name. See [pipeline/chunk_utils.py](chunk_utils.py) for the full header builder and column list.
+
+**Important:** Run `extract_fields.py` **before** embedding. If extraction columns are NULL, the header is empty and retrieval quality is significantly worse.
+
 **Config** (from `pipeline/config.py`):
-- Chunk size: 2000 characters (~500 tokens)
+- Chunk size: 2000 characters (~500 tokens) — this is the judgment text body per chunk; the metadata header adds ~300-800 chars on top
 - Chunk overlap: 200 characters
 - Voyage batch size: 128 embeddings per API call
 - Rate limit: 0.5s delay between batches (incremental scripts); 0.1s per case (full re-embed)

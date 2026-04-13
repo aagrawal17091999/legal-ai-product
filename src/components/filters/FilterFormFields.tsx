@@ -45,18 +45,18 @@ export default function FilterFormFields({
   yearTo, setYearTo,
 }: FilterFormFieldsProps) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
       <SearchableSelect
         label="Court"
-        placeholder="All Courts"
+        placeholder="All courts"
         options={options?.courts || []}
         value={court}
         onChange={setCourt}
       />
 
       <SearchableSelect
-        label="Case Category"
-        placeholder="Search categories..."
+        label="Case category"
+        placeholder="Criminal, Civil, Constitutional…"
         options={options?.caseCategories || []}
         value={caseCategory}
         onChange={setCaseCategory}
@@ -64,23 +64,23 @@ export default function FilterFormFields({
 
       <SearchableSelect
         label="Citation"
-        placeholder="Search citations..."
+        placeholder="e.g. (2023) 4 SCC 145"
         options={options?.citations || []}
         value={citation}
         onChange={setCitation}
       />
 
       <SearchableSelect
-        label="Case Number"
-        placeholder="Search case numbers..."
+        label="Case number"
+        placeholder="e.g. Criminal Appeal No. 1234/2022"
         options={options?.caseNumbers || []}
         value={caseNumber}
         onChange={setCaseNumber}
       />
 
       <SearchableSelect
-        label="Judge Name"
-        placeholder="Search judge names..."
+        label="Judge"
+        placeholder="e.g. Justice D.Y. Chandrachud"
         options={options?.judgeNames || []}
         value={judgeName}
         onChange={setJudgeName}
@@ -88,7 +88,7 @@ export default function FilterFormFields({
 
       <SearchableSelect
         label="Petitioner"
-        placeholder="Search petitioners..."
+        placeholder="Search petitioners…"
         options={options?.extractedPetitioners || []}
         value={extractedPetitioner}
         onChange={setExtractedPetitioner}
@@ -96,15 +96,15 @@ export default function FilterFormFields({
 
       <SearchableSelect
         label="Respondent"
-        placeholder="Search respondents..."
+        placeholder="Search respondents…"
         options={options?.extractedRespondents || []}
         value={extractedRespondent}
         onChange={setExtractedRespondent}
       />
 
       <SearchableSelect
-        label="Acts Cited"
-        placeholder="Search acts..."
+        label="Acts cited"
+        placeholder="e.g. Indian Penal Code"
         options={options?.actsCited || []}
         value={actCited}
         onChange={setActCited}
@@ -112,21 +112,21 @@ export default function FilterFormFields({
 
       <SearchableSelect
         label="Keywords"
-        placeholder="Search keywords..."
+        placeholder="Search keywords…"
         options={options?.keywords || []}
         value={keyword}
         onChange={setKeyword}
       />
 
       <Input
-        label="Year From"
+        label="Year from"
         type="number"
         placeholder={String(options?.years.min || 1950)}
         value={yearFrom}
         onChange={(e) => setYearFrom(e.target.value)}
       />
       <Input
-        label="Year To"
+        label="Year to"
         type="number"
         placeholder={String(options?.years.max || new Date().getFullYear())}
         value={yearTo}

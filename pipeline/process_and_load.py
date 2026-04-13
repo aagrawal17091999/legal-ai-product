@@ -92,24 +92,17 @@ def upload_to_r2(r2_client, local_path: str, r2_key: str) -> str:
     return f'{R2_ENDPOINT}/{R2_BUCKET_NAME}/{r2_key}'
 
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Split text into overlapping chunks."""
-    if not text:
-        return []
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunk = text[start:end]
-        if chunk.strip():
-            chunks.append(chunk.strip())
-        start = end - overlap
-    return chunks
+from chunk_utils import chunk_text_plain
 
 
 def embed_and_store_chunks(conn, source_table: str, source_id: int, text: str, voyage_client):
-    """Chunk text, embed via Voyage AI, store in case_chunks."""
-    chunks = chunk_text(text)
+    """Chunk text, embed via Voyage AI, store in case_chunks.
+
+    Uses plain chunking (no metadata header) because this runs right after
+    the initial INSERT — extraction hasn't happened yet. After extraction,
+    run reembed_all.py or embed_existing.py to re-embed with metadata headers.
+    """
+    chunks = chunk_text_plain(text)
     if not chunks:
         return 0
 
@@ -200,15 +193,18 @@ def process_supreme_court(year: int):
 
             # Extract text from PDF if available
             judgment_text = ''
-            pdf_url = None
 
             pdf_file = find_pdf_in_dir(pdfs_dir, path)
             if pdf_file:
                 judgment_text = extract_text_from_pdf(pdf_file)
-                # Upload to R2 with standardized key: sc/{path}.pdf
-                r2_key = f'sc/{path}.pdf'
+                # Upload to R2 so contextBuilder can presign on read. SC no
+                # longer stores the URL in the DB — the key is rebuilt from
+                # (year, path) at query time. Must match the layout consumed
+                # by src/lib/rag/contextBuilder.ts and
+                # src/app/api/judgments/download/route.ts.
+                r2_key = f'supreme-court/{year}/{path}_EN.pdf'
                 try:
-                    pdf_url = upload_to_r2(r2_client, pdf_file, r2_key)
+                    upload_to_r2(r2_client, pdf_file, r2_key)
                 except Exception as e:
                     print(f'  R2 upload failed: {e}')
 
@@ -217,8 +213,8 @@ def process_supreme_court(year: int):
                 """INSERT INTO supreme_court_cases
                    (title, petitioner, respondent, description, judge, author_judge,
                     citation, case_id, cnr, decision_date, disposal_nature, court,
-                    available_languages, path, nc_display, year, judgment_text, pdf_url)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    available_languages, path, nc_display, year, judgment_text)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING id""",
                 (
                     row.get('title'), row.get('petitioner'), row.get('respondent'),
@@ -228,7 +224,6 @@ def process_supreme_court(year: int):
                     'Supreme Court of India', row.get('available_languages'),
                     path, row.get('nc_display'), year,
                     judgment_text if judgment_text else None,
-                    pdf_url
                 )
             )
             result = cur.fetchone()
@@ -257,7 +252,10 @@ def process_supreme_court(year: int):
 def process_high_court(year: int, court_code: str):
     court_dir = os.path.join(HC_DATA_DIR, f'court={court_code}', f'year={year}')
     metadata_path = os.path.join(court_dir, 'metadata.parquet')
-    tar_path = os.path.join(court_dir, 'pdfs.tar')
+    tar_path = os.path.join(court_dir, 'data.tar')
+    # Fallback for older downloads that used pdfs.tar
+    if not os.path.exists(tar_path):
+        tar_path = os.path.join(court_dir, 'pdfs.tar')
 
     if not os.path.exists(metadata_path):
         print(f'No metadata found for HC court={court_code}, year={year}')

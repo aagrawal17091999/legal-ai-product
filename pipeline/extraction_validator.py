@@ -240,6 +240,13 @@ def _validate_cases_cited(value: Any, results: dict) -> tuple[bool, Any]:
     return True, value
 
 
+_ACT_KEYWORD_RE = re.compile(
+    r'\b(Act|Code|Rules?|Regulations?|Constitution|Ordinance|'
+    r'Bill|Order|Scheme|Notification|Bye[- ]?laws?|Statute)\b',
+    re.IGNORECASE,
+)
+
+
 def _validate_acts_cited(value: Any, results: dict) -> tuple[bool, Any]:
     if not isinstance(value, list):
         return False, None
@@ -250,11 +257,16 @@ def _validate_acts_cited(value: Any, results: dict) -> tuple[bool, Any]:
         if not isinstance(act, str):
             continue
         act = re.sub(r'\s*\n\s*', ' ', act).strip()  # Collapse newlines
-        if len(act) < 4:
+        act = act.strip('–').strip('-').strip().rstrip('.').strip()
+        if len(act) < 5:
             continue
         if _has_artifacts(act):
             continue
         if re.search(r'\bv\.\s', act):  # Case name, not an act
+            continue
+        if re.fullmatch(r'\d{2,4}', act):  # Bare year fragment
+            continue
+        if not _ACT_KEYWORD_RE.search(act):  # Must look like an act
             continue
         cleaned.append(act)
     if len(cleaned) != len(value):

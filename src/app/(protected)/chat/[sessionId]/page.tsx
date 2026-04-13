@@ -21,6 +21,7 @@ export default function ChatSessionPage({
     setError,
     loadSession,
     sendMessage,
+    stopMessage,
     user,
     authLoading,
   } = useChatContext();
@@ -34,8 +35,14 @@ export default function ChatSessionPage({
 
   return (
     <>
-      <ChatArea messages={messages} isLoading={isLoading} error={error} onDismissError={() => setError(null)} />
-      <ChatInput onSend={sendMessage} disabled={isLoading} />
+      <ChatArea
+        messages={messages}
+        isLoading={isLoading}
+        error={error}
+        onDismissError={() => setError(null)}
+        onSuggestionClick={(s) => sendMessage(s)}
+      />
+      <ChatInput onSend={sendMessage} onStop={stopMessage} isLoading={isLoading} />
       <UpgradeModal
         isOpen={limitReached}
         onClose={() => setLimitReached(false)}

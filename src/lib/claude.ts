@@ -3,7 +3,11 @@ import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
 import { logError } from "./error-logger";
 import type { ChatMessage } from "@/types";
 
-const CHAT_MODEL = "claude-sonnet-4-5";
+// Override at runtime via the CHAT_MODEL env var. Known values:
+//   - "claude-sonnet-4-5"       (previous default)
+//   - "claude-sonnet-4-6"       (current default — recommended for this RAG workload)
+//   - "claude-opus-4-6"         (slower, ~5x cost; A/B only if you need it)
+const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || "claude-sonnet-4-6";
 
 function getClient(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY;

@@ -254,7 +254,9 @@ async function ftsChunks(
     const sql = `
       SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
              sc.title, sc.citation, sc.court, sc.judge, sc.decision_date::text AS decision_date,
-             sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path, sc.pdf_url,
+             sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path,
+             -- SC has no pdf_url column; contextBuilder presigns from year/path.
+             NULL::text AS pdf_url,
              ts_rank(to_tsvector('english', ch.chunk_text),
                      plainto_tsquery('english', $${paramOffset + 1})) AS rank
       FROM case_chunks ch
@@ -323,7 +325,9 @@ async function vectorChunks(
     const sql = `
       SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
              sc.title, sc.citation, sc.court, sc.judge, sc.decision_date::text AS decision_date,
-             sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path, sc.pdf_url,
+             sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path,
+             -- SC has no pdf_url column; contextBuilder presigns from year/path.
+             NULL::text AS pdf_url,
              ch.embedding <=> $${paramOffset + 1}::vector AS distance
       FROM case_chunks ch
       JOIN supreme_court_cases sc ON ch.source_id = sc.id

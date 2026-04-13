@@ -1,9 +1,35 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useAuth } from "./useAuth";
 import { reportError } from "@/lib/report-error";
 import type { ChatSession, ChatMessage, SearchFilters, CitedCase } from "@/types";
+
+const SESSIONS_CACHE_PREFIX = "nyaya:sessions:";
+
+function readCachedSessions(uid: string): ChatSession[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SESSIONS_CACHE_PREFIX + uid);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedSessions(uid: string, sessions: ChatSession[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      SESSIONS_CACHE_PREFIX + uid,
+      JSON.stringify(sessions)
+    );
+  } catch {
+    /* quota or disabled storage — ignore */
+  }
+}
 
 export function useChat() {
   const { getToken, user, loading: authLoading } = useAuth();
@@ -13,6 +39,8 @@ export function useChat() {
   const [isLoading, setIsLoading] = useState(false);
   const [limitReached, setLimitReached] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const sessionsLoadedRef = useRef(false);
 
   const authHeaders = useCallback(async () => {
     const token = await getToken();
@@ -27,13 +55,28 @@ export function useChat() {
       const headers = await authHeaders();
       const res = await fetch("/api/chat/sessions", { headers });
       if (res.ok) {
-        const data = await res.json();
+        const data: ChatSession[] = await res.json();
         setSessions(data);
+        if (user) writeCachedSessions(user.uid, data);
       }
     } catch (err) {
       reportError("Failed to load chat sessions", { hook: "useChat.loadSessions" }, err);
     }
-  }, [authHeaders]);
+  }, [authHeaders, user]);
+
+  // Hydrate sessions from localStorage the moment we know the user, so the
+  // sidebar paints with real content on the very first frame instead of
+  // waiting for the network round-trip. Then revalidate in the background.
+  useEffect(() => {
+    if (user && !authLoading && !sessionsLoadedRef.current) {
+      sessionsLoadedRef.current = true;
+      const cached = readCachedSessions(user.uid);
+      if (cached && cached.length > 0) {
+        setSessions(cached);
+      }
+      loadSessions();
+    }
+  }, [user, authLoading, loadSessions]);
 
   const createSession = useCallback(
     async (filters: SearchFilters): Promise<ChatSession | null> => {
@@ -46,7 +89,11 @@ export function useChat() {
         });
         if (res.ok) {
           const session = await res.json();
-          setSessions((prev) => [session, ...prev]);
+          setSessions((prev) => {
+            const next = [session, ...prev];
+            if (user) writeCachedSessions(user.uid, next);
+            return next;
+          });
           setCurrentSession(session);
           setMessages([]);
           return session;
@@ -57,7 +104,7 @@ export function useChat() {
         return null;
       }
     },
-    [authHeaders]
+    [authHeaders, user]
   );
 
   const loadSession = useCallback(
@@ -86,7 +133,11 @@ export function useChat() {
           headers,
         });
         if (res.ok) {
-          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+          setSessions((prev) => {
+            const next = prev.filter((s) => s.id !== sessionId);
+            if (user) writeCachedSessions(user.uid, next);
+            return next;
+          });
           if (currentSession?.id === sessionId) {
             setCurrentSession(null);
             setMessages([]);
@@ -99,7 +150,7 @@ export function useChat() {
         return false;
       }
     },
-    [authHeaders, currentSession]
+    [authHeaders, currentSession, user]
   );
 
   const sendMessage = useCallback(
@@ -148,6 +199,9 @@ export function useChat() {
 
       setMessages((prev) => [...prev, tempUserMsg, tempAssistantMsg]);
 
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
       try {
         const headers = await authHeaders();
         const res = await fetch(
@@ -156,6 +210,7 @@ export function useChat() {
             method: "POST",
             headers,
             body: JSON.stringify({ message }),
+            signal: controller.signal,
           }
         );
 
@@ -202,13 +257,15 @@ export function useChat() {
           } else if (event === "title") {
             const title = (data as { title?: string }).title;
             if (title) {
-              setSessions((prev) =>
-                prev.map((s) =>
+              setSessions((prev) => {
+                const next = prev.map((s) =>
                   s.id === currentSession.id
                     ? { ...s, title, updated_at: new Date().toISOString() }
                     : s
-                )
-              );
+                );
+                if (user) writeCachedSessions(user.uid, next);
+                return next;
+              });
               setCurrentSession((cur) =>
                 cur && cur.id === currentSession.id ? { ...cur, title } : cur
               );
@@ -289,20 +346,63 @@ export function useChat() {
 
         return true;
       } catch (err) {
+        // User-initiated abort — keep any partial assistant content, mark stopped.
+        if (err instanceof DOMException && err.name === "AbortError") {
+          setMessages((prev) =>
+            prev
+              .filter((m) => !(m.id === tempAssistantId && m.content === ""))
+              .map((m) =>
+                m.id === tempAssistantId
+                  ? { ...m, status: "success", id: `assistant-${Date.now()}` }
+                  : m.id === tempUserId
+                  ? { ...m, id: `user-${Date.now()}` }
+                  : m
+              )
+          );
+          return false;
+        }
         reportError(
           "Failed to send chat message",
           { hook: "useChat.sendMessage", sessionId: currentSession.id },
           err
         );
-        setMessages((prev) => prev.filter((m) => m.id !== tempUserId && m.id !== tempAssistantId));
-        setError("Something went wrong. Please check your connection and try again.");
+        // The backend persists the user message unconditionally before opening
+        // the stream, and may have saved the assistant message too. Don't wipe
+        // local state — keep the user bubble and mark the assistant bubble as
+        // errored, matching how the in-stream "error" SSE event is handled.
+        const errMsg = "Something went wrong. Please check your connection and try again.";
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAssistantId
+              ? {
+                  ...m,
+                  status: "error",
+                  error: errMsg,
+                  content:
+                    m.content ||
+                    "Sorry, I encountered an error generating a response. Please try again.",
+                }
+              : m.id === tempUserId
+              ? { ...m, id: `user-${Date.now()}` }
+              : m
+          )
+        );
+        setError(errMsg);
         return false;
       } finally {
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+        }
         setIsLoading(false);
       }
     },
-    [currentSession, authHeaders]
+    [currentSession, authHeaders, user]
   );
+
+  const stopMessage = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
 
   return {
     sessions,
@@ -318,6 +418,7 @@ export function useChat() {
     loadSession,
     deleteSession,
     sendMessage,
+    stopMessage,
     setCurrentSession,
     setMessages,
     user,

@@ -18,47 +18,40 @@ const team = [
 
 export default function TeamPage() {
   return (
-    <div className="py-20">
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center mb-16">
-          <h1 className="text-4xl font-bold text-slate-900">Our Team</h1>
-          <p className="mt-4 text-lg text-slate-600">
+    <section className="bg-ivory-50 py-24 sm:py-32">
+      <div className="max-w-[1200px] mx-auto px-6 sm:px-8">
+        <div className="max-w-2xl">
+          <span className="overline">About</span>
+          <h1 className="mt-6 font-serif text-5xl sm:text-[56px] leading-[1.05] tracking-tight text-charcoal-900">
+            Our team.
+          </h1>
+          <p className="mt-6 text-[17px] text-charcoal-600 leading-relaxed">
             The people behind NyayaSearch.
           </p>
         </div>
 
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-8">
+        <div className="mt-16 grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {team.map((member) => (
             <div
               key={member.name}
-              className="text-center p-6 rounded-lg border border-slate-200"
+              className="bg-ivory-100 border border-ivory-200 rounded-xl p-8"
             >
-              <div className="w-24 h-24 rounded-full bg-slate-200 mx-auto mb-4 flex items-center justify-center">
-                <svg
-                  className="w-12 h-12 text-slate-400"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
-                  />
-                </svg>
+              <div className="w-20 h-20 rounded-full bg-navy-950 text-ivory-50 flex items-center justify-center font-serif text-2xl">
+                {member.name.split(" ").map((n) => n[0]).join("")}
               </div>
-              <h3 className="text-lg font-semibold text-slate-900">
+              <h3 className="mt-6 font-serif text-2xl text-charcoal-900">
                 {member.name}
               </h3>
-              <p className="text-sm text-primary-600 font-medium">
+              <p className="mt-1 text-[13px] text-gold-600 font-medium uppercase tracking-wider">
                 {member.role}
               </p>
-              <p className="mt-2 text-sm text-slate-500">{member.bio}</p>
+              <p className="mt-4 text-[14px] text-charcoal-600 leading-relaxed">
+                {member.bio}
+              </p>
             </div>
           ))}
         </div>
       </div>
-    </div>
+    </section>
   );
 }

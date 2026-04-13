@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const subscription = await createSubscription(customerId, plan);
+    const subscription = await createSubscription(customerId, plan, user.id);
 
     return NextResponse.json({
       subscription_id: subscription.id,

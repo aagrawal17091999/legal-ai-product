@@ -52,15 +52,18 @@ function LoginForm() {
   };
 
   return (
-    <div className="w-full max-w-sm">
-      <h1 className="text-2xl font-bold text-slate-900 text-center mb-8">
-        Log in to NyayaSearch
+    <div className="w-full max-w-[400px]">
+      <h1 className="font-serif text-4xl text-charcoal-900 tracking-tight text-center">
+        Welcome back, Counsel
       </h1>
+      <p className="mt-3 text-[15px] text-charcoal-600 text-center">
+        Sign in to continue your research.
+      </p>
 
       <button
         onClick={handleGoogle}
         disabled={loading}
-        className="w-full flex items-center justify-center gap-3 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50"
+        className="mt-10 w-full flex items-center justify-center gap-3 rounded-lg border border-ivory-200 bg-ivory-50 px-4 py-3 text-[14px] font-medium text-charcoal-900 hover:bg-ivory-100 transition-colors disabled:opacity-50"
       >
         <svg className="w-5 h-5" viewBox="0 0 24 24">
           <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4" />
@@ -73,16 +76,18 @@ function LoginForm() {
 
       <div className="relative my-6">
         <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t border-slate-200" />
+          <div className="w-full border-t border-ivory-200" />
         </div>
-        <div className="relative flex justify-center text-sm">
-          <span className="px-2 bg-white text-slate-500">or</span>
+        <div className="relative flex justify-center text-[13px]">
+          <span className="px-3 bg-ivory-50 text-charcoal-400 uppercase tracking-wider">
+            or
+          </span>
         </div>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
-          label="Email"
+          label="Email address"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -97,19 +102,19 @@ function LoginForm() {
           placeholder="Your password"
           required
         />
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-burgundy-700">{error}</p>}
         <Button type="submit" disabled={loading} className="w-full">
-          {loading ? "Signing in..." : "Sign In"}
+          {loading ? "Signing in…" : "Sign In →"}
         </Button>
       </form>
 
-      <p className="mt-6 text-center text-sm text-slate-500">
-        Don&apos;t have an account?{" "}
+      <p className="mt-6 text-center text-[14px] text-charcoal-600">
+        New to NyayaSearch?{" "}
         <Link
           href="/signup"
-          className="text-primary-600 hover:text-primary-700 font-medium"
+          className="text-gold-600 hover:text-gold-700 font-medium"
         >
-          Sign Up
+          Create an account →
         </Link>
       </p>
     </div>
@@ -118,7 +123,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="flex items-center justify-center min-h-[calc(100vh-12rem)] px-4">
+    <div className="flex items-center justify-center min-h-[calc(100vh-8rem)] bg-ivory-50 py-16 px-6">
       <Suspense>
         <LoginForm />
       </Suspense>

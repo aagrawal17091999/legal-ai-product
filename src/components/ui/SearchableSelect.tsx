@@ -116,7 +116,7 @@ export default function SearchableSelect({
   return (
     <div ref={containerRef} className="relative w-full">
       {label && (
-        <label className="block text-sm font-medium text-slate-700 mb-1">
+        <label className="block text-[14px] font-medium text-charcoal-600 mb-2">
           {label}
         </label>
       )}
@@ -124,7 +124,7 @@ export default function SearchableSelect({
         <input
           ref={inputRef}
           type="text"
-          className="w-full rounded-lg border border-slate-300 px-3 py-2 pr-8 text-sm text-slate-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 bg-white"
+          className="w-full rounded-lg border border-ivory-200 bg-ivory-50 px-4 py-3 pr-10 text-[15px] text-charcoal-900 placeholder:text-charcoal-400 focus:outline-none focus:border-gold-500 focus-visible:[box-shadow:0_0_0_3px_rgba(192,125,43,0.25)] transition-colors"
           placeholder={placeholder}
           value={query}
           onChange={(e) => {
@@ -143,7 +143,7 @@ export default function SearchableSelect({
           <button
             type="button"
             onClick={clearValue}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-sm leading-none"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-charcoal-400 hover:text-charcoal-900 text-sm leading-none"
             aria-label="Clear selection"
           >
             ✕
@@ -155,17 +155,17 @@ export default function SearchableSelect({
           ref={listRef}
           id="searchable-listbox"
           role="listbox"
-          className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto"
+          className="absolute z-50 mt-2 w-full bg-ivory-50 border border-ivory-200 rounded-lg shadow-lg max-h-60 overflow-y-auto"
         >
           {visibleOptions.map((opt, i) => (
             <li
               key={opt}
               role="option"
               aria-selected={highlightedIndex === i}
-              className={`px-3 py-2 text-sm text-slate-900 cursor-pointer ${
+              className={`px-4 py-2.5 text-[14px] cursor-pointer ${
                 highlightedIndex === i
-                  ? "bg-primary-50 text-primary-700"
-                  : "hover:bg-slate-50"
+                  ? "bg-gold-100 text-charcoal-900"
+                  : "text-charcoal-900 hover:bg-ivory-100"
               }`}
               onMouseEnter={() => setHighlightedIndex(i)}
               onMouseDown={(e) => {
@@ -177,14 +177,14 @@ export default function SearchableSelect({
             </li>
           ))}
           {filtered.length > 200 && (
-            <li className="px-3 py-2 text-xs text-slate-400 text-center">
+            <li className="px-4 py-2 text-[12px] text-charcoal-400 text-center border-t border-ivory-200">
               {filtered.length - 200} more results — type to narrow
             </li>
           )}
         </ul>
       )}
       {isOpen && query && visibleOptions.length === 0 && (
-        <div className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg px-3 py-3 text-sm text-slate-500 text-center">
+        <div className="absolute z-50 mt-2 w-full bg-ivory-50 border border-ivory-200 rounded-lg shadow-lg px-4 py-3 text-[14px] text-charcoal-600 text-center">
           No matches found
         </div>
       )}

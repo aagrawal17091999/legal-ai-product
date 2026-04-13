@@ -69,6 +69,16 @@ export function useAuth() {
   const signOut = useCallback(async () => {
     const auth = getAuth();
     await firebaseSignOut(auth);
+    try {
+      for (let i = window.localStorage.length - 1; i >= 0; i--) {
+        const key = window.localStorage.key(i);
+        if (key && key.startsWith("nyaya:sessions:")) {
+          window.localStorage.removeItem(key);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
     setState({ user: null, loading: false, token: null });
   }, []);
 

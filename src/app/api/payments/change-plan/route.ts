@@ -44,7 +44,8 @@ export async function POST(request: NextRequest) {
     // Create new subscription on the new plan
     const subscription = await createSubscription(
       user.razorpay_customer_id,
-      plan
+      plan,
+      user.id
     );
 
     return NextResponse.json({ subscription_id: subscription.id });

@@ -6,6 +6,11 @@ truncates case_chunks, so chat + vector search will be broken until this
 finishes. The script is resumable: it skips cases recorded in reembed_progress
 so you can Ctrl-C and restart without losing work.
 
+IMPORTANT: Run extract_fields.py BEFORE this script. Each chunk is prefixed
+with a metadata header built from the extraction columns (headnotes, acts_cited,
+judge_names, etc.). If extraction hasn't run, the header will be empty and
+retrieval quality will be significantly worse.
+
 Usage:
     python pipeline/reembed_all.py                  # SC + HC, all years
     python pipeline/reembed_all.py --source sc      # SC only
@@ -18,38 +23,37 @@ import sys
 import time
 
 import psycopg2
+import psycopg2.extras
 import voyageai
 from tqdm import tqdm
 
-from config import DATABASE_URL, VOYAGE_API_KEY, CHUNK_SIZE, CHUNK_OVERLAP, VOYAGE_BATCH_SIZE
+from config import DATABASE_URL, VOYAGE_API_KEY, VOYAGE_BATCH_SIZE
+from chunk_utils import (
+    build_metadata_header,
+    chunk_text_with_header,
+    batch_chunks_by_tokens,
+    SC_METADATA_COLUMNS,
+    HC_METADATA_COLUMNS,
+)
 
 EMBED_MODEL = "voyage-law-2"
 
 
-def chunk_text(text: str) -> list[str]:
-    if not text:
-        return []
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + CHUNK_SIZE
-        chunk = text[start:end]
-        if chunk.strip():
-            chunks.append(chunk.strip())
-        start = end - CHUNK_OVERLAP
-    return chunks
-
-
 def fetch_pending_cases(cur, source_table: str, court_filter: str | None):
-    """Return [(case_id, judgment_text), ...] for cases that still need embedding."""
-    params: list = [source_table]
+    """Return list of dicts for cases that still need embedding."""
+    params: list = []
     where_court = ""
     if source_table == "high_court_cases" and court_filter:
         where_court = " AND c.court_name = %s"
         params.append(court_filter)
 
+    if source_table == "supreme_court_cases":
+        meta_cols = SC_METADATA_COLUMNS
+    else:
+        meta_cols = HC_METADATA_COLUMNS
+
     query = f"""
-        SELECT c.id, c.judgment_text
+        SELECT c.id, c.judgment_text, {meta_cols}
         FROM {source_table} c
         LEFT JOIN reembed_progress p
                ON p.source_table = %s AND p.source_id = c.id
@@ -60,15 +64,19 @@ def fetch_pending_cases(cur, source_table: str, court_filter: str | None):
         ORDER BY c.id
     """
     cur.execute(query, [source_table, *params])
-    return cur.fetchall()
+    columns = [desc[0] for desc in cur.description]
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
 def embed_one_case(
-    conn, cur, voyage_client, source_table: str, case_id: int, judgment_text: str, batch_size: int
+    conn, cur, voyage_client, source_table: str, case: dict, batch_size: int
 ) -> int:
-    chunks = chunk_text(judgment_text)
+    case_id = case["id"]
+    judgment_text = case["judgment_text"]
+
+    header = build_metadata_header(case, source_table)
+    chunks = chunk_text_with_header(judgment_text, header)
     if not chunks:
-        # Record as completed with 0 chunks so we don't re-check it next run.
         cur.execute(
             """INSERT INTO reembed_progress (source_table, source_id, chunks_inserted)
                VALUES (%s, %s, 0)
@@ -78,10 +86,12 @@ def embed_one_case(
         conn.commit()
         return 0
 
+    # Use token-aware batching so we never exceed Voyage's 120k token limit.
+    batches = batch_chunks_by_tokens(chunks)
+
     inserted = 0
-    for i in range(0, len(chunks), batch_size):
-        batch = chunks[i : i + batch_size]
-        # Retry a couple of times on transient API errors before giving up on this case.
+    chunk_offset = 0
+    for batch in batches:
         attempt = 0
         while True:
             try:
@@ -102,9 +112,10 @@ def embed_one_case(
             cur.execute(
                 """INSERT INTO case_chunks (source_table, source_id, chunk_index, chunk_text, embedding)
                    VALUES (%s, %s, %s, %s, %s::vector)""",
-                (source_table, case_id, i + j, chunk_text_item, str(embedding)),
+                (source_table, case_id, chunk_offset + j, chunk_text_item, str(embedding)),
             )
             inserted += 1
+        chunk_offset += len(batch)
 
     cur.execute(
         """INSERT INTO reembed_progress (source_table, source_id, chunks_inserted)
@@ -139,13 +150,12 @@ def run(source: str, court_filter: str | None, batch_size: int):
         if not cases:
             continue
 
-        for case_id, judgment_text in tqdm(cases, desc=source_table):
+        for case in tqdm(cases, desc=source_table):
             inserted = embed_one_case(
-                conn, cur, voyage_client, source_table, case_id, judgment_text, batch_size
+                conn, cur, voyage_client, source_table, case, batch_size
             )
             grand_total_cases += 1
             grand_total_chunks += inserted
-            # Gentle rate limit between cases.
             time.sleep(0.1)
 
     cur.close()

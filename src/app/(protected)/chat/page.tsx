@@ -28,7 +28,7 @@ export default function NewChatPage() {
   }, [createSession, router]);
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8">
+    <div className="flex-1 flex items-center justify-center bg-ivory-50 px-6 py-12">
       <FilterPanel onApply={handleApplyFilters} onSkip={handleSkip} />
     </div>
   );

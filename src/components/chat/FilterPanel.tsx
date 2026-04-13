@@ -12,14 +12,38 @@ interface FilterPanelProps {
   onSkip: () => void;
 }
 
+const FILTER_OPTIONS_CACHE_KEY = "nyaya:filter-options";
+
+function readCachedFilterOptions(): FilterOptions | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(FILTER_OPTIONS_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as FilterOptions) : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function FilterPanel({ onApply, onSkip }: FilterPanelProps) {
-  const [options, setOptions] = useState<FilterOptions | null>(null);
+  const [options, setOptions] = useState<FilterOptions | null>(
+    () => readCachedFilterOptions()
+  );
   const filterState = useFilterState();
 
   useEffect(() => {
     fetch("/api/filters/options")
       .then((res) => res.json())
-      .then(setOptions)
+      .then((data: FilterOptions) => {
+        setOptions(data);
+        try {
+          window.localStorage.setItem(
+            FILTER_OPTIONS_CACHE_KEY,
+            JSON.stringify(data)
+          );
+        } catch {
+          /* ignore storage errors */
+        }
+      })
       .catch((err) => {
         reportError("Failed to load filter options", { component: "FilterPanel" }, err);
       });
@@ -30,22 +54,26 @@ export default function FilterPanel({ onApply, onSkip }: FilterPanelProps) {
   };
 
   return (
-    <div className="max-w-3xl mx-auto">
-      <div className="text-center mb-8">
-        <h2 className="text-2xl font-bold text-slate-900">Start a New Chat</h2>
-        <p className="mt-2 text-slate-600">
-          Set filters to narrow your search, or skip to search all case law.
+    <div className="max-w-3xl mx-auto w-full">
+      <div className="mb-10">
+        <span className="overline">Start a new research session</span>
+        <h2 className="mt-5 font-serif text-4xl sm:text-[44px] leading-tight tracking-tight text-charcoal-900">
+          Refine your search.
+        </h2>
+        <p className="mt-4 text-[15px] text-charcoal-600 max-w-xl leading-relaxed">
+          Narrow results by jurisdiction, authority, or subject matter. All
+          filters are optional — skip to search all indexed case law.
         </p>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+      <div className="bg-ivory-100 border border-ivory-200 rounded-xl p-8 space-y-6">
         <FilterFormFields options={options} {...filterState} />
 
-        <div className="flex items-center gap-3 pt-4">
-          <Button onClick={handleApply} className="flex-1">
-            Apply Filters & Start Chat
+        <div className="flex items-center gap-3 pt-2">
+          <Button onClick={handleApply} className="flex-1" size="lg">
+            Apply Filters & Start →
           </Button>
-          <Button variant="ghost" onClick={onSkip}>
+          <Button variant="ghost" size="lg" onClick={onSkip}>
             Skip Filters
           </Button>
         </div>

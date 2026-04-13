@@ -40,9 +40,25 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
             subscription_id: data.subscription_id,
             name: "NyayaSearch",
             description: `Pro ${plan === "monthly" ? "Monthly" : "Yearly"} Plan`,
-            handler: () => {
-              onClose();
-              router.refresh();
+            handler: async (response: {
+              razorpay_payment_id: string;
+              razorpay_subscription_id: string;
+              razorpay_signature: string;
+            }) => {
+              try {
+                const verifyToken = await getToken();
+                await fetch("/api/payments/verify-subscription", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${verifyToken}`,
+                  },
+                  body: JSON.stringify(response),
+                });
+              } finally {
+                onClose();
+                router.refresh();
+              }
             },
           };
           const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
@@ -58,37 +74,36 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Upgrade to Pro">
-      <div className="text-center">
-        <p className="text-slate-600 mb-6">
-          You&apos;ve used all 5 free queries for today. Upgrade to Pro for
-          unlimited access.
-        </p>
+      <p className="text-[15px] text-charcoal-600 leading-relaxed">
+        You&apos;ve used all five free queries for today. Upgrade to Pro for
+        unlimited, citation-backed research.
+      </p>
 
-        <div className="space-y-3">
-          <Button
-            onClick={() => handleUpgrade("monthly")}
-            className="w-full"
-            disabled={subscribing}
-          >
-            {subscribing ? "Processing..." : "\u20B93,000/month"}
-          </Button>
-          <Button
-            onClick={() => handleUpgrade("yearly")}
-            variant="outline"
-            className="w-full"
-            disabled={subscribing}
-          >
-            {"\u20B9"}30,000/year (Save {"\u20B9"}6,000)
-          </Button>
-        </div>
-
-        <button
-          onClick={onClose}
-          className="mt-4 text-sm text-slate-500 hover:text-slate-700"
+      <div className="mt-6 space-y-3">
+        <Button
+          variant="primary"
+          onClick={() => handleUpgrade("monthly")}
+          className="w-full"
+          disabled={subscribing}
         >
-          Maybe later
-        </button>
+          {subscribing ? "Processing…" : "₹3,000 / month →"}
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => handleUpgrade("yearly")}
+          className="w-full"
+          disabled={subscribing}
+        >
+          ₹30,000 / year — save ₹6,000
+        </Button>
       </div>
+
+      <button
+        onClick={onClose}
+        className="mt-5 w-full text-center text-[13px] text-charcoal-600 hover:text-charcoal-900 transition-colors"
+      >
+        Maybe later
+      </button>
     </Modal>
   );
 }

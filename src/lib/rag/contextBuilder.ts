@@ -168,7 +168,7 @@ export async function buildContext(
     let pdf_path: string | null = null;
     let pdfSigned = false;
     if (c.source_table === "supreme_court_cases" && c.meta.path && c.meta.year) {
-      pdf_path = `supreme-court/${c.meta.year}/${c.meta.path}.pdf`;
+      pdf_path = `supreme-court/${c.meta.year}/${c.meta.path}_EN.pdf`;
       try {
         pdf_url = await getSignedPdfUrl(pdf_path);
         pdfSigned = true;
@@ -339,35 +339,20 @@ function formatCaseBlock(
   extraction: ExtractionMeta,
   excerpt: string
 ): string {
+  // Each chunk already contains a metadata header (title, citation, court,
+  // judges, acts, headnotes, issue, etc.) prepended during the embedding
+  // pipeline. We only add a minimal identifier here so Claude can
+  // distinguish cases for citation purposes. The rest is in the excerpt.
   const lines: string[] = [`--- Case [${index}] ---`];
   lines.push(`Title: ${meta.title || "(untitled)"}`);
   const citation = extraction.extracted_citation ?? meta.citation;
   if (citation) lines.push(`Citation: ${citation}`);
   if (meta.court) lines.push(`Court: ${meta.court}`);
-  if (meta.decision_date) lines.push(`Date: ${meta.decision_date}`);
-  const judge = extraction.author_judge_name ?? meta.judge;
-  if (judge) lines.push(`Judge: ${judge}`);
   if (typeof extraction.bench_size === "number") {
     lines.push(`Bench size: ${extraction.bench_size}`);
   }
-  if (meta.petitioner && meta.respondent) {
-    lines.push(`Parties: ${meta.petitioner} v. ${meta.respondent}`);
-  }
-  if (meta.disposal_nature) lines.push(`Disposal: ${meta.disposal_nature}`);
-  if (extraction.result_of_case) lines.push(`Result: ${extraction.result_of_case}`);
-  if (extraction.acts_cited.length > 0) {
-    lines.push(`Acts cited: ${extraction.acts_cited.slice(0, 8).join("; ")}`);
-  }
-  if (extraction.issue_for_consideration) {
-    lines.push(`\nIssue for consideration:\n${extraction.issue_for_consideration.trim()}`);
-  }
-  if (extraction.headnotes) {
-    // Headnotes can be long — cap to 1500 chars inside the per-case budget.
-    const h = extraction.headnotes.trim();
-    lines.push(`\nHeadnotes:\n${h.length > 1500 ? h.slice(0, 1500) + "..." : h}`);
-  }
   if (excerpt) {
-    lines.push(`\nRelevant Excerpt:\n${excerpt}`);
+    lines.push(`\nRelevant Passages:\n${excerpt}`);
   }
   return lines.join("\n");
 }

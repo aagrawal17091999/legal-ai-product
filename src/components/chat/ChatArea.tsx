@@ -10,9 +10,22 @@ interface ChatAreaProps {
   isLoading: boolean;
   error?: string | null;
   onDismissError?: () => void;
+  onSuggestionClick?: (suggestion: string) => void;
 }
 
-export default function ChatArea({ messages, isLoading, error, onDismissError }: ChatAreaProps) {
+const SUGGESTIONS = [
+  "What is the current position of the Supreme Court on the grant of anticipatory bail in economic offences?",
+  "Summarise the ratio in Vishaka v. State of Rajasthan and its subsequent application by High Courts",
+  "What are the grounds on which a High Court can quash an FIR under Section 482 CrPC?",
+];
+
+export default function ChatArea({
+  messages,
+  isLoading,
+  error,
+  onDismissError,
+  onSuggestionClick,
+}: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -27,27 +40,26 @@ export default function ChatArea({ messages, isLoading, error, onDismissError }:
 
   if (messages.length === 0 && !isLoading) {
     return (
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="text-center max-w-md">
-          <h3 className="text-lg font-semibold text-slate-900 mb-2">
-            Welcome to NyayaSearch
-          </h3>
-          <p className="text-slate-500 text-sm mb-6">
-            Ask any legal research question. Your answers will be grounded in
-            Indian case law with verifiable citations.
+      <div className="flex-1 flex items-center justify-center p-8 bg-ivory-50">
+        <div className="text-center max-w-[640px]">
+          <span className="overline">Start a new session</span>
+          <h2 className="mt-6 font-serif text-4xl sm:text-[40px] leading-tight tracking-tight text-charcoal-900">
+            What are you researching today?
+          </h2>
+          <p className="mt-4 text-[15px] text-charcoal-600 max-w-md mx-auto leading-relaxed">
+            Ask any question about Indian case law. Every answer will cite the
+            source judgment.
           </p>
-          <div className="space-y-2">
-            {[
-              "What are the landmark cases on Right to Privacy?",
-              "Recent Supreme Court judgments on Section 498A",
-              "High Court rulings on bail in NDPS cases",
-            ].map((suggestion) => (
-              <p
+
+          <div className="mt-10 space-y-2.5 text-left">
+            {SUGGESTIONS.map((suggestion) => (
+              <button
                 key={suggestion}
-                className="text-sm text-primary-600 bg-primary-50 rounded-lg px-4 py-2"
+                onClick={() => onSuggestionClick?.(suggestion)}
+                className="w-full text-left text-[14px] text-charcoal-900 bg-ivory-100 hover:bg-gold-100 border border-ivory-200 hover:border-gold-400 rounded-lg px-5 py-3.5 transition-colors leading-snug"
               >
                 {suggestion}
-              </p>
+              </button>
             ))}
           </div>
         </div>
@@ -56,8 +68,8 @@ export default function ChatArea({ messages, isLoading, error, onDismissError }:
   }
 
   return (
-    <div className="flex-1 overflow-y-auto p-4">
-      <div className="max-w-3xl mx-auto">
+    <div className="flex-1 overflow-y-auto bg-ivory-50">
+      <div className="max-w-3xl mx-auto px-6 py-8">
         {messages.map((msg) => (
           <MessageBubble
             key={msg.id}
@@ -67,32 +79,29 @@ export default function ChatArea({ messages, isLoading, error, onDismissError }:
         ))}
         {isLoading &&
           (() => {
-            // Only show the standalone spinner while the assistant bubble is
-            // still empty (retrieval + rerank phase). Once tokens start
-            // streaming, the bubble itself signals progress.
             const last = messages[messages.length - 1];
             const streaming =
               last && last.role === "assistant" && last.content.length > 0;
             if (streaming) return null;
             return (
-              <div className="flex items-center gap-2 text-slate-500 mb-4">
+              <div className="flex items-center gap-3 text-charcoal-600 mb-4">
                 <Spinner size="sm" />
-                <span className="text-sm">Searching case law...</span>
+                <span className="text-[14px]">Searching case law…</span>
               </div>
             );
           })()}
         {error && (
-          <div className="mb-4 flex items-start gap-3 rounded-lg bg-red-50 border border-red-200 px-4 py-3">
-            <svg className="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div className="mb-4 flex items-start gap-3 rounded-lg bg-burgundy-100 border border-burgundy-700/30 px-4 py-3">
+            <svg className="w-5 h-5 text-burgundy-700 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <div className="flex-1">
-              <p className="text-sm text-red-800">{error}</p>
+              <p className="text-[14px] text-burgundy-700">{error}</p>
             </div>
             {onDismissError && (
               <button
                 onClick={onDismissError}
-                className="text-red-400 hover:text-red-600"
+                className="text-burgundy-700/60 hover:text-burgundy-700"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

@@ -21,4 +21,4 @@ HC_DATA_DIR = os.path.join(DATA_DIR, 'high-courts')
 # Chunk settings
 CHUNK_SIZE = 2000  # characters (~500 tokens)
 CHUNK_OVERLAP = 200  # characters
-VOYAGE_BATCH_SIZE = 128
+VOYAGE_BATCH_SIZE = 64

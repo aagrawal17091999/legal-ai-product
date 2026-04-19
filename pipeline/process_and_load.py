@@ -35,19 +35,43 @@ def get_r2_client():
     )
 
 
-def extract_text_from_pdf(pdf_path: str) -> str:
-    """Extract text from a PDF using PyMuPDF."""
+def extract_text_from_pdf(pdf_path: str, allow_ocr: bool = True) -> str:
+    """Extract text from a PDF.
+
+    Tries PyMuPDF first (free, instant). If the result is too sparse to be a
+    real text layer (typical of older scanned/handwritten judgments), falls
+    back to a Claude Sonnet vision OCR pass via pdf_ocr.extract_text_with_vision.
+    """
     try:
         doc = fitz.open(pdf_path)
         text = ''
+        page_count = doc.page_count
         for page in doc:
             text += page.get_text()
         doc.close()
-        return text.strip()
+        text = text.strip()
     except Exception as e:
         print(f'  Warning: Failed to extract text from {pdf_path}: {e}')
         log_error("pipeline", f"PDF text extraction failed: {pdf_path}", error=e, metadata={"pdf_path": pdf_path})
         return ''
+
+    if not allow_ocr:
+        return text
+
+    from pdf_ocr import needs_ocr, extract_text_with_vision
+    if not needs_ocr(text, page_count):
+        return text
+
+    print(f'  PyMuPDF returned {len(text)} chars over {page_count} pages — running vision OCR')
+    try:
+        ocr_text = extract_text_with_vision(pdf_path)
+        if ocr_text and len(ocr_text) > len(text):
+            return ocr_text
+        return text
+    except Exception as e:
+        print(f'  Warning: Vision OCR failed for {pdf_path}: {e}')
+        log_error("pipeline", f"Vision OCR failed: {pdf_path}", error=e, metadata={"pdf_path": pdf_path})
+        return text
 
 
 def find_pdf_in_dir(pdfs_dir: str, path: str) -> str | None:

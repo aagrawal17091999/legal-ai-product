@@ -1,0 +1,10 @@
+data/
+pipeline/
+eval/
+nginx/
+*.tar
+*.tar.gz
+*.zip
+*.pdf
+__pycache__/
+*.pyc

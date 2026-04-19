@@ -100,7 +100,7 @@ def embed_and_store_chunks(conn, source_table: str, source_id: int, text: str, v
 
     Uses plain chunking (no metadata header) because this runs right after
     the initial INSERT — extraction hasn't happened yet. After extraction,
-    run reembed_all.py or embed_existing.py to re-embed with metadata headers.
+    run reembed_all.py to re-embed with metadata headers.
     """
     chunks = chunk_text_plain(text)
     if not chunks:
@@ -150,6 +150,9 @@ def process_supreme_court(year: int):
         df = df.drop(columns=['raw_html'])
     if 'scraped_at' in df.columns:
         df = df.drop(columns=['scraped_at'])
+    # Pandas uses pd.NA for missing values in nullable dtypes; psycopg2 can't
+    # adapt NAType. Coerce all NA/NaN to None so they become SQL NULL.
+    df = df.astype(object).where(pd.notna(df), None)
 
     # Extract tar if exists
     pdfs_dir = os.path.join(year_dir, 'pdfs')
@@ -229,12 +232,15 @@ def process_supreme_court(year: int):
             result = cur.fetchone()
             conn.commit()
 
-            if result and judgment_text:
-                case_id = result[0]
-                n = embed_and_store_chunks(
-                    conn, 'supreme_court_cases', case_id, judgment_text, voyage_client
-                )
-                chunks_created += n
+            # Embedding is intentionally skipped here — reembed_all.py is the
+            # sole embedder so chunks include the metadata header built from
+            # extract_fields output. Avoids duplicate plain+header chunks.
+            # if result and judgment_text:
+            #     case_id = result[0]
+            #     n = embed_and_store_chunks(
+            #         conn, 'supreme_court_cases', case_id, judgment_text, voyage_client
+            #     )
+            #     chunks_created += n
 
             inserted += 1
 
@@ -268,6 +274,7 @@ def process_high_court(year: int, court_code: str):
         df = df.drop(columns=['raw_html'])
     if 'scraped_at' in df.columns:
         df = df.drop(columns=['scraped_at'])
+    df = df.astype(object).where(pd.notna(df), None)
 
     # Extract tar
     pdfs_dir = os.path.join(court_dir, 'pdfs')

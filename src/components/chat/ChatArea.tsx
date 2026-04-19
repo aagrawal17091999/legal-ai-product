@@ -3,7 +3,7 @@
 import { useRef, useEffect } from "react";
 import MessageBubble from "./MessageBubble";
 import Spinner from "@/components/ui/Spinner";
-import type { ChatMessage, CitedCase } from "@/types";
+import type { ChatMessage, CitationRef } from "@/types";
 
 interface ChatAreaProps {
   messages: ChatMessage[];
@@ -11,6 +11,7 @@ interface ChatAreaProps {
   error?: string | null;
   onDismissError?: () => void;
   onSuggestionClick?: (suggestion: string) => void;
+  onCitationClick?: (ref: CitationRef) => void;
 }
 
 const SUGGESTIONS = [
@@ -25,18 +26,13 @@ export default function ChatArea({
   error,
   onDismissError,
   onSuggestionClick,
+  onCitationClick,
 }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
-
-  const handleCaseClick = (caseRef: CitedCase) => {
-    if (caseRef.pdf_url) {
-      window.open(caseRef.pdf_url, "_blank");
-    }
-  };
 
   if (messages.length === 0 && !isLoading) {
     return (
@@ -74,7 +70,7 @@ export default function ChatArea({
           <MessageBubble
             key={msg.id}
             message={msg}
-            onCaseClick={handleCaseClick}
+            onCitationClick={onCitationClick}
           />
         ))}
         {isLoading &&

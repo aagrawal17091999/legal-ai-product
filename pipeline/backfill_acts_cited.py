@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """
-Backfill `acts_cited` for existing rows.
+Backfill `acts_cited` for existing rows using the consensus pipeline.
 
-Strategy per row:
-  1. Re-run the regex extractor (`extract_acts_cited`) on judgment_text. If it
-     returns a non-empty list, that's the new value (benefits from the new
-     semicolon-based splitter).
-  2. Otherwise, keep the existing stored `acts_cited` list but run it through
-     the updated validator — this strips bare years and non-act fragments
-     from whatever the LLM tier produced previously.
+For each row:
+  1. Resolve the PDF (local first, else download from R2) and run the
+     layout-aware extractor → layout_acts.
+  2. Run the tightened text-regex extractor on judgment_text → text_acts.
+  3. Reuse any stored LLM-extracted acts as the LLM vote (no new LLM call
+     unless --with-llm is passed, which re-runs Haiku).
+  4. Combine via decide_acts_cited(); write acts_cited + acts_cited_method
+     + acts_cited_confidence + acts_cited_alternatives.
 
 Usage:
   python pipeline/backfill_acts_cited.py                 # both SC + HC
   python pipeline/backfill_acts_cited.py --source sc     # SC only
-  python pipeline/backfill_acts_cited.py --source hc     # HC only
-  python pipeline/backfill_acts_cited.py --dry-run       # no writes
   python pipeline/backfill_acts_cited.py --limit 50      # first 50 rows
+  python pipeline/backfill_acts_cited.py --dry-run       # compute, no writes
+  python pipeline/backfill_acts_cited.py --with-llm      # re-run LLM too
+  python pipeline/backfill_acts_cited.py --min-confidence 0.7  # only write if
+                                                         # new confidence >= 0.7
+
+Prereqs: apply migrations/006_extraction_confidence.sql before running.
 """
 
 import argparse
@@ -30,8 +35,9 @@ import psycopg2.extras
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from extraction_utils import extract_acts_cited
-from extraction_validator import _validate_acts_cited
+from extraction_utils import extract_acts_cited, extract_acts_cited_layout
+from acts_consensus import decide_acts_cited
+from pdf_resolver import resolve_pdf
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,18 +73,79 @@ def get_db_connection():
     return psycopg2.connect(db_url)
 
 
-def clean_existing(existing):
-    """Run the updated validator over a stored acts_cited list."""
-    if not isinstance(existing, list):
-        return []
-    _, fixed = _validate_acts_cited(existing, {})
-    return fixed if isinstance(fixed, list) else []
+def _as_list(val):
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
 
 
-def backfill_table(conn, table: str, limit: int | None, dry_run: bool):
+def _resolve_layout_acts(source: str, row) -> list[str] | None:
+    """Locate the PDF and run the layout extractor. Returns None if unavailable."""
+    try:
+        if source == "sc":
+            year = row["year"]
+            path = row["path"]
+            if not year or not path:
+                return None
+            with resolve_pdf("sc", year=year, path=path) as pdf_path:
+                if not pdf_path:
+                    return None
+                return extract_acts_cited_layout(pdf_path)
+        else:
+            year = row["year"]
+            court_name = row["court_name"]
+            pdf_link = row["pdf_link"]
+            if not year or not court_name or not pdf_link:
+                return None
+            with resolve_pdf(
+                "hc", year=year, court_name=court_name, pdf_link=pdf_link
+            ) as pdf_path:
+                if not pdf_path:
+                    return None
+                return extract_acts_cited_layout(pdf_path)
+    except Exception as e:
+        logger.debug(f"Layout extraction failed for row {row['id']}: {e}")
+        return None
+
+
+def _maybe_rerun_llm(judgment_text: str, client) -> list[str] | None:
+    """Re-run Haiku just for acts_cited. Only called when --with-llm is set."""
+    if client is None:
+        return None
+    try:
+        from extraction_llm import extract_via_haiku
+        result = extract_via_haiku(judgment_text, client)
+        val = result.get("acts_cited")
+        return val if isinstance(val, list) else None
+    except Exception as e:
+        logger.debug(f"LLM re-run failed: {e}")
+        return None
+
+
+def backfill_table(
+    conn,
+    table: str,
+    source: str,
+    limit: int | None,
+    dry_run: bool,
+    with_llm: bool,
+    min_confidence: float,
+):
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+    if table == "supreme_court_cases":
+        cols = "id, judgment_text, acts_cited, year, path"
+    else:
+        cols = "id, judgment_text, acts_cited, year, court_name, pdf_link"
+
     query = (
-        f"SELECT id, judgment_text, acts_cited FROM {table} "
+        f"SELECT {cols} FROM {table} "
         f"WHERE judgment_text IS NOT NULL ORDER BY id"
     )
     if limit:
@@ -89,59 +156,97 @@ def backfill_table(conn, table: str, limit: int | None, dry_run: bool):
 
     logger.info(f"[{table}] loaded {len(rows)} rows")
 
+    client = None
+    if with_llm:
+        try:
+            import anthropic
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if api_key:
+                client = anthropic.Anthropic(api_key=api_key)
+            else:
+                logger.warning("ANTHROPIC_API_KEY not set; --with-llm ignored")
+        except ImportError:
+            logger.warning("anthropic package not installed; --with-llm ignored")
+
     write_cur = conn.cursor()
     updated = 0
-    regex_hits = 0
-    validator_only = 0
     unchanged = 0
-    cleared = 0
+    skipped_low_conf = 0
+    layout_hits = 0
+    text_hits = 0
 
-    for row in rows:
+    for i, row in enumerate(rows):
         case_id = row["id"]
         text = row["judgment_text"] or ""
-        existing = row["acts_cited"]
-        if isinstance(existing, str):
-            try:
-                existing = json.loads(existing)
-            except Exception:
-                existing = []
-        if existing is None:
-            existing = []
+        stored_acts = _as_list(row["acts_cited"])
 
-        # 1. Try fresh regex extraction
-        fresh = extract_acts_cited(text)
+        layout_acts = _resolve_layout_acts(source, row)
+        text_acts = extract_acts_cited(text) if text else []
+        llm_acts = _maybe_rerun_llm(text, client) if with_llm else stored_acts
 
-        if fresh:
-            new_value = fresh
-            regex_hits += 1
-        else:
-            # 2. Fall back to validator-cleaned existing value
-            new_value = clean_existing(existing)
-            if new_value != existing:
-                validator_only += 1
+        if layout_acts:
+            layout_hits += 1
+        if text_acts:
+            text_hits += 1
 
-        if new_value == existing:
-            unchanged += 1
+        consensus = decide_acts_cited(
+            layout_result=layout_acts,
+            text_result=text_acts if text_acts else None,
+            llm_result=llm_acts if llm_acts else None,
+        )
+
+        if consensus.confidence < min_confidence and stored_acts:
+            skipped_low_conf += 1
             continue
 
-        if not new_value and existing:
-            cleared += 1
+        if consensus.acts == stored_acts and not dry_run:
+            # Still update method/confidence/alternatives — first backfill run
+            # after migration, row may be missing them.
+            write_cur.execute(
+                f"UPDATE {table} SET acts_cited_method = %s, "
+                f"acts_cited_confidence = %s, "
+                f"acts_cited_alternatives = %s::jsonb WHERE id = %s",
+                (
+                    consensus.method,
+                    float(consensus.confidence),
+                    json.dumps(consensus.alternatives),
+                    case_id,
+                ),
+            )
+            unchanged += 1
+            continue
 
         updated += 1
         if dry_run:
             logger.info(
-                f"[{table}] id={case_id} "
-                f"before={len(existing)} after={len(new_value)}"
+                f"[{table}] id={case_id} method={consensus.method} "
+                f"conf={consensus.confidence:.2f} "
+                f"before={len(stored_acts)} after={len(consensus.acts)}"
             )
-            if len(rows) <= 20 or updated <= 5:
-                logger.info(f"  before: {existing}")
-                logger.info(f"  after:  {new_value}")
+            if updated <= 5:
+                logger.info(f"  before: {stored_acts}")
+                logger.info(f"  after:  {consensus.acts}")
             continue
 
         write_cur.execute(
-            f"UPDATE {table} SET acts_cited = %s::jsonb WHERE id = %s",
-            (json.dumps(new_value), case_id),
+            f"UPDATE {table} SET "
+            f"acts_cited = %s::jsonb, "
+            f"acts_cited_method = %s, "
+            f"acts_cited_confidence = %s, "
+            f"acts_cited_alternatives = %s::jsonb "
+            f"WHERE id = %s",
+            (
+                json.dumps(consensus.acts),
+                consensus.method,
+                float(consensus.confidence),
+                json.dumps(consensus.alternatives),
+                case_id,
+            ),
         )
+
+        if (i + 1) % 100 == 0:
+            conn.commit()
+            logger.info(f"[{table}] checkpoint at {i + 1}/{len(rows)}")
 
     if not dry_run:
         conn.commit()
@@ -149,33 +254,40 @@ def backfill_table(conn, table: str, limit: int | None, dry_run: bool):
 
     logger.info(
         f"[{table}] done: updated={updated} unchanged={unchanged} "
-        f"regex_hits={regex_hits} validator_only_fixes={validator_only} "
-        f"cleared_to_empty={cleared} "
+        f"skipped_low_conf={skipped_low_conf} "
+        f"layout_hits={layout_hits} text_hits={text_hits} "
         f"{'(dry-run, no writes)' if dry_run else ''}"
     )
     return updated
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill acts_cited using updated extractor + validator")
+    parser = argparse.ArgumentParser(description="Backfill acts_cited via consensus pipeline")
     parser.add_argument("--source", choices=["sc", "hc", "both"], default="both")
-    parser.add_argument("--limit", type=int, default=None, help="Limit rows per table (for testing)")
-    parser.add_argument("--dry-run", action="store_true", help="Compute changes but do not write")
+    parser.add_argument("--limit", type=int, default=None, help="Limit rows per table")
+    parser.add_argument("--dry-run", action="store_true", help="Compute but do not write")
+    parser.add_argument("--with-llm", action="store_true",
+                        help="Re-run Haiku for the LLM vote (costs API quota)")
+    parser.add_argument("--min-confidence", type=float, default=0.0,
+                        help="Only overwrite stored acts_cited if new confidence >= this")
     args = parser.parse_args()
 
     load_env()
     conn = get_db_connection()
 
     try:
-        tables = []
+        targets = []
         if args.source in ("sc", "both"):
-            tables.append(SOURCE_MAP["sc"])
+            targets.append(("sc", SOURCE_MAP["sc"]))
         if args.source in ("hc", "both"):
-            tables.append(SOURCE_MAP["hc"])
+            targets.append(("hc", SOURCE_MAP["hc"]))
 
         total = 0
-        for table in tables:
-            total += backfill_table(conn, table, args.limit, args.dry_run)
+        for source, table in targets:
+            total += backfill_table(
+                conn, table, source, args.limit,
+                args.dry_run, args.with_llm, args.min_confidence,
+            )
 
         logger.info(f"TOTAL updated: {total} {'(dry-run)' if args.dry_run else ''}")
     finally:

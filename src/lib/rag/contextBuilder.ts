@@ -59,6 +59,10 @@ export interface AssembledCase {
   pdf_path: string | null;
   /** chunk indices contributed to this case's excerpt, for tracing */
   chunk_indices: number[];
+  /** Distinct paragraph numbers visible in this case's excerpt. Used by the
+   *  citation validator to check `[^n, ¶p]` references. Empty array when the
+   *  case's chunks predate paragraph-aware ingestion. */
+  chunk_paragraphs: string[];
 }
 
 export interface ExtractionMeta {
@@ -154,7 +158,14 @@ export async function buildContext(
     }
 
     const merged = mergeChunks(c.chunks, PER_CASE_CHAR_BUDGET);
-    const caseBlock = formatCaseBlock(assembled.length + 1, c.meta, extraction, merged);
+    const visibleParagraphs = collectVisibleParagraphs(c.chunks);
+    const caseBlock = formatCaseBlock(
+      assembled.length + 1,
+      c.meta,
+      extraction,
+      merged,
+      visibleParagraphs
+    );
 
     if (totalChars + caseBlock.length > TOTAL_CONTEXT_CHAR_BUDGET && assembled.length > 0) {
       // Budget exhausted — stop adding cases. Having 6 fully-grounded cases
@@ -178,6 +189,12 @@ export async function buildContext(
     }
 
     const caseIndex = assembled.length + 1;
+    const paragraphSet = new Set<string>();
+    for (const ch of c.chunks) {
+      if (ch.paragraph_numbers) {
+        for (const p of ch.paragraph_numbers) paragraphSet.add(p);
+      }
+    }
     assembled.push({
       index: caseIndex,
       source_table: c.source_table,
@@ -187,6 +204,7 @@ export async function buildContext(
       pdf_url,
       pdf_path,
       chunk_indices: c.chunks.map((ch) => ch.chunk_index),
+      chunk_paragraphs: Array.from(paragraphSet),
     });
     caseBlocks.push(caseBlock);
     perCaseTrace.push({
@@ -333,11 +351,22 @@ function mergeChunks(chunks: RetrievedChunk[], charBudget: number): string {
   return parts.join("");
 }
 
+function collectVisibleParagraphs(chunks: RetrievedChunk[]): string[] {
+  const set = new Set<string>();
+  for (const ch of chunks) {
+    if (ch.paragraph_numbers) {
+      for (const p of ch.paragraph_numbers) set.add(p);
+    }
+  }
+  return Array.from(set);
+}
+
 function formatCaseBlock(
   index: number,
   meta: RetrievedCaseMeta,
   extraction: ExtractionMeta,
-  excerpt: string
+  excerpt: string,
+  paragraphsVisible: string[]
 ): string {
   // Each chunk already contains a metadata header (title, citation, court,
   // judges, acts, headnotes, issue, etc.) prepended during the embedding
@@ -350,6 +379,13 @@ function formatCaseBlock(
   if (meta.court) lines.push(`Court: ${meta.court}`);
   if (typeof extraction.bench_size === "number") {
     lines.push(`Bench size: ${extraction.bench_size}`);
+  }
+  if (paragraphsVisible.length > 0) {
+    // Tell the model which paragraph numbers are addressable in the excerpt
+    // so it only pinpoints when it actually has the paragraph.
+    const shown = paragraphsVisible.slice(0, 20).join(", ");
+    const tail = paragraphsVisible.length > 20 ? `, …(+${paragraphsVisible.length - 20})` : "";
+    lines.push(`Paragraphs visible: ${shown}${tail}`);
   }
   if (excerpt) {
     lines.push(`\nRelevant Passages:\n${excerpt}`);

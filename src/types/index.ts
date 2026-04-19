@@ -74,6 +74,7 @@ export interface User {
   razorpay_subscription_id: string | null;
   subscription_status: SubscriptionStatus;
   subscription_end_date: string | null;
+  is_staff: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -120,6 +121,21 @@ export interface CitedCase {
   citation: string | null;
   pdf_url: string | null;
   pdf_path: string | null;
+}
+
+export interface CitationRef {
+  case: CitedCase;
+  paragraph: string | null;
+}
+
+export interface ParagraphDetail {
+  source_table: "supreme_court_cases" | "high_court_cases";
+  source_id: number;
+  paragraph_number: string;
+  paragraph_text: string;
+  paragraph_order: number;
+  kind: "numbered" | "synthetic";
+  matched_as: "exact" | "parent";
 }
 
 // ============================================================

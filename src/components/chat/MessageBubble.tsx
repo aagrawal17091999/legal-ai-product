@@ -1,40 +1,42 @@
 "use client";
 
 import ReactMarkdown from "react-markdown";
-import type { ChatMessage, CitedCase } from "@/types";
+import type { ChatMessage, CitationRef } from "@/types";
 
 interface MessageBubbleProps {
   message: ChatMessage;
-  onCaseClick?: (caseRef: CitedCase) => void;
+  onCitationClick?: (ref: CitationRef) => void;
 }
 
-/**
- * Replace [^n] citation markers produced by Claude with markdown links of
- * the form [[n]](#case-n). The link component below intercepts those hrefs
- * and routes them through onCaseClick so users get the same behavior as
- * clicking a case chip (open the PDF).
- */
+// [^3, ¶11b] → [[3, ¶11b]](#case-3-para-11b)
+// [^3]       → [[3]](#case-3)
+// The marker regex mirrors the one in src/lib/rag/citationValidator.ts:39.
 function inlineCitations(content: string): string {
-  return content.replace(/\[\^(\d+)\]/g, "[[$1]](#case-$1)");
+  return content.replace(
+    /\[\^(\d+)(?:\s*,\s*¶([0-9]+(?:\.[0-9]+)?[A-Za-z]?))?\]/g,
+    (_m, n, p) =>
+      p ? `[[${n}, ¶${p}]](#case-${n}-para-${p})` : `[[${n}]](#case-${n})`
+  );
 }
+
+const CITATION_HREF_RE = /^#case-(\d+)(?:-para-([0-9]+(?:\.[0-9]+)?[A-Za-z]?))?$/;
 
 export default function MessageBubble({
   message,
-  onCaseClick,
+  onCitationClick,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const prepared = isUser ? message.content : inlineCitations(message.content);
 
-  const handleCitationHref = (href: string) => {
-    const match = href.match(/^#case-(\d+)$/);
+  const handleCitationHref = (href: string): boolean => {
+    const match = href.match(CITATION_HREF_RE);
     if (!match) return false;
     const idx = parseInt(match[1], 10);
+    const paragraph = match[2] ?? null;
     const ref = message.cited_cases?.[idx - 1];
-    if (ref) {
-      onCaseClick?.(ref);
-      return true;
-    }
-    return false;
+    if (!ref) return false;
+    onCitationClick?.({ case: ref, paragraph });
+    return true;
   };
 
   return (
@@ -100,7 +102,7 @@ export default function MessageBubble({
                   <button
                     key={i}
                     id={`case-${i + 1}`}
-                    onClick={() => onCaseClick?.(c)}
+                    onClick={() => onCitationClick?.({ case: c, paragraph: null })}
                     className="text-[12px] bg-gold-100 text-gold-700 hover:bg-gold-100/80 hover:text-gold-600 px-2.5 py-1 rounded transition-colors truncate max-w-xs font-medium"
                   >
                     [{i + 1}] {c.title}

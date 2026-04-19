@@ -1,13 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
-import { logError } from "./error-logger";
-import type { ChatMessage } from "@/types";
 
-// Override at runtime via the CHAT_MODEL env var. Known values:
-//   - "claude-sonnet-4-5"       (previous default)
-//   - "claude-sonnet-4-6"       (current default — recommended for this RAG workload)
-//   - "claude-opus-4-6"         (slower, ~5x cost; A/B only if you need it)
-const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || "claude-sonnet-4-6";
+/**
+ * Anthropic client utilities. The chat streaming used to live here
+ * (`streamChatResponse` + per-task prompt overlays) but was replaced by the
+ * agentic loop in `./rag/agent.ts`. The only surviving helper is the short
+ * `generateChatTitle` call, used once per session to turn the first user
+ * message into a sidebar-friendly title.
+ */
 
 function getClient(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -17,82 +16,6 @@ function getClient(): Anthropic {
     );
   }
   return new Anthropic({ apiKey });
-}
-
-const SYSTEM_PROMPT = `You are NyayaSearch, an AI legal research assistant specializing in Indian law. You help lawyers, judges, and clerks find and understand relevant case law.
-
-GROUNDING RULES (strict):
-- You may only rely on the cases in the SEARCH RESULTS block below. Do not invent case names, citations, holdings, or legal propositions.
-- Cite every legal claim inline with a footnote marker like [^1], [^2], corresponding to "Case [1]", "Case [2]" in the SEARCH RESULTS. Place the marker at the end of the sentence it supports.
-- If the retrieved cases do not address the question, say so directly. Suggest how the lawyer might refine their query or which filters to add. Never fill gaps with remembered law.
-- When multiple cases are relevant, synthesize them — do not just summarize each in isolation. Note agreements, distinctions, and any conflicting holdings.
-- When useful, note the jurisdictional weight: a Supreme Court judgment binds all courts in India; a High Court judgment binds subordinate courts within its state. Call this out if the user seems to be arguing in a specific forum.
-- Be concise and precise. Lawyers are your users.
-
-RESPONSE FORMAT:
-1. A direct answer to the question (2-5 paragraphs, with [^n] citations).
-2. If the question has distinct sub-issues, use short markdown headings.
-3. End with a "## Cases Referenced" section listing each cited case on its own line as: [n] Title (Citation) — one-line relevance note.
-
-If SEARCH RESULTS is empty or irrelevant, skip the citation format and explain honestly what's missing.`;
-
-/**
- * Streaming chat response. Returns the underlying Anthropic MessageStream so
- * the caller can forward text deltas to an SSE response AND await the final
- * usage/model metadata for tracing.
- *
- * The caller is responsible for:
- *   - stream.on('text', (delta) => ...)    // per-token
- *   - const final = await stream.finalMessage()  // full content + usage
- *   - handling errors via stream.on('error', ...)
- */
-export interface ClaudeStreamStart {
-  stream: MessageStream;
-  contextSent: string;
-  model: string;
-}
-
-export function streamChatResponse(
-  conversationHistory: ChatMessage[],
-  contextString: string,
-  userMessage: string
-): ClaudeStreamStart {
-  const client = getClient();
-
-  const recentHistory = conversationHistory.slice(-10);
-  const messages: Anthropic.MessageParam[] = recentHistory.map((msg) => ({
-    role: msg.role,
-    content: msg.content,
-  }));
-
-  const augmentedMessage = `SEARCH RESULTS (these are the only cases you may reference; each one has a [n] index for citations):
-${contextString || "(no cases retrieved)"}
-
-USER'S CURRENT QUESTION:
-${userMessage}`;
-
-  messages.push({ role: "user", content: augmentedMessage });
-
-  const stream = client.messages.stream({
-    model: CHAT_MODEL,
-    max_tokens: 4096,
-    system: SYSTEM_PROMPT,
-    messages,
-  });
-
-  // Attach a single error handler that logs but does NOT throw — the caller
-  // is expected to handle errors through await finalMessage() rejection.
-  stream.on("error", (err) => {
-    logError({
-      category: "fetching",
-      message: err instanceof Error ? err.message : String(err),
-      error: err,
-      severity: "critical",
-      metadata: { model: CHAT_MODEL, messageCount: messages.length },
-    });
-  });
-
-  return { stream, contextSent: augmentedMessage, model: CHAT_MODEL };
 }
 
 /**

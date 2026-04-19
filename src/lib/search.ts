@@ -1,6 +1,7 @@
 import pool from "./db";
 import { embedQueries, VOYAGE_EMBED_MODEL } from "./voyage";
 import { logError } from "./error-logger";
+import { toStringArray } from "./metadata";
 import type { SearchFilters } from "@/types";
 
 const RRF_K = 60; // Reciprocal Rank Fusion smoothing constant
@@ -29,6 +30,10 @@ export interface RetrievedChunk {
   chunk_index: number;
   chunk_text: string;
   rrf_score: number;
+  /** Paragraph numbers covered by this chunk. NULL for legacy chunks not yet
+   *  re-chunked by the paragraph-aware pipeline. When present, the context
+   *  builder emits `¶<num>` markers so the model can cite `[^n, ¶p]`. */
+  paragraph_numbers: string[] | null;
   case: RetrievedCaseMeta;
 }
 
@@ -44,6 +49,12 @@ export interface RetrievedCaseMeta {
   year: number | null;
   path: string | null;
   pdf_url: string | null;
+  /** Structured metadata from extraction, carried through retrieval so the
+   *  post-rerank soft-hint boost can match implicit filters (actCited,
+   *  judgeName, keyword) without a second round-trip. Arrays may be empty. */
+  acts_cited: string[];
+  judge_names: string[];
+  keywords: string[];
 }
 
 interface RawChunkHit {
@@ -52,6 +63,7 @@ interface RawChunkHit {
   source_id: number;
   chunk_index: number;
   chunk_text: string;
+  paragraph_numbers: string[] | null;
   case: RetrievedCaseMeta;
 }
 
@@ -185,6 +197,7 @@ export async function retrieveChunks(
       chunk_index: entry.chunk.chunk_index,
       chunk_text: entry.chunk.chunk_text,
       rrf_score: entry.score,
+      paragraph_numbers: entry.chunk.paragraph_numbers,
       case: entry.chunk.case,
     }));
 
@@ -253,8 +266,10 @@ async function ftsChunks(
     const paramOffset = params.length;
     const sql = `
       SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
              sc.title, sc.citation, sc.court, sc.judge, sc.decision_date::text AS decision_date,
              sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path,
+             sc.acts_cited, sc.judge_names, sc.keywords,
              -- SC has no pdf_url column; contextBuilder presigns from year/path.
              NULL::text AS pdf_url,
              ts_rank(to_tsvector('english', ch.chunk_text),
@@ -278,10 +293,12 @@ async function ftsChunks(
     const paramOffset = params.length;
     const sql = `
       SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
              hc.title, NULL::text AS citation, hc.court_name AS court, hc.judge,
              hc.decision_date::text AS decision_date,
              NULL::text AS petitioner, NULL::text AS respondent,
              hc.disposal_nature, hc.year, NULL::text AS path, hc.pdf_url,
+             hc.acts_cited, hc.judge_names, hc.keywords,
              ts_rank(to_tsvector('english', ch.chunk_text),
                      plainto_tsquery('english', $${paramOffset + 1})) AS rank
       FROM case_chunks ch
@@ -324,8 +341,10 @@ async function vectorChunks(
     const paramOffset = params.length;
     const sql = `
       SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
              sc.title, sc.citation, sc.court, sc.judge, sc.decision_date::text AS decision_date,
              sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path,
+             sc.acts_cited, sc.judge_names, sc.keywords,
              -- SC has no pdf_url column; contextBuilder presigns from year/path.
              NULL::text AS pdf_url,
              ch.embedding <=> $${paramOffset + 1}::vector AS distance
@@ -346,10 +365,12 @@ async function vectorChunks(
     const paramOffset = params.length;
     const sql = `
       SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
              hc.title, NULL::text AS citation, hc.court_name AS court, hc.judge,
              hc.decision_date::text AS decision_date,
              NULL::text AS petitioner, NULL::text AS respondent,
              hc.disposal_nature, hc.year, NULL::text AS path, hc.pdf_url,
+             hc.acts_cited, hc.judge_names, hc.keywords,
              ch.embedding <=> $${paramOffset + 1}::vector AS distance
       FROM case_chunks ch
       JOIN high_court_cases hc ON ch.source_id = hc.id
@@ -376,6 +397,7 @@ function toHit(
     source_id: r.source_id as number,
     chunk_index: r.chunk_index as number,
     chunk_text: (r.chunk_text as string) || "",
+    paragraph_numbers: toParagraphNumbers(r.paragraph_numbers),
     case: {
       title: (r.title as string) || "",
       citation: (r.citation as string | null) ?? null,
@@ -388,153 +410,368 @@ function toHit(
       year: (r.year as number | null) ?? null,
       path: (r.path as string | null) ?? null,
       pdf_url: (r.pdf_url as string | null) ?? null,
+      acts_cited: toStringArray(r.acts_cited),
+      judge_names: toStringArray(r.judge_names),
+      keywords: toStringArray(r.keywords),
     },
   };
 }
 
 /**
- * Build SQL filter clauses for the CASE table (joined into the chunk query
- * as sc/hc). Returns a " AND ..." fragment that can be appended directly to
- * an existing WHERE.
+ * Build SQL filter clauses for a case table. Two call shapes:
+ *   - { prefixColumns: true } (default): emits `sc.year`, `hc.court_name`, etc.
+ *     for use when joined into a chunk query aliased as sc/hc.
+ *   - { prefixColumns: false }: emits raw column names for direct queries
+ *     against supreme_court_cases / high_court_cases.
+ * Returns a " AND ..." fragment to append after an existing WHERE.
  */
 export function buildCaseFilterClauses(
   filters: SearchFilters,
-  tableAlias: "sc" | "hc"
+  tableAlias: "sc" | "hc",
+  options: { prefixColumns?: boolean } = {}
 ): { clauses: string; params: unknown[] } {
+  const prefix = options.prefixColumns === false ? "" : `${tableAlias}.`;
   const parts: string[] = [];
   const params: unknown[] = [];
   let p = 1;
 
   if (tableAlias === "sc") {
     if (filters.yearFrom) {
-      parts.push(`AND sc.year >= $${p++}`);
+      parts.push(`AND ${prefix}year >= $${p++}`);
       params.push(filters.yearFrom);
     }
     if (filters.yearTo) {
-      parts.push(`AND sc.year <= $${p++}`);
+      parts.push(`AND ${prefix}year <= $${p++}`);
       params.push(filters.yearTo);
     }
   } else {
     if (filters.court && filters.court !== "Supreme Court of India") {
-      parts.push(`AND hc.court_name = $${p++}`);
+      parts.push(`AND ${prefix}court_name = $${p++}`);
       params.push(filters.court);
     }
     if (filters.yearFrom) {
-      parts.push(`AND hc.year >= $${p++}`);
+      parts.push(`AND ${prefix}year >= $${p++}`);
       params.push(filters.yearFrom);
     }
     if (filters.yearTo) {
-      parts.push(`AND hc.year <= $${p++}`);
+      parts.push(`AND ${prefix}year <= $${p++}`);
       params.push(filters.yearTo);
     }
   }
 
-  const alias = tableAlias;
   if (filters.citation) {
-    parts.push(`AND ${alias}.extracted_citation = $${p++}`);
+    parts.push(`AND ${prefix}extracted_citation = $${p++}`);
     params.push(filters.citation);
   }
   if (filters.extractedPetitioner) {
-    parts.push(`AND ${alias}.extracted_petitioner = $${p++}`);
+    parts.push(`AND ${prefix}extracted_petitioner = $${p++}`);
     params.push(filters.extractedPetitioner);
   }
   if (filters.extractedRespondent) {
-    parts.push(`AND ${alias}.extracted_respondent = $${p++}`);
+    parts.push(`AND ${prefix}extracted_respondent = $${p++}`);
     params.push(filters.extractedRespondent);
   }
   if (filters.caseCategory) {
-    parts.push(`AND ${alias}.case_category = $${p++}`);
+    parts.push(`AND ${prefix}case_category = $${p++}`);
     params.push(filters.caseCategory);
   }
   if (filters.caseNumber) {
-    parts.push(`AND ${alias}.case_number = $${p++}`);
+    parts.push(`AND ${prefix}case_number = $${p++}`);
     params.push(filters.caseNumber);
   }
   if (filters.judgeName) {
-    parts.push(`AND ${alias}.judge_names @> $${p++}::jsonb`);
+    parts.push(`AND ${prefix}judge_names @> $${p++}::jsonb`);
     params.push(JSON.stringify([filters.judgeName]));
   }
   if (filters.actCited) {
-    parts.push(`AND ${alias}.acts_cited @> $${p++}::jsonb`);
+    parts.push(`AND ${prefix}acts_cited @> $${p++}::jsonb`);
     params.push(JSON.stringify([filters.actCited]));
   }
   if (filters.keyword) {
-    parts.push(`AND ${alias}.keywords @> $${p++}::jsonb`);
+    parts.push(`AND ${prefix}keywords @> $${p++}::jsonb`);
     params.push(JSON.stringify([filters.keyword]));
   }
 
   return { clauses: parts.join(" "), params };
 }
 
-/**
- * Build filter clauses for a query against the raw case table (no JOIN).
- * Used by /api/judgments/search which hits supreme_court_cases /
- * high_court_cases directly. Kept in the old shape for backward compat.
- */
-export function buildFilterClauses(
-  filters: SearchFilters,
-  tableAlias: "sc" | "hc"
-): { filterClauses: string; filterParams: unknown[] } {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-  let p = 1;
+// ─────────────────────────────────────────────────────────────
+// Direct case lookup by identifier (citation / title / shorthand)
+// ─────────────────────────────────────────────────────────────
 
-  if (tableAlias === "sc") {
-    if (filters.yearFrom) {
-      clauses.push(`AND year >= $${p++}`);
-      params.push(filters.yearFrom);
-    }
-    if (filters.yearTo) {
-      clauses.push(`AND year <= $${p++}`);
-      params.push(filters.yearTo);
-    }
-  } else {
-    if (filters.court && filters.court !== "Supreme Court of India") {
-      clauses.push(`AND court_name = $${p++}`);
-      params.push(filters.court);
-    }
-    if (filters.yearFrom) {
-      clauses.push(`AND year >= $${p++}`);
-      params.push(filters.yearFrom);
-    }
-    if (filters.yearTo) {
-      clauses.push(`AND year <= $${p++}`);
-      params.push(filters.yearTo);
-    }
-  }
-
-  if (filters.citation) {
-    clauses.push(`AND extracted_citation = $${p++}`);
-    params.push(filters.citation);
-  }
-  if (filters.extractedPetitioner) {
-    clauses.push(`AND extracted_petitioner = $${p++}`);
-    params.push(filters.extractedPetitioner);
-  }
-  if (filters.extractedRespondent) {
-    clauses.push(`AND extracted_respondent = $${p++}`);
-    params.push(filters.extractedRespondent);
-  }
-  if (filters.caseCategory) {
-    clauses.push(`AND case_category = $${p++}`);
-    params.push(filters.caseCategory);
-  }
-  if (filters.caseNumber) {
-    clauses.push(`AND case_number = $${p++}`);
-    params.push(filters.caseNumber);
-  }
-  if (filters.judgeName) {
-    clauses.push(`AND judge_names @> $${p++}::jsonb`);
-    params.push(JSON.stringify([filters.judgeName]));
-  }
-  if (filters.actCited) {
-    clauses.push(`AND acts_cited @> $${p++}::jsonb`);
-    params.push(JSON.stringify([filters.actCited]));
-  }
-  if (filters.keyword) {
-    clauses.push(`AND keywords @> $${p++}::jsonb`);
-    params.push(JSON.stringify([filters.keyword]));
-  }
-
-  return { filterClauses: clauses.join(" "), filterParams: params };
+export interface IdentifierSpec {
+  citation: string | null;
+  title: string | null;
+  /** If the router already matched this spec to a known case, these short-circuit the lookup. */
+  source_table?: "supreme_court_cases" | "high_court_cases";
+  source_id?: number;
 }
+
+export interface IdentifierMatch {
+  source_table: "supreme_court_cases" | "high_court_cases";
+  source_id: number;
+  /** Short reason the row matched, useful for debugging ("exact_citation" | "title_ilike" | "party_ilike" | "session_pin"). */
+  match_reason: string;
+}
+
+export interface LookupByIdentifierResult {
+  chunks: RetrievedChunk[];
+  /** One entry per spec, indicating how/whether it was resolved. */
+  resolutions: Array<{
+    spec: IdentifierSpec;
+    matches: IdentifierMatch[];
+  }>;
+}
+
+const MAX_CHUNKS_PER_LOOKUP_CASE = 15;
+
+/**
+ * Resolve user-named case references to concrete case rows and return all of
+ * their chunks. Used for task=specific_case / compare / summary where top-k
+ * similarity would risk missing the exact case the user named.
+ *
+ * Resolution order per spec:
+ *   1. Pinned (source_table + source_id set by the router) — skip the search.
+ *   2. Citation exact match on extracted_citation, then legacy citation column.
+ *   3. Title ILIKE across title / extracted parties / petitioner / respondent.
+ *
+ * Returns every chunk of every matched case (up to MAX_CHUNKS_PER_LOOKUP_CASE
+ * per case, chunk_index order). The context builder's per-case budget trims
+ * further.
+ */
+export async function lookupByIdentifier(
+  specs: IdentifierSpec[]
+): Promise<LookupByIdentifierResult> {
+  if (specs.length === 0) return { chunks: [], resolutions: [] };
+
+  const resolutions: LookupByIdentifierResult["resolutions"] = [];
+  const allMatches: IdentifierMatch[] = [];
+
+  for (const spec of specs) {
+    if (spec.source_table && typeof spec.source_id === "number") {
+      const pinned: IdentifierMatch = {
+        source_table: spec.source_table,
+        source_id: spec.source_id,
+        match_reason: "session_pin",
+      };
+      resolutions.push({ spec, matches: [pinned] });
+      allMatches.push(pinned);
+      continue;
+    }
+
+    const matches = await resolveSpec(spec);
+    resolutions.push({ spec, matches });
+    allMatches.push(...matches);
+  }
+
+  // Dedupe across specs so two refs to the same case only fetch chunks once.
+  const dedupedKeys = new Set<string>();
+  const deduped: IdentifierMatch[] = [];
+  for (const m of allMatches) {
+    const k = `${m.source_table}:${m.source_id}`;
+    if (dedupedKeys.has(k)) continue;
+    dedupedKeys.add(k);
+    deduped.push(m);
+  }
+
+  if (deduped.length === 0) return { chunks: [], resolutions };
+
+  const chunks = await fetchChunksForCases(deduped);
+  return { chunks, resolutions };
+}
+
+async function resolveSpec(spec: IdentifierSpec): Promise<IdentifierMatch[]> {
+  // 1. Citation exact match (extracted_citation preferred, legacy citation fallback).
+  if (spec.citation) {
+    const byCitation = await findByCitation(spec.citation);
+    if (byCitation.length > 0) return byCitation;
+  }
+
+  // 2. Title / party fuzzy match.
+  if (spec.title) {
+    const byTitle = await findByTitleOrParty(spec.title);
+    if (byTitle.length > 0) return byTitle;
+  }
+
+  return [];
+}
+
+async function findByCitation(citation: string): Promise<IdentifierMatch[]> {
+  const out: IdentifierMatch[] = [];
+  const cite = citation.trim();
+
+  const scExtracted = await pool.query(
+    `SELECT id FROM supreme_court_cases WHERE extracted_citation = $1 LIMIT 3`,
+    [cite]
+  );
+  for (const r of scExtracted.rows) {
+    out.push({ source_table: "supreme_court_cases", source_id: r.id as number, match_reason: "exact_citation" });
+  }
+  if (out.length === 0) {
+    const scLegacy = await pool.query(
+      `SELECT id FROM supreme_court_cases WHERE citation = $1 LIMIT 3`,
+      [cite]
+    );
+    for (const r of scLegacy.rows) {
+      out.push({ source_table: "supreme_court_cases", source_id: r.id as number, match_reason: "legacy_citation" });
+    }
+  }
+
+  const hcExtracted = await pool.query(
+    `SELECT id FROM high_court_cases WHERE extracted_citation = $1 LIMIT 3`,
+    [cite]
+  );
+  for (const r of hcExtracted.rows) {
+    out.push({ source_table: "high_court_cases", source_id: r.id as number, match_reason: "exact_citation" });
+  }
+
+  return out;
+}
+
+async function findByTitleOrParty(title: string): Promise<IdentifierMatch[]> {
+  const term = title.trim();
+  if (term.length < 3) return [];
+  const pattern = `%${term}%`;
+  const out: IdentifierMatch[] = [];
+
+  const sc = await pool.query(
+    `SELECT id, title
+       FROM supreme_court_cases
+      WHERE title ILIKE $1
+         OR extracted_petitioner ILIKE $1
+         OR extracted_respondent ILIKE $1
+         OR petitioner ILIKE $1
+         OR respondent ILIKE $1
+      ORDER BY decision_date DESC NULLS LAST
+      LIMIT 3`,
+    [pattern]
+  );
+  for (const r of sc.rows) {
+    out.push({ source_table: "supreme_court_cases", source_id: r.id as number, match_reason: "title_ilike" });
+  }
+
+  const hc = await pool.query(
+    `SELECT id
+       FROM high_court_cases
+      WHERE title ILIKE $1
+         OR extracted_petitioner ILIKE $1
+         OR extracted_respondent ILIKE $1
+      ORDER BY decision_date DESC NULLS LAST
+      LIMIT 3`,
+    [pattern]
+  );
+  for (const r of hc.rows) {
+    out.push({ source_table: "high_court_cases", source_id: r.id as number, match_reason: "title_ilike" });
+  }
+
+  return out;
+}
+
+async function fetchChunksForCases(matches: IdentifierMatch[]): Promise<RetrievedChunk[]> {
+  const scIds = matches
+    .filter((m) => m.source_table === "supreme_court_cases")
+    .map((m) => m.source_id);
+  const hcIds = matches
+    .filter((m) => m.source_table === "high_court_cases")
+    .map((m) => m.source_id);
+
+  const out: RetrievedChunk[] = [];
+
+  if (scIds.length > 0) {
+    const { rows } = await pool.query(
+      `
+      SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
+             sc.title, sc.citation, sc.court, sc.judge, sc.decision_date::text AS decision_date,
+             sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path,
+             sc.acts_cited, sc.judge_names, sc.keywords,
+             NULL::text AS pdf_url
+        FROM case_chunks ch
+        JOIN supreme_court_cases sc ON ch.source_id = sc.id
+       WHERE ch.source_table = 'supreme_court_cases'
+         AND ch.source_id = ANY($1::int[])
+       ORDER BY ch.source_id, ch.chunk_index
+`,
+      [scIds]
+    );
+    for (const r of rows) out.push(toLookupChunk(r, "supreme_court_cases"));
+  }
+
+  if (hcIds.length > 0) {
+    const { rows } = await pool.query(
+      `
+      SELECT ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
+             hc.title, NULL::text AS citation, hc.court_name AS court, hc.judge,
+             hc.decision_date::text AS decision_date,
+             NULL::text AS petitioner, NULL::text AS respondent,
+             hc.disposal_nature, hc.year, NULL::text AS path, hc.pdf_url,
+             hc.acts_cited, hc.judge_names, hc.keywords
+        FROM case_chunks ch
+        JOIN high_court_cases hc ON ch.source_id = hc.id
+       WHERE ch.source_table = 'high_court_cases'
+         AND ch.source_id = ANY($1::int[])
+       ORDER BY ch.source_id, ch.chunk_index
+`,
+      [hcIds]
+    );
+    for (const r of rows) out.push(toLookupChunk(r, "high_court_cases"));
+  }
+
+  // Cap per case so a 300-paragraph judgment doesn't drown out others.
+  return capChunksPerCase(out, MAX_CHUNKS_PER_LOOKUP_CASE);
+}
+
+function toParagraphNumbers(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const v of value) {
+    if (typeof v === "string" && v.trim()) out.push(v.trim());
+  }
+  return out.length > 0 ? out : null;
+}
+
+function capChunksPerCase(chunks: RetrievedChunk[], cap: number): RetrievedChunk[] {
+  const counts = new Map<string, number>();
+  const out: RetrievedChunk[] = [];
+  for (const ch of chunks) {
+    const k = `${ch.source_table}:${ch.source_id}`;
+    const c = counts.get(k) ?? 0;
+    if (c >= cap) continue;
+    counts.set(k, c + 1);
+    out.push(ch);
+  }
+  return out;
+}
+
+function toLookupChunk(
+  r: Record<string, unknown>,
+  source_table: "supreme_court_cases" | "high_court_cases"
+): RetrievedChunk {
+  return {
+    chunk_id: r.chunk_id as number,
+    source_table,
+    source_id: r.source_id as number,
+    chunk_index: r.chunk_index as number,
+    chunk_text: (r.chunk_text as string) || "",
+    rrf_score: 0,
+    paragraph_numbers: toParagraphNumbers(r.paragraph_numbers),
+    case: {
+      title: (r.title as string) || "",
+      citation: (r.citation as string | null) ?? null,
+      court: (r.court as string) || "",
+      judge: (r.judge as string | null) ?? null,
+      decision_date: (r.decision_date as string | null) ?? null,
+      petitioner: (r.petitioner as string | null) ?? null,
+      respondent: (r.respondent as string | null) ?? null,
+      disposal_nature: (r.disposal_nature as string | null) ?? null,
+      year: (r.year as number | null) ?? null,
+      path: (r.path as string | null) ?? null,
+      pdf_url: (r.pdf_url as string | null) ?? null,
+      acts_cited: toStringArray(r.acts_cited),
+      judge_names: toStringArray(r.judge_names),
+      keywords: toStringArray(r.keywords),
+    },
+  };
+}
+

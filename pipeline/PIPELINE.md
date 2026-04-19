@@ -335,19 +335,17 @@ SELECT COUNT(*) FROM reembed_progress;                     -- should equal your 
 
 ```bash
 # Supreme Court
-python pipeline/embed_existing.py --source sc
+python pipeline/reembed_all.py --source sc
 
 # High Court (optionally filter by court name)
-python pipeline/embed_existing.py --source hc --court Delhi
+python pipeline/reembed_all.py --source hc --court Delhi
 
 # Custom batch size
-python pipeline/embed_existing.py --source sc --batch-size 100
+python pipeline/reembed_all.py --source sc --batch-size 100
 ```
 
 **When:** After loading new cases via `process_and_load.py` if embeddings were skipped (e.g., Voyage API was down), or if cases were inserted by other means.
-**Why:** Finds cases with `judgment_text` but no `case_chunks` rows, chunks, embeds via `voyage-law-2`, stores in `case_chunks`. Does NOT touch `reembed_progress` — that table is only for the full-corpus migration.
-
-**Note:** `process_and_load.py` already runs the embed step inline for new cases, so `embed_existing.py` is only needed for recovery / backfill.
+**Why:** `reembed_all.py` is resumable via `reembed_progress` — it skips cases already embedded and fills in any missing `case_chunks` rows. The same script covers both the one-time full-corpus migration and ongoing recovery / backfill.
 
 ---
 
@@ -561,7 +559,7 @@ All variables go in `.env.local` (copy from `.env.local.example`):
 |----------|---------|---------|
 | `DATABASE_URL` | Everything | PostgreSQL connection string |
 | `ANTHROPIC_API_KEY` | Extraction pipeline, chat API | Claude API for LLM extraction + chat |
-| `VOYAGE_API_KEY` | process_and_load, embed_existing | Vector embeddings via Voyage AI |
+| `VOYAGE_API_KEY` | process_and_load, reembed_all | Vector embeddings via Voyage AI |
 | `R2_ACCESS_KEY_ID` | process_and_load | Cloudflare R2 (PDF storage) |
 | `R2_SECRET_ACCESS_KEY` | process_and_load | Cloudflare R2 |
 | `R2_ENDPOINT` | process_and_load | Cloudflare R2 endpoint URL |
@@ -622,8 +620,8 @@ python pipeline/verify_extraction.py --source hc
 ### C. Backfill embeddings for existing cases
 
 ```bash
-python pipeline/embed_existing.py --source sc
-python pipeline/embed_existing.py --source hc
+python pipeline/reembed_all.py --source sc
+python pipeline/reembed_all.py --source hc
 ```
 
 ### C2. RAG upgrade — full re-embed with voyage-law-2

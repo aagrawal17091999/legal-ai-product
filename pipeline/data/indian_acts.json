@@ -1,0 +1,496 @@
+{
+  "_note": "Indian Central Acts from IndiaCode (scraped). Entries: 85.",
+  "_version": "indiacode-scrape-1",
+  "acts": [
+    {
+      "canonical": "Constitution of India",
+      "aliases": [
+        "Constitution",
+        "Indian Constitution"
+      ]
+    },
+    {
+      "canonical": "Indian Penal Code, 1860",
+      "aliases": [
+        "IPC",
+        "IPC 1860",
+        "Penal Code 1860"
+      ]
+    },
+    {
+      "canonical": "Code of Criminal Procedure, 1973",
+      "aliases": [
+        "CrPC",
+        "CrPC 1973",
+        "Cr.P.C.",
+        "Criminal Procedure Code 1973"
+      ]
+    },
+    {
+      "canonical": "Code of Civil Procedure, 1908",
+      "aliases": [
+        "CPC",
+        "CPC 1908",
+        "C.P.C.",
+        "Civil Procedure Code 1908"
+      ]
+    },
+    {
+      "canonical": "Indian Evidence Act, 1872",
+      "aliases": [
+        "Evidence Act 1872",
+        "Evidence Act"
+      ]
+    },
+    {
+      "canonical": "Indian Contract Act, 1872",
+      "aliases": [
+        "Contract Act 1872",
+        "Contract Act"
+      ]
+    },
+    {
+      "canonical": "Transfer of Property Act, 1882",
+      "aliases": [
+        "TP Act",
+        "TPA"
+      ]
+    },
+    {
+      "canonical": "Negotiable Instruments Act, 1881",
+      "aliases": [
+        "NI Act",
+        "Negotiable Instruments Act"
+      ]
+    },
+    {
+      "canonical": "Arbitration and Conciliation Act, 1996",
+      "aliases": [
+        "Arbitration Act 1996",
+        "A&C Act"
+      ]
+    },
+    {
+      "canonical": "Contempt of Courts Act, 1971",
+      "aliases": [
+        "Contempt Act 1971",
+        "Contempt of Court Act"
+      ]
+    },
+    {
+      "canonical": "Income Tax Act, 1961",
+      "aliases": [
+        "IT Act 1961",
+        "Income-Tax Act"
+      ]
+    },
+    {
+      "canonical": "Companies Act, 2013",
+      "aliases": [
+        "Companies Act"
+      ]
+    },
+    {
+      "canonical": "Companies Act, 1956",
+      "aliases": []
+    },
+    {
+      "canonical": "Consumer Protection Act, 2019",
+      "aliases": [
+        "CPA 2019"
+      ]
+    },
+    {
+      "canonical": "Consumer Protection Act, 1986",
+      "aliases": [
+        "CPA 1986"
+      ]
+    },
+    {
+      "canonical": "Prevention of Corruption Act, 1988",
+      "aliases": [
+        "PC Act",
+        "Prevention of Corruption Act"
+      ]
+    },
+    {
+      "canonical": "Narcotic Drugs and Psychotropic Substances Act, 1985",
+      "aliases": [
+        "NDPS Act",
+        "NDPS"
+      ]
+    },
+    {
+      "canonical": "Motor Vehicles Act, 1988",
+      "aliases": [
+        "MV Act"
+      ]
+    },
+    {
+      "canonical": "Protection of Women from Domestic Violence Act, 2005",
+      "aliases": [
+        "PWDV Act",
+        "Domestic Violence Act"
+      ]
+    },
+    {
+      "canonical": "Hindu Marriage Act, 1955",
+      "aliases": [
+        "HMA"
+      ]
+    },
+    {
+      "canonical": "Muslim Personal Law (Shariat) Application Act, 1937",
+      "aliases": [
+        "Shariat Act"
+      ]
+    },
+    {
+      "canonical": "Registration Act, 1908",
+      "aliases": []
+    },
+    {
+      "canonical": "Limitation Act, 1963",
+      "aliases": []
+    },
+    {
+      "canonical": "Specific Relief Act, 1963",
+      "aliases": []
+    },
+    {
+      "canonical": "Indian Succession Act, 1925",
+      "aliases": []
+    },
+    {
+      "canonical": "Hindu Succession Act, 1956",
+      "aliases": []
+    },
+    {
+      "canonical": "Insolvency and Bankruptcy Code, 2016",
+      "aliases": [
+        "IBC",
+        "IBC 2016"
+      ]
+    },
+    {
+      "canonical": "Securitisation and Reconstruction of Financial Assets and Enforcement of Security Interest Act, 2002",
+      "aliases": [
+        "SARFAESI Act",
+        "SARFAESI"
+      ]
+    },
+    {
+      "canonical": "Banking Regulation Act, 1949",
+      "aliases": [
+        "BR Act"
+      ]
+    },
+    {
+      "canonical": "Reserve Bank of India Act, 1934",
+      "aliases": [
+        "RBI Act"
+      ]
+    },
+    {
+      "canonical": "Industrial Disputes Act, 1947",
+      "aliases": [
+        "ID Act",
+        "Industrial Dispute Act, 1947"
+      ]
+    },
+    {
+      "canonical": "Factories Act, 1948",
+      "aliases": []
+    },
+    {
+      "canonical": "Employees' Compensation Act, 1923",
+      "aliases": [
+        "Workmen's Compensation Act, 1923",
+        "WC Act"
+      ]
+    },
+    {
+      "canonical": "Employees' State Insurance Act, 1948",
+      "aliases": [
+        "ESI Act"
+      ]
+    },
+    {
+      "canonical": "Employees' Provident Funds and Miscellaneous Provisions Act, 1952",
+      "aliases": [
+        "EPF Act",
+        "Provident Funds Act"
+      ]
+    },
+    {
+      "canonical": "Payment of Wages Act, 1936",
+      "aliases": []
+    },
+    {
+      "canonical": "Minimum Wages Act, 1948",
+      "aliases": []
+    },
+    {
+      "canonical": "Trade Unions Act, 1926",
+      "aliases": []
+    },
+    {
+      "canonical": "Child Labour (Prohibition and Regulation) Act, 1986",
+      "aliases": [
+        "Child Labour Act"
+      ]
+    },
+    {
+      "canonical": "Right to Information Act, 2005",
+      "aliases": [
+        "RTI Act"
+      ]
+    },
+    {
+      "canonical": "Prevention of Money Laundering Act, 2002",
+      "aliases": [
+        "PMLA"
+      ]
+    },
+    {
+      "canonical": "Foreign Exchange Management Act, 1999",
+      "aliases": [
+        "FEMA"
+      ]
+    },
+    {
+      "canonical": "Customs Act, 1962",
+      "aliases": []
+    },
+    {
+      "canonical": "Central Excise Act, 1944",
+      "aliases": []
+    },
+    {
+      "canonical": "Central Goods and Services Tax Act, 2017",
+      "aliases": [
+        "CGST Act"
+      ]
+    },
+    {
+      "canonical": "Integrated Goods and Services Tax Act, 2017",
+      "aliases": [
+        "IGST Act"
+      ]
+    },
+    {
+      "canonical": "Electricity Act, 2003",
+      "aliases": []
+    },
+    {
+      "canonical": "Environment (Protection) Act, 1986",
+      "aliases": [
+        "Environment Protection Act",
+        "EPA 1986"
+      ]
+    },
+    {
+      "canonical": "Water (Prevention and Control of Pollution) Act, 1974",
+      "aliases": [
+        "Water Act"
+      ]
+    },
+    {
+      "canonical": "Air (Prevention and Control of Pollution) Act, 1981",
+      "aliases": [
+        "Air Act"
+      ]
+    },
+    {
+      "canonical": "Forest (Conservation) Act, 1980",
+      "aliases": [
+        "Forest Conservation Act"
+      ]
+    },
+    {
+      "canonical": "Wild Life (Protection) Act, 1972",
+      "aliases": [
+        "Wildlife Protection Act"
+      ]
+    },
+    {
+      "canonical": "Copyright Act, 1957",
+      "aliases": []
+    },
+    {
+      "canonical": "Patents Act, 1970",
+      "aliases": []
+    },
+    {
+      "canonical": "Trade Marks Act, 1999",
+      "aliases": [
+        "Trademarks Act"
+      ]
+    },
+    {
+      "canonical": "Designs Act, 2000",
+      "aliases": []
+    },
+    {
+      "canonical": "Information Technology Act, 2000",
+      "aliases": [
+        "IT Act 2000"
+      ]
+    },
+    {
+      "canonical": "Securities and Exchange Board of India Act, 1992",
+      "aliases": [
+        "SEBI Act"
+      ]
+    },
+    {
+      "canonical": "Scheduled Castes and the Scheduled Tribes (Prevention of Atrocities) Act, 1989",
+      "aliases": [
+        "SC/ST Act",
+        "Atrocities Act"
+      ]
+    },
+    {
+      "canonical": "Juvenile Justice (Care and Protection of Children) Act, 2015",
+      "aliases": [
+        "JJ Act"
+      ]
+    },
+    {
+      "canonical": "Protection of Children from Sexual Offences Act, 2012",
+      "aliases": [
+        "POCSO Act",
+        "POCSO"
+      ]
+    },
+    {
+      "canonical": "Unlawful Activities (Prevention) Act, 1967",
+      "aliases": [
+        "UAPA"
+      ]
+    },
+    {
+      "canonical": "Maintenance and Welfare of Parents and Senior Citizens Act, 2007",
+      "aliases": []
+    },
+    {
+      "canonical": "Bharatiya Nyaya Sanhita, 2023",
+      "aliases": [
+        "BNS"
+      ]
+    },
+    {
+      "canonical": "Bharatiya Nagarik Suraksha Sanhita, 2023",
+      "aliases": [
+        "BNSS"
+      ]
+    },
+    {
+      "canonical": "Bharatiya Sakshya Adhiniyam, 2023",
+      "aliases": [
+        "BSA"
+      ]
+    },
+    {
+      "canonical": "General Clauses Act, 1897",
+      "aliases": []
+    },
+    {
+      "canonical": "Stamp Act, 1899",
+      "aliases": [
+        "Indian Stamp Act"
+      ]
+    },
+    {
+      "canonical": "Court Fees Act, 1870",
+      "aliases": []
+    },
+    {
+      "canonical": "Arms Act, 1959",
+      "aliases": []
+    },
+    {
+      "canonical": "Explosive Substances Act, 1908",
+      "aliases": []
+    },
+    {
+      "canonical": "Passport Act, 1967",
+      "aliases": [
+        "Passports Act"
+      ]
+    },
+    {
+      "canonical": "Citizenship Act, 1955",
+      "aliases": []
+    },
+    {
+      "canonical": "Representation of the People Act, 1951",
+      "aliases": [
+        "RP Act 1951"
+      ]
+    },
+    {
+      "canonical": "Representation of the People Act, 1950",
+      "aliases": [
+        "RP Act 1950"
+      ]
+    },
+    {
+      "canonical": "Right of Children to Free and Compulsory Education Act, 2009",
+      "aliases": [
+        "RTE Act"
+      ]
+    },
+    {
+      "canonical": "Sexual Harassment of Women at Workplace (Prevention, Prohibition and Redressal) Act, 2013",
+      "aliases": [
+        "POSH Act"
+      ]
+    },
+    {
+      "canonical": "Benami Transactions (Prohibition) Act, 1988",
+      "aliases": [
+        "Benami Act"
+      ]
+    },
+    {
+      "canonical": "Conservation of Foreign Exchange and Prevention of Smuggling Activities Act, 1974",
+      "aliases": [
+        "COFEPOSA"
+      ]
+    },
+    {
+      "canonical": "Maharashtra Control of Organised Crime Act, 1999",
+      "aliases": [
+        "MCOCA"
+      ]
+    },
+    {
+      "canonical": "Dowry Prohibition Act, 1961",
+      "aliases": []
+    },
+    {
+      "canonical": "Terrorist and Disruptive Activities (Prevention) Act, 1987",
+      "aliases": [
+        "TADA"
+      ]
+    },
+    {
+      "canonical": "Prevention of Terrorism Act, 2002",
+      "aliases": [
+        "POTA"
+      ]
+    },
+    {
+      "canonical": "Land Acquisition Act, 1894",
+      "aliases": []
+    },
+    {
+      "canonical": "Right to Fair Compensation and Transparency in Land Acquisition, Rehabilitation and Resettlement Act, 2013",
+      "aliases": [
+        "Land Acquisition Act 2013",
+        "RFCTLARR"
+      ]
+    }
+  ]
+}

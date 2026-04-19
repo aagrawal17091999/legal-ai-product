@@ -118,6 +118,112 @@ def chunk_text_with_header(
     return chunks
 
 
+def chunk_text_by_paragraph(
+    paragraphs: list,
+    header: str,
+    target_size: int = CHUNK_SIZE,
+) -> list[dict]:
+    """Build paragraph-aware chunks from a list of ExtractedParagraph objects.
+
+    Each returned dict is `{chunk_text: str, paragraph_numbers: list[str]}`.
+    Rules:
+      - Short adjacent paragraphs are coalesced up to `target_size` chars so
+        we don't produce hundreds of tiny chunks for procedural lists.
+      - Paragraphs at or above `target_size` become their own chunk, and if a
+        single paragraph exceeds `target_size` it is split into sub-chunks
+        labeled 14a / 14b / ... All sub-chunks reference the same parent
+        paragraph number in `paragraph_numbers` so citations still resolve.
+      - The metadata header is prepended to every chunk body (same as the
+        legacy `chunk_text_with_header`) so embeddings still see metadata.
+
+    Expects `paragraphs` to be the `.paragraphs` list from
+    `paragraph_extractor.ExtractionResult`. Duck-typed on `paragraph_text`
+    and `paragraph_number` attributes so callers can pass any equivalent
+    dataclass or dict.
+    """
+    if not paragraphs:
+        return []
+
+    # Normalize to simple dicts so this function is independent of the
+    # dataclass import.
+    items: list[dict] = []
+    for p in paragraphs:
+        num = _attr(p, "paragraph_number")
+        body = (_attr(p, "paragraph_text") or "").strip()
+        if not body:
+            continue
+        items.append({"number": str(num), "text": body})
+
+    if not items:
+        return []
+
+    chunks: list[dict] = []
+
+    def flush(buffer: list[dict]) -> None:
+        if not buffer:
+            return
+        body = "\n\n".join(f"¶{b['number']}  {b['text']}" for b in buffer)
+        chunks.append(
+            {
+                "chunk_text": (header + body) if header else body,
+                "paragraph_numbers": [b["number"] for b in buffer],
+            }
+        )
+
+    buffer: list[dict] = []
+    buffer_chars = 0
+
+    for item in items:
+        size = len(item["text"])
+
+        if size > target_size:
+            # Flush pending buffer first, then split this long paragraph into
+            # sub-chunks with 'a', 'b', ... suffixes.
+            flush(buffer)
+            buffer = []
+            buffer_chars = 0
+
+            text = item["text"]
+            start = 0
+            sub_idx = 0
+            parent_num = item["number"]
+            while start < len(text):
+                end = start + target_size
+                sub_body = text[start:end].strip()
+                if sub_body:
+                    suffix = chr(ord("a") + sub_idx) if sub_idx < 26 else f"_{sub_idx}"
+                    marker = f"¶{parent_num}{suffix}"
+                    chunks.append(
+                        {
+                            "chunk_text": (header + f"{marker}  {sub_body}") if header else f"{marker}  {sub_body}",
+                            # Pin the citation to the PARENT number — sub-chunks
+                            # share addressability at the paragraph level.
+                            "paragraph_numbers": [parent_num],
+                        }
+                    )
+                    sub_idx += 1
+                start = end
+            continue
+
+        # Coalesce into the pending buffer if it fits, else flush and start a new buffer.
+        if buffer_chars + size > target_size and buffer:
+            flush(buffer)
+            buffer = []
+            buffer_chars = 0
+
+        buffer.append(item)
+        buffer_chars += size
+
+    flush(buffer)
+    return chunks
+
+
+def _attr(obj, name: str):
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
 def chunk_text_plain(
     text: str,
     chunk_size: int = CHUNK_SIZE,

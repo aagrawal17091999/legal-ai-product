@@ -41,6 +41,10 @@ export function useChat() {
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sessionsLoadedRef = useRef(false);
+  // Tracks the session id currently receiving streamed tokens. loadSession
+  // skips when targeting this session so a token-refresh re-render can't
+  // clobber the in-flight assistant bubble.
+  const streamingSessionRef = useRef<string | null>(null);
 
   const authHeaders = useCallback(async () => {
     const token = await getToken();
@@ -109,11 +113,13 @@ export function useChat() {
 
   const loadSession = useCallback(
     async (sessionId: string) => {
+      if (streamingSessionRef.current === sessionId) return;
       try {
         const headers = await authHeaders();
         const res = await fetch(`/api/chat/sessions/${sessionId}`, { headers });
         if (res.ok) {
           const data = await res.json();
+          if (streamingSessionRef.current === sessionId) return;
           setCurrentSession(data.session);
           setMessages(data.messages);
         }
@@ -201,6 +207,7 @@ export function useChat() {
 
       const controller = new AbortController();
       abortControllerRef.current = controller;
+      streamingSessionRef.current = currentSession.id;
 
       try {
         const headers = await authHeaders();
@@ -392,6 +399,9 @@ export function useChat() {
       } finally {
         if (abortControllerRef.current === controller) {
           abortControllerRef.current = null;
+        }
+        if (streamingSessionRef.current === currentSession.id) {
+          streamingSessionRef.current = null;
         }
         setIsLoading(false);
       }

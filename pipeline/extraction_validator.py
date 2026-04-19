@@ -10,6 +10,8 @@ import re
 import logging
 from typing import Any
 
+from extraction_utils import clean_pdf_artifacts
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -52,24 +54,8 @@ def _has_artifacts(text: str) -> bool:
 
 
 def _strip_artifacts(text: str) -> str:
-    """Remove known PDF artifacts from text."""
-    # Remove backspace and control characters
-    text = re.sub(r'[\x08]', '', text)
-    # Remove SCR page headers
-    text = re.sub(r'\[?\d{4}\]?\s+\d+\s+S\.C\.R\.?\s*\n?', '', text)
-    # Remove "Digital Supreme Court Reports"
-    text = re.sub(r'Digital Supreme Court Reports\s*\n?', '', text, flags=re.IGNORECASE)
-    # Remove bare page numbers on their own line
-    text = re.sub(r'\n\s*\d{1,4}\s*\n', '\n', text)
-    # Remove "* Author" markers
-    text = re.sub(r'\*\s*Author\b', '', text)
-    # Remove leaked case title lines (Name v. Name on its own line)
-    text = re.sub(r'\n[A-Z][A-Za-z\s.@]+\s+v\.\s+[A-Z][A-Za-z\s.@]+\n', '\n', text)
-    # Collapse multiple whitespace
-    text = re.sub(r'[ \t]+', ' ', text)
-    # Collapse multiple newlines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
+    """Remove known PDF artifacts and collapse whitespace."""
+    return clean_pdf_artifacts(text, collapse_whitespace=True)
 
 
 def _has_section_heading(text: str) -> bool:
@@ -240,10 +226,16 @@ def _validate_cases_cited(value: Any, results: dict) -> tuple[bool, Any]:
     return True, value
 
 
+# Case-SENSITIVE: real act names capitalize these tokens. "any other act"
+# (body prose) must not pass this filter.
 _ACT_KEYWORD_RE = re.compile(
     r'\b(Act|Code|Rules?|Regulations?|Constitution|Ordinance|'
-    r'Bill|Order|Scheme|Notification|Bye[- ]?laws?|Statute)\b',
-    re.IGNORECASE,
+    r'Bill|Order|Scheme|Notification|Bye[- ]?laws?|Statute|'
+    r'Sanhita|Adhiniyam)\b'
+)
+
+_ACT_SENTENCE_FRAGMENT_RE = re.compile(
+    r'\b(means|whether|which—|scandalises|any other|tends to)\b'
 )
 
 
@@ -258,7 +250,7 @@ def _validate_acts_cited(value: Any, results: dict) -> tuple[bool, Any]:
             continue
         act = re.sub(r'\s*\n\s*', ' ', act).strip()  # Collapse newlines
         act = act.strip('–').strip('-').strip().rstrip('.').strip()
-        if len(act) < 5:
+        if len(act) < 5 or len(act) > 200:
             continue
         if _has_artifacts(act):
             continue
@@ -268,7 +260,27 @@ def _validate_acts_cited(value: Any, results: dict) -> tuple[bool, Any]:
             continue
         if not _ACT_KEYWORD_RE.search(act):  # Must look like an act
             continue
+        if _ACT_SENTENCE_FRAGMENT_RE.search(act):
+            continue  # Reject sentence/paragraph fragments
         cleaned.append(act)
+
+    # Registry normalization — fuzzy-match each candidate against the canonical
+    # list. Matched entries get the canonical form; unmatched entries are kept
+    # verbatim so legitimate state-act citations aren't wiped.
+    try:
+        from act_registry import match_act
+        final: list[str] = []
+        seen: set[str] = set()
+        for act in cleaned:
+            canonical, _score = match_act(act)
+            key = canonical if canonical else act
+            if key not in seen:
+                final.append(key)
+                seen.add(key)
+        cleaned = final
+    except ImportError:
+        pass  # registry optional
+
     if len(cleaned) != len(value):
         return True, cleaned  # Auto-fixed
     return True, value

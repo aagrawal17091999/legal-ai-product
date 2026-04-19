@@ -108,7 +108,7 @@ IMPORTANT RULES:
 - Extract ONLY from the text provided. Do not fabricate any information.
 - For petitioner/respondent, return ONLY the party name. Never include case details, headnotes, or judgment text.
 - For cases_cited, only include cases explicitly named in the judgment. Do not invent citations.
-- For acts_cited, include the full act name with year (e.g., "Indian Penal Code, 1860" not just "IPC").
+- For acts_cited, extract ONLY entries that appear inside the "List of Acts" section/box in the headnote. Do NOT include acts merely mentioned in paragraph text, quoted statutory definitions, or the body of the judgment. If the judgment has no "List of Acts" section, return []. Each entry must be a full act name with year (e.g., "Indian Penal Code, 1860" not just "IPC").
 - For keywords, use short legal phrases (2-10 words each). Not full sentences.
 - For case_category, infer from the case number, jurisdiction line, or the subject matter.
 - If a field cannot be determined from the text, use null for strings, [] for arrays, {} for objects.

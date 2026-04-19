@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth } from "@/lib/auth";
 import pool from "@/lib/db";
-import { buildFilterClauses } from "@/lib/search";
+import { buildCaseFilterClauses } from "@/lib/search";
 import { logError } from "@/lib/error-logger";
 import type { SearchFilters, JudgmentSearchResponse, FilterDiagnostic } from "@/types";
 
@@ -60,8 +60,8 @@ function buildCountQuery(
   const searchSC = !filters.court || filters.court === "Supreme Court of India";
   const searchHC = !filters.court || filters.court !== "Supreme Court of India";
 
-  const { filterClauses: scClauses, filterParams: scParams } = buildFilterClauses(filters, "sc");
-  const { filterClauses: hcClauses, filterParams: hcParams } = buildFilterClauses(filters, "hc");
+  const { clauses: scClauses, params: scParams } = buildCaseFilterClauses(filters, "sc", { prefixColumns: false });
+  const { clauses: hcClauses, params: hcParams } = buildCaseFilterClauses(filters, "hc", { prefixColumns: false });
 
   const countParts: string[] = [];
   let allParams: unknown[] = [];
@@ -154,8 +154,8 @@ export async function GET(request: NextRequest) {
     const searchSC = !filters.court || filters.court === "Supreme Court of India";
     const searchHC = !filters.court || filters.court !== "Supreme Court of India";
 
-    const { filterClauses: scClauses, filterParams: scParams } = buildFilterClauses(filters, "sc");
-    const { filterClauses: hcClauses, filterParams: hcParams } = buildFilterClauses(filters, "hc");
+    const { clauses: scClauses, params: scParams } = buildCaseFilterClauses(filters, "sc", { prefixColumns: false });
+    const { clauses: hcClauses, params: hcParams } = buildCaseFilterClauses(filters, "hc", { prefixColumns: false });
 
     // Build UNION ALL query parts
     const unionParts: string[] = [];

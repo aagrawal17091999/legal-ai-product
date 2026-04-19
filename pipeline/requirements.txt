@@ -9,3 +9,4 @@ pgvector
 numpy
 python-dotenv
 tqdm
+rapidfuzz

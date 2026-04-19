@@ -1,29 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getOrCreateUser, checkQueryLimit, incrementQueryCount } from "@/lib/auth";
 import pool from "@/lib/db";
-import {
-  runRagPipeline,
-  type RagResult,
-  type PipelineStepRecord,
-} from "@/lib/rag/pipeline";
+import { hydrateSessionStore } from "@/lib/rag/sessionStore";
+import { runAgent, buildAgentAuditSteps } from "@/lib/rag/agent";
 import { persistPipelineAudit } from "@/lib/rag/trace";
-import { streamChatResponse, generateChatTitle } from "@/lib/claude";
+import { generateChatTitle } from "@/lib/claude";
+import { validateCitations, type CitationMismatch } from "@/lib/rag/citationValidator";
 import { logError } from "@/lib/error-logger";
-import type { ChatMessage, SearchFilters } from "@/types";
+import type { ChatMessage, SearchFilters, CitedCase } from "@/types";
 
 /**
  * POST /api/chat/sessions/[id]/messages
  *
  * Streams an SSE response with these event types:
- *   - "meta"  : { rewritten_queries, effective_filters, needs_retrieval }
- *   - "cases" : CitedCase[] — sent as soon as retrieval + context assembly finish
- *   - "token" : { delta: string } — incremental text from Claude
- *   - "title" : { title: string } — session title (first message only)
- *   - "done"  : { message_id, status, response_time_ms }
- *   - "error" : { message: string }
+ *   - "meta"   : { mode, model, session_cases_count, session_store, history_turns }
+ *   - "tool"   : { phase, tool, input, step_index, status?, duration_ms?, error?, data? }
+ *                — phase ∈ "start" | "end"
+ *   - "cases"  : CitedCase[] — re-emitted whenever the registry grows
+ *   - "token"  : { delta: string } — incremental text from the model
+ *   - "title"  : { title: string } — session title (first message only)
+ *   - "done"   : { message_id, status, response_time_ms, steps_used, stop_reason }
+ *   - "error"  : { message: string }
  *
- * Non-stream errors (auth, limits, validation, session ownership) are still
- * returned as normal JSON responses with proper HTTP status codes.
+ * Non-stream errors (auth, limits, validation, session ownership) are returned
+ * as normal JSON responses with proper HTTP status codes.
  */
 export async function POST(
   request: NextRequest,
@@ -34,10 +34,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await getOrCreateUser({
-    uid: decoded.uid,
-    email: decoded.email,
-  });
+  const user = await getOrCreateUser({ uid: decoded.uid, email: decoded.email });
 
   const { allowed, remaining } = await checkQueryLimit(user.id);
   if (!allowed) {
@@ -52,13 +49,9 @@ export async function POST(
   const userMessage: string = body.message;
 
   if (!userMessage?.trim()) {
-    return NextResponse.json(
-      { error: "Message is required" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Message is required" }, { status: 400 });
   }
 
-  // Verify session ownership BEFORE opening the stream so we can return 404.
   const { rows: sessionRows } = await pool.query(
     `SELECT id, filters FROM chat_sessions WHERE id = $1 AND user_id = $2`,
     [sessionId, user.id]
@@ -68,7 +61,6 @@ export async function POST(
   }
   const sessionFilters: SearchFilters = sessionRows[0].filters || {};
 
-  // Load history BEFORE opening the stream — we need it for query understanding.
   const { rows: historyRows } = await pool.query(
     `SELECT id, role, content, cited_cases, search_query, created_at
        FROM chat_messages
@@ -93,8 +85,6 @@ export async function POST(
     created_at: r.created_at,
   }));
 
-  // Save the user message now (outside the stream) so it's persisted even if
-  // the client disconnects mid-stream.
   await pool.query(
     `INSERT INTO chat_messages (session_id, role, content)
      VALUES ($1, 'user', $2)`,
@@ -108,108 +98,90 @@ export async function POST(
 
   const stream = new ReadableStream({
     async start(controller) {
+      let streamClosed = false;
       const send = (event: string, data: unknown) => {
-        controller.enqueue(
-          encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-        );
+        if (streamClosed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+          );
+        } catch {
+          streamClosed = true;
+        }
       };
+      request.signal.addEventListener("abort", () => {
+        streamClosed = true;
+      });
 
       const tStart = Date.now();
+      const agentStartedAt = new Date(tStart).toISOString();
       let assistantContent = "";
       let status: "success" | "error" = "success";
       let errorMsg: string | null = null;
       let model: string | null = null;
       let inputTokens: number | null = null;
       let outputTokens: number | null = null;
-      let contextSent: string | null = null;
-      let citedCasesForDb: unknown[] = [];
-      let ragTrace: Record<string, unknown> | null = null;
-      let rag: RagResult | null = null;
-      let generateStep: PipelineStepRecord | null = null;
+      let citedCasesForDb: CitedCase[] = [];
+      let citationMismatches: CitationMismatch[] = [];
+      let agentResult: Awaited<ReturnType<typeof runAgent>> | null = null;
+      let sessionStoreForTurn: Awaited<ReturnType<typeof hydrateSessionStore>> | null = null;
 
       try {
-        // 1. Run RAG pipeline.
-        rag = await runRagPipeline(userMessage, conversationHistory, sessionFilters);
+        sessionStoreForTurn = await hydrateSessionStore(sessionId);
 
         send("meta", {
-          needs_retrieval: rag.needsRetrieval,
-          rewritten_queries: rag.understanding.rewritten_queries,
-          implicit_filters: rag.understanding.implicit_filters,
-          effective_filters: rag.effectiveFilters,
-          timings: rag.timings,
-        });
-        send("cases", rag.citedCases);
-
-        citedCasesForDb = rag.citedCases;
-        ragTrace = {
-          needs_retrieval: rag.needsRetrieval,
-          rewritten_queries: rag.understanding.rewritten_queries,
-          hyde_passage: rag.understanding.hyde_passage,
-          implicit_filters: rag.understanding.implicit_filters,
-          effective_filters: rag.effectiveFilters,
-          candidate_chunk_ids: rag.candidateChunks.map((c) => c.chunk_id),
-          reranked_chunks: rag.rerankedChunks.map((c) => ({
-            chunk_id: c.chunk_id,
-            source_table: c.source_table,
-            source_id: c.source_id,
-            chunk_index: c.chunk_index,
-            rrf_score: c.rrf_score,
-          })),
-          case_count: rag.cases.length,
-          timings: rag.timings,
-        };
-
-        // 2. Kick off Claude streaming. For chitchat (no retrieval), context is empty.
-        const tGenerateStart = Date.now();
-        const { stream: claudeStream, contextSent: cs, model: usedModel } = streamChatResponse(
-          conversationHistory,
-          rag.contextString,
-          userMessage
-        );
-        contextSent = cs;
-        model = usedModel;
-
-        let firstTokenMs: number | null = null;
-        claudeStream.on("text", (delta: string) => {
-          if (firstTokenMs === null) firstTokenMs = Date.now() - tGenerateStart;
-          assistantContent += delta;
-          send("token", { delta });
+          mode: "agent",
+          session_cases_count: sessionStoreForTurn.caseSummaries.length,
+          session_store: sessionStoreForTurn.trace,
+          history_turns: Math.min(conversationHistory.length, 10),
         });
 
-        const finalMsg = await claudeStream.finalMessage();
-        const tGenerateEnd = Date.now();
-        inputTokens = finalMsg.usage.input_tokens;
-        outputTokens = finalMsg.usage.output_tokens;
-        model = finalMsg.model;
-
-        // If the SDK produced any text that wasn't forwarded via the text
-        // event (shouldn't happen in practice), fall back to the final content.
-        if (!assistantContent) {
-          const textBlock = finalMsg.content.find((b) => b.type === "text");
-          if (textBlock && "text" in textBlock) {
-            assistantContent = textBlock.text;
-            send("token", { delta: assistantContent });
-          }
-        }
-
-        generateStep = {
-          step_order: 6,
-          step: "generate",
-          status: "success",
-          duration_ms: tGenerateEnd - tGenerateStart,
-          started_at: new Date(tGenerateStart).toISOString(),
-          error: null,
-          data: {
-            model: finalMsg.model,
-            input_tokens: inputTokens,
-            output_tokens: outputTokens,
-            content_chars: assistantContent.length,
-            first_token_ms: firstTokenMs,
-            stop_reason: finalMsg.stop_reason,
-            context_chars: rag.contextString.length,
-            history_turns_sent: Math.min(conversationHistory.length, 10),
+        agentResult = await runAgent({
+          userMessage,
+          history: conversationHistory,
+          sessionStore: sessionStoreForTurn,
+          sessionFilters,
+          onTextDelta: (delta) => send("token", { delta }),
+          onToolEvent: (event) => {
+            send("tool", {
+              phase: event.type,
+              step_index: event.step_index,
+              tool: event.record.tool,
+              input: event.record.input,
+              status: event.type === "end" ? event.record.status : undefined,
+              duration_ms: event.type === "end" ? event.record.duration_ms : undefined,
+              error: event.type === "end" ? event.record.error : undefined,
+              data: event.type === "end" ? event.record.data : undefined,
+            });
           },
-        };
+          onCasesUpdate: (cases) => {
+            citedCasesForDb = cases;
+            send("cases", cases);
+          },
+        });
+
+        assistantContent = agentResult.assistantContent;
+        citedCasesForDb = agentResult.citedCases;
+        model = agentResult.model;
+        inputTokens = agentResult.tokens.input;
+        outputTokens = agentResult.tokens.output;
+
+        // Post-generation citation validation. If the agent ended without any
+        // visible text (rare — happens when all steps were tool_use and no
+        // end_turn text block was produced), skip validation.
+        if (assistantContent) {
+          const validation = validateCitations(assistantContent, agentResult.assembledCases);
+          if (validation.mismatches.length > 0) {
+            const appended = validation.text.slice(assistantContent.length);
+            if (appended) send("token", { delta: appended });
+            assistantContent = validation.text;
+            citationMismatches = validation.mismatches;
+          }
+        } else {
+          assistantContent =
+            "Sorry, the assistant did not produce a response. Please rephrase your question.";
+          send("token", { delta: assistantContent });
+        }
       } catch (err) {
         status = "error";
         errorMsg = err instanceof Error ? err.message : String(err);
@@ -218,7 +190,7 @@ export async function POST(
           "Sorry, I encountered an error generating a response. Please try again.";
         logError({
           category: "chat",
-          message: `Chat stream failed: ${errorMsg}`,
+          message: `Agent stream failed: ${errorMsg}`,
           error: err,
           userId: user.id,
           endpoint: "/api/chat/sessions/[id]/messages",
@@ -226,25 +198,31 @@ export async function POST(
           metadata: { sessionId },
         });
         send("error", { message: errorMsg });
-
-        // Record the generate step as errored so the audit log still has a
-        // complete 6-row trace even when Claude failed.
-        generateStep = {
-          step_order: 6,
-          step: "generate",
-          status: "error",
-          duration_ms: 0,
-          started_at: new Date().toISOString(),
-          error: errorMsg,
-          data: {
-            context_chars: rag?.contextString.length ?? 0,
-          },
-        };
       }
 
       const responseTimeMs = Date.now() - tStart;
 
-      // 3. Persist the assistant message with full tracing.
+      // Compose rag_trace with agent-shape metadata.
+      const ragTrace: Record<string, unknown> = {
+        mode: "agent",
+        model,
+        steps_used: agentResult?.stepsUsed ?? 0,
+        stop_reason: agentResult?.stopReason ?? null,
+        tool_calls: (agentResult?.toolTrace ?? []).map((t) => ({
+          tool: t.tool,
+          input: t.input,
+          status: t.status,
+          duration_ms: t.duration_ms,
+          error: t.error,
+          data: t.data,
+        })),
+        session_store: sessionStoreForTurn?.trace ?? null,
+        case_count: citedCasesForDb.length,
+        tokens: { input: inputTokens, output: outputTokens },
+        response_time_ms: responseTimeMs,
+        warnings: { citationMismatches: citationMismatches.length },
+      };
+
       let assistantRowId: string | null = null;
       try {
         const { rows: assistantRows } = await pool.query(
@@ -258,11 +236,14 @@ export async function POST(
             assistantContent,
             JSON.stringify(citedCasesForDb),
             userMessage,
-            // search_results is now the reranked chunk trace rather than
-            // the old SearchResult[] shape — lives in rag_trace too but we
-            // keep the column populated for the admin UI.
-            ragTrace ? JSON.stringify(ragTrace.reranked_chunks) : null,
-            contextSent,
+            agentResult
+              ? JSON.stringify(agentResult.toolTrace.map((t) => ({
+                  tool: t.tool,
+                  duration_ms: t.duration_ms,
+                  data: t.data,
+                })))
+              : null,
+            agentResult?.contextDebug ?? null,
             model,
             inputTokens !== null && outputTokens !== null
               ? JSON.stringify({ input_tokens: inputTokens, output_tokens: outputTokens })
@@ -270,7 +251,7 @@ export async function POST(
             responseTimeMs,
             errorMsg,
             status,
-            ragTrace ? JSON.stringify(ragTrace) : null,
+            JSON.stringify(ragTrace),
           ]
         );
         assistantRowId = assistantRows[0]?.id ?? null;
@@ -287,17 +268,30 @@ export async function POST(
         });
       }
 
-      // 3b. Persist per-step audit rows (rag_pipeline_steps + rag_query_embeddings).
-      // Best-effort: failures are logged inside persistPipelineAudit but never
-      // surface to the user. Requires assistantRowId for the FK — skipped if
-      // the chat_messages insert failed above.
-      if (assistantRowId && rag) {
-        const allSteps = generateStep ? [...rag.steps, generateStep] : rag.steps;
-        await persistPipelineAudit(assistantRowId, allSteps, rag.queryEmbeddings);
+      if (assistantRowId && sessionStoreForTurn) {
+        const steps = buildAgentAuditSteps({
+          userMessage,
+          sessionStore: sessionStoreForTurn,
+          toolTrace: agentResult?.toolTrace ?? [],
+          generate: {
+            status,
+            duration_ms: responseTimeMs,
+            started_at: agentStartedAt,
+            error: errorMsg,
+            data: {
+              model,
+              input_tokens: inputTokens,
+              output_tokens: outputTokens,
+              content_chars: assistantContent.length,
+              stop_reason: agentResult?.stopReason ?? null,
+              citation_mismatches: citationMismatches,
+            },
+          },
+          agentStartedAt,
+        });
+        await persistPipelineAudit(assistantRowId, steps, []);
       }
 
-      // 4. Title generation + session updated_at + query count. These run
-      // after the stream so they don't delay the first token.
       try {
         if (isFirstUserMessage) {
           const title = await generateChatTitle(userMessage);
@@ -329,8 +323,16 @@ export async function POST(
         message_id: assistantRowId,
         status,
         response_time_ms: responseTimeMs,
+        steps_used: agentResult?.stepsUsed ?? 0,
+        stop_reason: agentResult?.stopReason ?? null,
       });
-      controller.close();
+      if (!streamClosed) {
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      }
     },
   });
 
@@ -339,7 +341,6 @@ export async function POST(
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
-      // Disable proxy buffering so the client sees tokens immediately.
       "X-Accel-Buffering": "no",
     },
   });

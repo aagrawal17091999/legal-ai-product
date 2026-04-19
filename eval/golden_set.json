@@ -1,0 +1,27 @@
+{
+  "_note": "Retrieval gold set. Each entry is a question + the (source_table, source_id) of cases that MUST appear in the top-K retrieval. Add entries as you discover questions that regress or improve — then re-run `npm run eval:retrieval` before and after a change to see the delta.",
+  "_version": "1",
+  "_format": {
+    "id": "stable short id, used in the report",
+    "question": "natural-language query as a user would type it",
+    "filters": "optional SearchFilters applied as if the user set them in the UI (session filters)",
+    "expected_cases": "list of cases that should appear in the top-K. Weight each 'must' (fail if missing) or 'should' (lose precision points if missing)",
+    "notes": "optional free-form notes for humans"
+  },
+  "queries": [
+    {
+      "id": "q_arrest_grounds",
+      "question": "What is the applicability of grounds of arrest under Article 22?",
+      "filters": {},
+      "expected_cases": [
+        {
+          "source_table": "supreme_court_cases",
+          "source_id": 49,
+          "weight": "must",
+          "note": "Prabir Purkayastha v State (NCT of Delhi) — landmark on grounds of arrest"
+        }
+      ],
+      "notes": "Original failing case from 2026-04-19 CrPC bug."
+    }
+  ]
+}

@@ -119,6 +119,20 @@ def upload_to_r2(r2_client, local_path: str, r2_key: str) -> str:
 from chunk_utils import chunk_text_plain
 
 
+def _sc_year_from_path(path: str, fallback: int) -> int:
+    """Derive SCR volume year from the parquet `path` (e.g. '1952_1_756_765').
+
+    Parquets cross-reference judgments across adjacent volume years, so the
+    partition year (the `--year` arg) disagrees with the path for overlap
+    rows. The R2 key is built as `supreme-court/{year}/{path}_EN.pdf`, so if
+    the stored `year` drifts from the path-encoded year the frontend PDF
+    download 404s. Always trust the path.
+    """
+    if path and len(path) >= 4 and path[:4].isdigit():
+        return int(path[:4])
+    return fallback
+
+
 def embed_and_store_chunks(conn, source_table: str, source_id: int, text: str, voyage_client):
     """Chunk text, embed via Voyage AI, store in case_chunks.
 
@@ -184,7 +198,7 @@ def process_supreme_court(year: int):
         print('  Extracting tar...')
         os.makedirs(pdfs_dir, exist_ok=True)
         with tarfile.open(tar_path, 'r') as tar:
-            tar.extractall(pdfs_dir)
+            tar.extractall(pdfs_dir, filter="data")
 
     conn = get_db_connection()
     r2_client = get_r2_client()
@@ -221,6 +235,8 @@ def process_supreme_court(year: int):
             # Extract text from PDF if available
             judgment_text = ''
 
+            pdf_year = _sc_year_from_path(path, year)
+
             pdf_file = find_pdf_in_dir(pdfs_dir, path)
             if pdf_file:
                 judgment_text = extract_text_from_pdf(pdf_file)
@@ -229,7 +245,7 @@ def process_supreme_court(year: int):
                 # (year, path) at query time. Must match the layout consumed
                 # by src/lib/rag/contextBuilder.ts and
                 # src/app/api/judgments/download/route.ts.
-                r2_key = f'supreme-court/{year}/{path}_EN.pdf'
+                r2_key = f'supreme-court/{pdf_year}/{path}_EN.pdf'
                 try:
                     upload_to_r2(r2_client, pdf_file, r2_key)
                 except Exception as e:
@@ -249,7 +265,7 @@ def process_supreme_court(year: int):
                     row.get('citation'), row.get('case_id'), cnr,
                     row.get('decision_date'), row.get('disposal_nature'),
                     'Supreme Court of India', row.get('available_languages'),
-                    path, row.get('nc_display'), year,
+                    path, row.get('nc_display'), pdf_year,
                     judgment_text if judgment_text else None,
                 )
             )
@@ -306,7 +322,7 @@ def process_high_court(year: int, court_code: str):
         print('  Extracting tar...')
         os.makedirs(pdfs_dir, exist_ok=True)
         with tarfile.open(tar_path, 'r') as tar:
-            tar.extractall(pdfs_dir)
+            tar.extractall(pdfs_dir, filter="data")
 
     conn = get_db_connection()
     r2_client = get_r2_client()

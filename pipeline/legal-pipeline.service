@@ -1,0 +1,31 @@
+[Unit]
+Description=Legal AI ingestion pipeline (download -> load -> extract -> embed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pipeline
+WorkingDirectory=/opt/legal-ai-product
+EnvironmentFile=/opt/legal-ai-product/.env.local
+
+ExecStartPre=/opt/legal-ai-product/.venv/bin/python pipeline/preflight.py
+ExecStart=/opt/legal-ai-product/.venv/bin/python pipeline/run_all.py
+
+StandardOutput=append:/var/log/legal-pipeline.log
+StandardError=append:/var/log/legal-pipeline.log
+
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=0
+TimeoutStopSec=300
+
+# Sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/legal-ai-product /var/log
+
+[Install]
+WantedBy=multi-user.target

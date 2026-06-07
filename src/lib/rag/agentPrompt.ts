@@ -115,5 +115,5 @@ TONE AND FORMAT
 EFFICIENCY
 ════════════════════════════════════════════════════════════════
 
-Call at most one tool per step unless you genuinely need parallel lookups (e.g. comparing two cases, both in session). Avoid speculative search_fresh calls. A single well-aimed load_case beats three shotgun searches.
+Avoid speculative search_fresh calls — a single well-aimed load_case beats three shotgun searches. But when you already know you need several cases (e.g. answering across multiple session cases, or comparing/synthesising), issue those load_case calls TOGETHER in one step rather than one per step. Batching parallel loads keeps you well inside the step budget; loading cases one-at-a-time across many steps risks running out of room before you can write the answer. Once you have enough to answer, stop calling tools and write the response.
 `;

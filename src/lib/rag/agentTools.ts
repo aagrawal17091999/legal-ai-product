@@ -6,6 +6,7 @@ import {
   type IdentifierSpec,
 } from "../search";
 import { rerank } from "../voyage";
+import { expandQueries } from "./queryExpansion";
 import { buildContext, type AssembledCase } from "./contextBuilder";
 import { queryAllChunksForCases, type SessionDocumentStore } from "./sessionStore";
 import { logError } from "../error-logger";
@@ -31,6 +32,16 @@ const LOAD_CASE_RERANK_POOL = 80;
 const SEARCH_FRESH_POOL = 40;
 const SEARCH_FRESH_DEFAULT_LIMIT = 10;
 const SEARCH_FRESH_MAX_LIMIT = 20;
+
+// Minimum cross-encoder relevance score (Voyage rerank-2 returns [0,1]) for a
+// chunk to be treated as an on-point result. Chunks below this are dropped; if
+// NONE clear the bar, search_fresh abstains ("no directly relevant case")
+// instead of presenting the reranker's least-bad guesses as authority. Tunable
+// via SEARCH_RELEVANCE_FLOOR — raise for stricter precision, lower for recall.
+const SEARCH_RELEVANCE_FLOOR = (() => {
+  const v = parseFloat(process.env.SEARCH_RELEVANCE_FLOOR ?? "");
+  return Number.isFinite(v) ? v : 0.3;
+})();
 
 // ─────────────────────────────────────────────────────────────
 // CaseRegistry — assigns stable 1-based indices to cases as they are
@@ -397,7 +408,10 @@ async function executeSearchFresh(
     if (v === null || v === undefined || v === "") delete merged[k];
   }
 
-  const { chunks } = await retrieveChunks([input.query], merged, SEARCH_FRESH_POOL);
+  // #2 Query expansion: widen recall by retrieving over several doctrinal
+  // phrasings, RRF-fused. The original query is always included first.
+  const { queries, expanded } = await expandQueries(input.query);
+  const { chunks } = await retrieveChunks(queries, merged, SEARCH_FRESH_POOL);
   if (chunks.length === 0) {
     return {
       text: JSON.stringify({
@@ -405,7 +419,7 @@ async function executeSearchFresh(
         note: "No matches in the database for this query.",
         filters_applied: merged,
       }),
-      audit: { candidates: 0, returned: 0, filters: merged },
+      audit: { candidates: 0, returned: 0, filters: merged, queries },
     };
   }
 
@@ -413,22 +427,57 @@ async function executeSearchFresh(
     1,
     Math.min(input.limit ?? SEARCH_FRESH_DEFAULT_LIMIT, SEARCH_FRESH_MAX_LIMIT)
   );
+  // Rerank against the ORIGINAL query (the user's actual intent — expansion was
+  // only to broaden the candidate pool, not to shift relevance).
   const { results } = await rerank(
     input.query,
     chunks.map((c) => c.chunk_text),
     limit
   );
-  const reranked = results.map((r) => chunks[r.index]);
+
+  // #3 Relevance floor: keep only chunks the cross-encoder scored on-point.
+  const passing = results.filter((r) => r.score >= SEARCH_RELEVANCE_FLOOR);
+  const topScore = results[0]?.score ?? null;
+
+  if (passing.length === 0) {
+    // Honest abstention — the DB has nothing the reranker considers on-point.
+    // Returning the least-bad guesses here is what makes the model treat
+    // marginal cases as authority, so we explicitly signal "nothing relevant".
+    return {
+      text: JSON.stringify({
+        cases: [],
+        note: "No directly relevant case found in the database for this query. Do not fabricate authority; tell the user no on-point case was found (use the general-guidance banner if you still want to help).",
+        filters_applied: merged,
+      }),
+      audit: {
+        query: input.query,
+        queries,
+        expanded,
+        filters: merged,
+        candidates: chunks.length,
+        returned: 0,
+        abstained: true,
+        relevance_floor: SEARCH_RELEVANCE_FLOOR,
+        top_score: topScore,
+      },
+    };
+  }
+
+  const reranked = passing.map((r) => chunks[r.index]);
 
   const text = await renderChunksForAgent(reranked, ctx.registry);
   return {
     text,
     audit: {
       query: input.query,
+      queries,
+      expanded,
       filters: merged,
       candidates: chunks.length,
       returned: reranked.length,
-      top_score: results[0]?.score ?? null,
+      dropped_below_floor: results.length - passing.length,
+      relevance_floor: SEARCH_RELEVANCE_FLOOR,
+      top_score: topScore,
     },
   };
 }

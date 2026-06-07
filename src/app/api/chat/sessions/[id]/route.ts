@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth, getOrCreateUser } from "@/lib/auth";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
-import { getSignedPdfUrl } from "@/lib/r2";
 import type { CitedCase } from "@/types";
 
 // GET /api/chat/sessions/[id] — Get session with all messages
@@ -16,7 +15,7 @@ export async function GET(
   }
 
   try {
-    const user = await getOrCreateUser({
+    const user = await getRequestUser({
       uid: decoded.uid,
       email: decoded.email,
     });
@@ -46,36 +45,30 @@ export async function GET(
       [id]
     );
 
-    // Regenerate signed PDF URLs for SC cases (presigned URLs expire after 1 hour)
-    const messagesWithFreshUrls = await Promise.all(
-      messageRows.map(async (msg) => {
-        if (msg.role !== "assistant" || !msg.cited_cases?.length) return msg;
+    // Point Supreme Court PDF links at the download endpoint instead of signing
+    // a presigned URL here. Signing eagerly for every cited case on every load
+    // is wasted work — most are never opened — and the 1-hour-TTL URLs go stale
+    // while a chat stays open. The endpoint signs a fresh URL on click and
+    // authenticates via the session cookie.
+    const messagesWithPdfLinks = messageRows.map((msg) => {
+      if (msg.role !== "assistant" || !msg.cited_cases?.length) return msg;
 
-        const refreshedCases: CitedCase[] = await Promise.all(
-          (msg.cited_cases as CitedCase[]).map(async (c) => {
-            if (c.source_table === "supreme_court_cases" && c.pdf_path) {
-              // Legacy stored paths may be missing the `_EN` suffix that matches
-              // the actual R2 object keys. Normalize before signing.
-              const normalizedPath = c.pdf_path.endsWith("_EN.pdf")
-                ? c.pdf_path
-                : c.pdf_path.replace(/\.pdf$/, "_EN.pdf");
-              return {
-                ...c,
-                pdf_path: normalizedPath,
-                pdf_url: await getSignedPdfUrl(normalizedPath),
-              };
-            }
-            return c;
-          })
-        );
+      const cases: CitedCase[] = (msg.cited_cases as CitedCase[]).map((c) => {
+        if (c.source_table === "supreme_court_cases" && c.id != null) {
+          return {
+            ...c,
+            pdf_url: `/api/judgments/download?source=supreme_court_cases&id=${c.id}&redirect=1`,
+          };
+        }
+        return c;
+      });
 
-        return { ...msg, cited_cases: refreshedCases };
-      })
-    );
+      return { ...msg, cited_cases: cases };
+    });
 
     return NextResponse.json({
       session: sessionRows[0],
-      messages: messagesWithFreshUrls,
+      messages: messagesWithPdfLinks,
     });
   } catch (err) {
     logError({
@@ -101,7 +94,7 @@ export async function DELETE(
   }
 
   try {
-    const user = await getOrCreateUser({
+    const user = await getRequestUser({
       uid: decoded.uid,
       email: decoded.email,
     });

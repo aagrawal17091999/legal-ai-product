@@ -110,7 +110,14 @@ export interface ChatMessage {
   token_usage: TokenUsage | null;
   response_time_ms: number | null;
   error: string | null;
-  status: "success" | "error";
+  /**
+   * "success"  — model produced a grounded answer.
+   * "error"    — the agent stream threw; `error` holds the message.
+   * "degraded" — the request completed but the answer is a fallback (the agent
+   *              produced no usable text even after forced synthesis). Surfaced
+   *              so these don't masquerade as successes in analytics.
+   */
+  status: "success" | "error" | "degraded";
   created_at: string;
 }
 

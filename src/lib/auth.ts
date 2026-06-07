@@ -6,9 +6,25 @@ import type { User } from "@/types";
 
 const FREE_QUERY_LIMIT = 5;
 
+/** Name of the httpOnly session cookie minted by /api/auth/session. */
+export const SESSION_COOKIE = "__session";
+
 export async function verifyAuth(
   request: NextRequest
 ): Promise<{ uid: string; email: string } | null> {
+  // Prefer the session cookie (sent automatically on same-origin requests,
+  // including plain <a> navigations like PDF downloads). Fall back to the
+  // Authorization bearer header for the client fetch() flow.
+  const sessionCookie = request.cookies.get(SESSION_COOKIE)?.value;
+  if (sessionCookie) {
+    try {
+      const decoded = await getAdminAuth().verifySessionCookie(sessionCookie);
+      return { uid: decoded.uid, email: decoded.email || "" };
+    } catch {
+      // Expired/invalid cookie — fall through to the bearer header.
+    }
+  }
+
   const authHeader = request.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
     return null;
@@ -29,6 +45,42 @@ export async function verifyAuth(
     });
     return null;
   }
+}
+
+// Short-lived in-memory cache of the firebase_uid -> users row. Under Fluid
+// Compute a function instance is reused across requests, so this lets the hot
+// chat endpoints resolve the user with zero DB round-trips most of the time —
+// and, crucially, without the write that getOrCreateUser performs on every call.
+const USER_CACHE_TTL_MS = 60_000;
+const userCache = new Map<string, { user: User; expires: number }>();
+
+/**
+ * Resolve the application user for an authenticated request without writing on
+ * every call. Reads from the in-memory cache, then a plain SELECT, and only
+ * upserts when the user genuinely doesn't exist yet (first request after
+ * signup before the session route ran). Use this on read/chat endpoints where
+ * only a stable `user.id` is needed. Payment/account endpoints that depend on
+ * fresh columns should keep using getOrCreateUser.
+ */
+export async function getRequestUser(firebaseUser: {
+  uid: string;
+  email: string;
+}): Promise<User> {
+  const cached = userCache.get(firebaseUser.uid);
+  if (cached && cached.expires > Date.now()) {
+    return cached.user;
+  }
+
+  const { rows } = await pool.query<User>(
+    `SELECT * FROM users WHERE firebase_uid = $1`,
+    [firebaseUser.uid]
+  );
+  const user = rows[0] ?? (await getOrCreateUser(firebaseUser));
+  userCache.set(firebaseUser.uid, {
+    user,
+    expires: Date.now() + USER_CACHE_TTL_MS,
+  });
+  return user;
 }
 
 export async function getOrCreateUser(firebaseUser: {
@@ -53,7 +105,12 @@ export async function getOrCreateUser(firebaseUser: {
       firebaseUser.photoURL || null,
     ]
   );
-  return rows[0];
+  const user = rows[0];
+  userCache.set(user.firebase_uid, {
+    user,
+    expires: Date.now() + USER_CACHE_TTL_MS,
+  });
+  return user;
 }
 
 export async function checkQueryLimit(

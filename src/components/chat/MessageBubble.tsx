@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import type { ChatMessage, CitationRef } from "@/types";
 
@@ -21,7 +22,7 @@ function inlineCitations(content: string): string {
 
 const CITATION_HREF_RE = /^#case-(\d+)(?:-para-([0-9]+(?:\.[0-9]+)?[A-Za-z]?))?$/;
 
-export default function MessageBubble({
+function MessageBubble({
   message,
   onCitationClick,
 }: MessageBubbleProps) {
@@ -154,3 +155,8 @@ export default function MessageBubble({
     </div>
   );
 }
+
+// Memoized so a streaming token — which only swaps the single assistant
+// message's object reference — re-renders that one bubble, not the whole
+// thread (each bubble re-parses markdown, which is expensive on long chats).
+export default memo(MessageBubble);

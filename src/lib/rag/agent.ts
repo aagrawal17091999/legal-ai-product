@@ -27,7 +27,10 @@ import type { ChatMessage, SearchFilters, CitedCase } from "@/types";
  */
 
 const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || "claude-sonnet-4-6";
-const MAX_AGENT_STEPS = 6;
+// Budget for tool-calling rounds. Legal synthesis often loads many cases, so
+// this must be comfortably above the worst-case "one load per case" count.
+// Parallel tool calls (handled below) usually keep the real count far lower.
+const MAX_AGENT_STEPS = 10;
 const MAX_TOKENS_PER_STEP = 4096;
 const HISTORY_TURNS = 10;
 
@@ -191,6 +194,55 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     messages.push({ role: "user", content: toolResultBlocks });
   }
 
+  // Forced final synthesis. If the loop exited while still in `tool_use` (i.e.
+  // the agent exhausted MAX_AGENT_STEPS on retrieval and never wrote an answer),
+  // make one more call with tools DISABLED so the model is compelled to answer
+  // from the context it already gathered. Without this, content is empty and the
+  // route emits the "did not produce a response" fallback even though we have
+  // loaded cases ready to cite.
+  if (stopReason === "tool_use" && assistantContent.trim() === "") {
+    logError({
+      category: "fetching",
+      message: "agent exhausted step budget without text; forcing final synthesis",
+      severity: "warning",
+      metadata: { steps: stepsUsed, cases_loaded: registry.list().length },
+    });
+
+    messages.push({
+      role: "user",
+      content:
+        "You have gathered enough context. Provide your final answer now using ONLY the cases already loaded above. Do not call any more tools.",
+    });
+
+    const finalStream = client.messages.stream({
+      model: CHAT_MODEL,
+      max_tokens: MAX_TOKENS_PER_STEP,
+      system: AGENT_SYSTEM_PROMPT,
+      tool_choice: { type: "none" },
+      tools: TOOL_DEFINITIONS,
+      messages,
+    });
+    finalStream.on("text", (delta: string) => {
+      assistantContent += delta;
+      opts.onTextDelta(delta);
+    });
+    finalStream.on("error", (err: unknown) => {
+      logError({
+        category: "fetching",
+        message: err instanceof Error ? err.message : String(err),
+        error: err,
+        severity: "critical",
+        metadata: { phase: "forced_synthesis", model: CHAT_MODEL },
+      });
+    });
+    const finalMsg = await finalStream.finalMessage();
+    totalInputTokens += finalMsg.usage.input_tokens;
+    totalOutputTokens += finalMsg.usage.output_tokens;
+    model = finalMsg.model;
+    stopReason = finalMsg.stop_reason ?? null;
+    stepsUsed += 1;
+  }
+
   return {
     assistantContent,
     assembledCases: registry.list(),
@@ -220,7 +272,7 @@ export function buildAgentAuditSteps(params: {
   sessionStore: SessionDocumentStore;
   toolTrace: ToolCallRecord[];
   generate: {
-    status: "success" | "error";
+    status: "success" | "error" | "fallback";
     duration_ms: number;
     started_at: string;
     error: string | null;

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import {
-  onAuthStateChanged,
+  onIdTokenChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signInWithPopup,
@@ -18,6 +18,29 @@ interface AuthState {
   token: string | null;
 }
 
+// Mint/refresh the server-side session cookie. Awaited in the explicit sign-in
+// flows so the cookie exists before we navigate — otherwise proxy.ts would see
+// no cookie on the next route and bounce the user back to /login.
+async function syncSessionCookie(idToken: string): Promise<void> {
+  try {
+    await fetch("/api/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idToken }),
+    });
+  } catch {
+    /* network hiccup — the onIdTokenChanged listener will retry on next token */
+  }
+}
+
+async function clearSessionCookie(): Promise<void> {
+  try {
+    await fetch("/api/auth/session", { method: "DELETE" });
+  } catch {
+    /* ignore */
+  }
+}
+
 export function useAuth() {
   const [state, setState] = useState<AuthState>({
     user: null,
@@ -27,10 +50,13 @@ export function useAuth() {
 
   useEffect(() => {
     const auth = getAuth();
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    // onIdTokenChanged (vs onAuthStateChanged) also fires on hourly token
+    // refreshes, keeping the longer-lived session cookie in sync.
+    const unsubscribe = onIdTokenChanged(auth, async (user) => {
       if (user) {
         const token = await user.getIdToken();
         setState({ user, loading: false, token });
+        syncSessionCookie(token);
       } else {
         setState({ user: null, loading: false, token: null });
       }
@@ -42,6 +68,7 @@ export function useAuth() {
     const auth = getAuth();
     const result = await signInWithEmailAndPassword(auth, email, password);
     const token = await result.user.getIdToken();
+    await syncSessionCookie(token);
     setState({ user: result.user, loading: false, token });
     return result.user;
   }, []);
@@ -52,6 +79,7 @@ export function useAuth() {
       const result = await createUserWithEmailAndPassword(auth, email, password);
       await updateProfile(result.user, { displayName });
       const token = await result.user.getIdToken();
+      await syncSessionCookie(token);
       setState({ user: result.user, loading: false, token });
       return result.user;
     },
@@ -62,6 +90,7 @@ export function useAuth() {
     const auth = getAuth();
     const result = await signInWithPopup(auth, googleProvider);
     const token = await result.user.getIdToken();
+    await syncSessionCookie(token);
     setState({ user: result.user, loading: false, token });
     return result.user;
   }, []);
@@ -69,10 +98,11 @@ export function useAuth() {
   const signOut = useCallback(async () => {
     const auth = getAuth();
     await firebaseSignOut(auth);
+    await clearSessionCookie();
     try {
       for (let i = window.localStorage.length - 1; i >= 0; i--) {
         const key = window.localStorage.key(i);
-        if (key && key.startsWith("nyaya:sessions:")) {
+        if (key && key.startsWith("nyaya:")) {
           window.localStorage.removeItem(key);
         }
       }

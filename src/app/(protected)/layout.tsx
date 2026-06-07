@@ -15,6 +15,7 @@ interface ChatContextValue {
   currentSession: ReturnType<typeof useChat>["currentSession"];
   messages: ReturnType<typeof useChat>["messages"];
   isLoading: ReturnType<typeof useChat>["isLoading"];
+  sessionLoading: ReturnType<typeof useChat>["sessionLoading"];
   limitReached: ReturnType<typeof useChat>["limitReached"];
   setLimitReached: ReturnType<typeof useChat>["setLimitReached"];
   error: ReturnType<typeof useChat>["error"];

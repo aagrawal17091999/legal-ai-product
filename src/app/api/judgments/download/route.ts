@@ -14,10 +14,16 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const source = params.get("source");
   const id = params.get("id");
+  // When ?redirect=1, 307 straight to the signed URL so a plain <a> link opens
+  // the PDF directly; otherwise return the URL as JSON for fetch() callers.
+  const redirect = params.get("redirect") === "1";
 
   if (!source || !id || !["supreme_court_cases", "high_court_cases"].includes(source)) {
     return NextResponse.json({ error: "Invalid source or id parameter" }, { status: 400 });
   }
+
+  const respond = (url: string) =>
+    redirect ? NextResponse.redirect(url, 307) : NextResponse.json({ url });
 
   try {
     if (source === "supreme_court_cases") {
@@ -30,7 +36,7 @@ export async function GET(request: NextRequest) {
       }
       const pdfKey = `supreme-court/${rows[0].year}/${rows[0].path}_EN.pdf`;
       const url = await getSignedPdfUrl(pdfKey);
-      return NextResponse.json({ url });
+      return respond(url);
     }
 
     // High Court cases
@@ -45,7 +51,7 @@ export async function GET(request: NextRequest) {
     if (!url) {
       return NextResponse.json({ error: "PDF not available for this case" }, { status: 404 });
     }
-    return NextResponse.json({ url });
+    return respond(url);
   } catch (err) {
     logError({
       category: "search",

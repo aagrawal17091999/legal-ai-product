@@ -59,6 +59,10 @@ export interface AssembledCase {
   pdf_path: string | null;
   /** chunk indices contributed to this case's excerpt, for tracing */
   chunk_indices: number[];
+  /** The merged passage text actually shown to the model for this case. Retained
+   *  so the post-generation faithfulness check can verify cited claims against
+   *  the exact evidence the model saw (not a re-fetch that might differ). */
+  excerpt: string;
   /** Distinct paragraph numbers visible in this case's excerpt. Used by the
    *  citation validator to check `[^n, ¶p]` references. Empty array when the
    *  case's chunks predate paragraph-aware ingestion. */
@@ -205,6 +209,7 @@ export async function buildContext(
       pdf_path,
       chunk_indices: c.chunks.map((ch) => ch.chunk_index),
       chunk_paragraphs: Array.from(paragraphSet),
+      excerpt: merged,
     });
     caseBlocks.push(caseBlock);
     perCaseTrace.push({

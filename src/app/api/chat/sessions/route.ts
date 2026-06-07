@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth, getOrCreateUser } from "@/lib/auth";
+import { verifyAuth, getOrCreateUser, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
 
@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const user = await getOrCreateUser({
+    const user = await getRequestUser({
       uid: decoded.uid,
       email: decoded.email,
     });

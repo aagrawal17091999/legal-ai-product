@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
+import { loadRazorpay } from "@/lib/loadRazorpay";
 
 interface UpgradeModalProps {
   isOpen: boolean;
@@ -61,6 +62,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
               }
             },
           };
+          await loadRazorpay();
           const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
           rzp.open();
         }

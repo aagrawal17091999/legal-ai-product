@@ -5,6 +5,7 @@ import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import { loadRazorpay } from "@/lib/loadRazorpay";
 
 interface UserData {
   id: number;
@@ -146,6 +147,7 @@ export default function AccountPage() {
                 await fetchUser();
               },
             };
+            await loadRazorpay();
             const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
             rzp.open();
           }
@@ -187,6 +189,7 @@ export default function AccountPage() {
               await fetchUser();
             },
           };
+          await loadRazorpay();
           const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
           rzp.open();
         }

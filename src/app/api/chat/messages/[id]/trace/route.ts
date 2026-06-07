@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth, getOrCreateUser } from "@/lib/auth";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
 
@@ -24,7 +24,7 @@ export async function GET(
   }
 
   try {
-    const user = await getOrCreateUser({ uid: decoded.uid, email: decoded.email });
+    const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
     const { id: messageId } = await params;
 
     // Staff-only. Non-staff users get 404 so the URL stays opaque and the

@@ -6,6 +6,7 @@ import { reportError } from "@/lib/report-error";
 import type { ChatSession, ChatMessage, SearchFilters, CitedCase } from "@/types";
 
 const SESSIONS_CACHE_PREFIX = "nyaya:sessions:";
+const MESSAGES_CACHE_PREFIX = "nyaya:messages:";
 
 function readCachedSessions(uid: string): ChatSession[] | null {
   if (typeof window === "undefined") return null;
@@ -31,16 +32,50 @@ function writeCachedSessions(uid: string, sessions: ChatSession[]): void {
   }
 }
 
+function readCachedMessages(sessionId: string): ChatMessage[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(MESSAGES_CACHE_PREFIX + sessionId);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedMessages(sessionId: string, messages: ChatMessage[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      MESSAGES_CACHE_PREFIX + sessionId,
+      JSON.stringify(messages)
+    );
+  } catch {
+    /* quota or disabled storage — ignore */
+  }
+}
+
 export function useChat() {
   const { getToken, user, loading: authLoading } = useAuth();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  // True while a session's messages are being fetched and we have nothing
+  // cached to show yet — drives the skeleton so the empty "new chat" state
+  // never flashes when opening an existing conversation.
+  const [sessionLoading, setSessionLoading] = useState(false);
   const [limitReached, setLimitReached] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sessionsLoadedRef = useRef(false);
+  // Latest sessions list, readable synchronously inside loadSession without
+  // adding `sessions` to its dependency array.
+  const sessionsRef = useRef<ChatSession[]>([]);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
   // Tracks the session id currently receiving streamed tokens. loadSession
   // skips when targeting this session so a token-refresh re-render can't
   // clobber the in-flight assistant bubble.
@@ -114,6 +149,24 @@ export function useChat() {
   const loadSession = useCallback(
     async (sessionId: string) => {
       if (streamingSessionRef.current === sessionId) return;
+
+      // Paint instantly from cache if we've seen this chat before, then
+      // revalidate in the background — the same SWR pattern the sidebar uses.
+      const cached = readCachedMessages(sessionId);
+      if (cached) {
+        setCurrentSession(
+          (cur) =>
+            sessionsRef.current.find((s) => s.id === sessionId) ?? cur
+        );
+        setMessages(cached);
+        setSessionLoading(false);
+      } else {
+        // No cache: clear the previous chat's messages and show the skeleton
+        // instead of the "What are you researching today?" empty state.
+        setMessages([]);
+        setSessionLoading(true);
+      }
+
       try {
         const headers = await authHeaders();
         const res = await fetch(`/api/chat/sessions/${sessionId}`, { headers });
@@ -122,9 +175,12 @@ export function useChat() {
           if (streamingSessionRef.current === sessionId) return;
           setCurrentSession(data.session);
           setMessages(data.messages);
+          writeCachedMessages(sessionId, data.messages);
         }
       } catch (err) {
         reportError("Failed to load chat session", { hook: "useChat.loadSession", sessionId }, err);
+      } finally {
+        setSessionLoading(false);
       }
     },
     [authHeaders]
@@ -280,11 +336,11 @@ export function useChat() {
           } else if (event === "done") {
             const d = data as {
               message_id?: string | null;
-              status?: "success" | "error";
+              status?: "success" | "error" | "degraded";
               response_time_ms?: number;
             };
-            setMessages((prev) =>
-              prev.map((m) =>
+            setMessages((prev) => {
+              const next = prev.map((m) =>
                 m.id === tempAssistantId
                   ? {
                       ...m,
@@ -295,8 +351,11 @@ export function useChat() {
                   : m.id === tempUserId
                   ? { ...m, id: `user-${Date.now()}` }
                   : m
-              )
-            );
+              );
+              // Persist the completed turn so reopening this chat paints instantly.
+              writeCachedMessages(currentSession.id, next);
+              return next;
+            });
           } else if (event === "error") {
             const msg = (data as { message?: string }).message || "Unknown error";
             setMessages((prev) =>
@@ -419,6 +478,7 @@ export function useChat() {
     currentSession,
     messages,
     isLoading,
+    sessionLoading,
     limitReached,
     setLimitReached,
     error,

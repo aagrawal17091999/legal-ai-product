@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
 import Spinner from "@/components/ui/Spinner";
 import type { ChatMessage, CitationRef } from "@/types";
@@ -8,10 +8,32 @@ import type { ChatMessage, CitationRef } from "@/types";
 interface ChatAreaProps {
   messages: ChatMessage[];
   isLoading: boolean;
+  /** True while an existing session's messages are still being fetched. */
+  sessionLoading?: boolean;
   error?: string | null;
   onDismissError?: () => void;
   onSuggestionClick?: (suggestion: string) => void;
   onCitationClick?: (ref: CitationRef) => void;
+}
+
+function MessagesSkeleton() {
+  return (
+    <div className="flex-1 overflow-hidden bg-ivory-50">
+      <div className="max-w-3xl mx-auto px-6 py-8 space-y-5">
+        <div className="flex justify-end">
+          <div className="h-12 w-2/5 rounded-xl bg-ivory-200 animate-pulse" />
+        </div>
+        <div className="flex justify-start">
+          <div className="w-4/5 space-y-2.5">
+            <div className="h-4 w-full rounded bg-ivory-200 animate-pulse" />
+            <div className="h-4 w-11/12 rounded bg-ivory-200 animate-pulse" />
+            <div className="h-4 w-3/4 rounded bg-ivory-200 animate-pulse" />
+            <div className="h-4 w-5/6 rounded bg-ivory-200 animate-pulse" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const SUGGESTIONS = [
@@ -23,16 +45,43 @@ const SUGGESTIONS = [
 export default function ChatArea({
   messages,
   isLoading,
+  sessionLoading,
   error,
   onDismissError,
   onSuggestionClick,
   onCitationClick,
 }: ChatAreaProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Whether the view is pinned to the bottom. We only auto-scroll while this is
+  // true, so a user who scrolls up to read earlier output is left alone even as
+  // new tokens stream in below.
+  const pinnedToBottom = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // A small threshold tolerates sub-pixel rounding and lets the user sit a
+    // few pixels off the bottom while still counting as "pinned".
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedToBottom.current = distanceFromBottom < 80;
+  }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!pinnedToBottom.current) return;
+    // While tokens stream in, scroll instantly — a "smooth" scroll restarts on
+    // every token and visibly stutters. Only the final settle animates.
+    bottomRef.current?.scrollIntoView({
+      behavior: isLoading ? "auto" : "smooth",
+    });
   }, [messages, isLoading]);
+
+  // Fetching an existing session with nothing cached yet — show a skeleton
+  // rather than flashing the "new chat" empty state.
+  if (messages.length === 0 && sessionLoading) {
+    return <MessagesSkeleton />;
+  }
 
   if (messages.length === 0 && !isLoading) {
     return (
@@ -64,7 +113,11 @@ export default function ChatArea({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-ivory-50">
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className="flex-1 overflow-y-auto bg-ivory-50"
+    >
       <div className="max-w-3xl mx-auto px-6 py-8">
         {messages.map((msg) => (
           <MessageBubble

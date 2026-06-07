@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
@@ -15,10 +15,19 @@ function LoginForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const { signIn, signInWithGoogle } = useAuth();
+  const { signIn, signInWithGoogle, user, loading: authLoading } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnUrl = searchParams.get("returnUrl") || "/chat";
+
+  // Already authenticated (e.g. the session cookie was just minted, or the
+  // proxy bounced a still-valid client session here before the cookie existed)
+  // — send them on without making them re-enter credentials.
+  useEffect(() => {
+    if (!authLoading && user) {
+      router.replace(returnUrl);
+    }
+  }, [authLoading, user, returnUrl, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

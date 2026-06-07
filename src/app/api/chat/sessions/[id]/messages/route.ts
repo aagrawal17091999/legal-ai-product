@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth, getOrCreateUser, checkQueryLimit, incrementQueryCount } from "@/lib/auth";
+import { verifyAuth, getRequestUser, checkQueryLimit, incrementQueryCount } from "@/lib/auth";
 import pool from "@/lib/db";
 import { hydrateSessionStore } from "@/lib/rag/sessionStore";
 import { runAgent, buildAgentAuditSteps } from "@/lib/rag/agent";
 import { persistPipelineAudit } from "@/lib/rag/trace";
 import { generateChatTitle } from "@/lib/claude";
 import { validateCitations, type CitationMismatch } from "@/lib/rag/citationValidator";
+import { verifyFaithfulness } from "@/lib/rag/faithfulness";
 import { logError } from "@/lib/error-logger";
 import type { ChatMessage, SearchFilters, CitedCase } from "@/types";
 
@@ -34,7 +35,7 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const user = await getOrCreateUser({ uid: decoded.uid, email: decoded.email });
+  const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
 
   const { allowed, remaining } = await checkQueryLimit(user.id);
   if (!allowed) {
@@ -116,13 +117,19 @@ export async function POST(
       const tStart = Date.now();
       const agentStartedAt = new Date(tStart).toISOString();
       let assistantContent = "";
-      let status: "success" | "error" = "success";
+      let status: "success" | "error" | "degraded" = "success";
       let errorMsg: string | null = null;
       let model: string | null = null;
       let inputTokens: number | null = null;
       let outputTokens: number | null = null;
       let citedCasesForDb: CitedCase[] = [];
       let citationMismatches: CitationMismatch[] = [];
+      let faithfulness: {
+        ran: boolean;
+        checked: number;
+        unsupported: number;
+        uncertain: number;
+      } | null = null;
       let agentResult: Awaited<ReturnType<typeof runAgent>> | null = null;
       let sessionStoreForTurn: Awaited<ReturnType<typeof hydrateSessionStore>> | null = null;
 
@@ -177,10 +184,45 @@ export async function POST(
             assistantContent = validation.text;
             citationMismatches = validation.mismatches;
           }
+
+          // Faithfulness (groundedness) check: confirm each cited sentence is
+          // actually supported by the excerpt of the case it cites. Appends a
+          // warning footer for unsupported claims. Best-effort — never blocks.
+          const faith = await verifyFaithfulness(assistantContent, agentResult.assembledCases);
+          faithfulness = {
+            ran: faith.ran,
+            checked: faith.checked,
+            unsupported: faith.findings.filter((f) => f.verdict === "unsupported").length,
+            uncertain: faith.findings.filter((f) => f.verdict === "uncertain").length,
+          };
+          if (faith.text.length > assistantContent.length) {
+            const appended = faith.text.slice(assistantContent.length);
+            send("token", { delta: appended });
+            assistantContent = faith.text;
+          }
         } else {
+          // The agent returned no usable text even after the forced-synthesis
+          // pass in runAgent. Mark the turn "degraded" (not "success") so these
+          // residual misses surface in analytics instead of being counted as
+          // healthy answers.
+          status = "degraded";
           assistantContent =
             "Sorry, the assistant did not produce a response. Please rephrase your question.";
           send("token", { delta: assistantContent });
+          logError({
+            category: "chat",
+            message: "agent produced empty response after forced synthesis",
+            severity: "warning",
+            userId: user.id,
+            endpoint: "/api/chat/sessions/[id]/messages",
+            method: "POST",
+            metadata: {
+              sessionId,
+              steps_used: agentResult?.stepsUsed ?? 0,
+              stop_reason: agentResult?.stopReason ?? null,
+              cases_loaded: citedCasesForDb.length,
+            },
+          });
         }
       } catch (err) {
         status = "error";
@@ -220,7 +262,10 @@ export async function POST(
         case_count: citedCasesForDb.length,
         tokens: { input: inputTokens, output: outputTokens },
         response_time_ms: responseTimeMs,
-        warnings: { citationMismatches: citationMismatches.length },
+        warnings: {
+          citationMismatches: citationMismatches.length,
+          faithfulness,
+        },
       };
 
       let assistantRowId: string | null = null;
@@ -274,7 +319,9 @@ export async function POST(
           sessionStore: sessionStoreForTurn,
           toolTrace: agentResult?.toolTrace ?? [],
           generate: {
-            status,
+            // rag_pipeline_steps uses the "fallback" vocabulary for a
+            // degraded-but-completed turn (see migration 011).
+            status: status === "degraded" ? "fallback" : status,
             duration_ms: responseTimeMs,
             started_at: agentStartedAt,
             error: errorMsg,

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
+import { loadRazorpay } from "@/lib/loadRazorpay";
 
 const plans = {
   monthly: { price: "3,000", period: "/month", planKey: "monthly" as const },
@@ -140,6 +141,7 @@ export default function PricingTeaser() {
               }
             },
           };
+          await loadRazorpay();
           const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
           rzp.open();
         }

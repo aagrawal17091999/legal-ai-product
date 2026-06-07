@@ -31,9 +31,6 @@ export default function RootLayout({
       lang="en"
       className={`${instrumentSerif.variable} ${dmSans.variable} h-full antialiased`}
     >
-      <head>
-        <script src="https://checkout.razorpay.com/v1/checkout.js" async />
-      </head>
       <body className="min-h-full flex flex-col font-sans">{children}</body>
     </html>
   );

@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --experimental-strip-types --test \"src/lib/rag/__tests__/*.test.ts\"",
     "eval:retrieval": "node scripts/eval_retrieval.mjs"
   },
   "dependencies": {
@@ -22,10 +23,12 @@
     "razorpay": "^2.9.6",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-markdown": "^10.1.0"
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@tailwindcss/typography": "^0.5.19",
     "@types/node": "^20",
     "@types/pg": "^8.20.0",
     "@types/react": "^19",

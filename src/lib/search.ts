@@ -6,6 +6,8 @@ import type { SearchFilters } from "@/types";
 
 const RRF_K = 60; // Reciprocal Rank Fusion smoothing constant
 const DEFAULT_CANDIDATES_PER_QUERY = 40;
+// #6 Metadata lane: how many headnote/issue-matched cases to fold in per query.
+const META_LANE_LIMIT = 20;
 
 export { RRF_K, DEFAULT_CANDIDATES_PER_QUERY, VOYAGE_EMBED_MODEL };
 
@@ -122,8 +124,15 @@ export interface RetrieveChunksResult {
 export async function retrieveChunks(
   queries: string[],
   filters: SearchFilters,
-  topK: number = DEFAULT_CANDIDATES_PER_QUERY
+  topK: number = DEFAULT_CANDIDATES_PER_QUERY,
+  opts: { metadataLane?: boolean } = {}
 ): Promise<RetrieveChunksResult> {
+  // #6 Exploit corpus structure: in addition to chunk-text FTS + vector, run an
+  // FTS lane over each case's structured headnotes + issue_for_consideration
+  // (digest-style fields), fused via RRF. Mirrors a researcher scanning digests
+  // before full text; catches on-point cases whose body wording differs from the
+  // query. Default on.
+  const metadataLane = opts.metadataLane !== false;
   if (queries.length === 0) {
     return {
       chunks: [],
@@ -163,19 +172,23 @@ export async function retrieveChunks(
     const tSqlStart = Date.now();
     const perQueryResults = await Promise.all(
       queries.map(async (q, qi) => {
-        const [fts, vec] = await Promise.all([
+        const [fts, vec, meta] = await Promise.all([
           ftsChunks(q, filters, DEFAULT_CANDIDATES_PER_QUERY),
           vectorChunks(embeddings[qi], filters, DEFAULT_CANDIDATES_PER_QUERY),
+          metadataLane
+            ? metaCaseChunks(q, filters, META_LANE_LIMIT)
+            : Promise.resolve({ hits: [] as RawChunkHit[], sc: 0, hc: 0 }),
         ]);
-        return { qi, q, fts, vec };
+        return { qi, q, fts, vec, meta };
       })
     );
     const sqlDurationMs = Date.now() - tSqlStart;
 
     const perQueryTrace: RetrievalTrace["per_query"] = [];
-    for (const { qi, q, fts, vec } of perQueryResults) {
+    for (const { qi, q, fts, vec, meta } of perQueryResults) {
       addRrf(fts.hits, `fts_q${qi}`);
       addRrf(vec.hits, `vec_q${qi}`);
+      if (meta.hits.length > 0) addRrf(meta.hits, `meta_q${qi}`);
       perQueryTrace.push({
         query_index: qi,
         query: q,
@@ -387,6 +400,99 @@ async function vectorChunks(
   return { hits: results.slice(0, limit), sc: scCount, hc: hcCount };
 }
 
+/**
+ * #6 Metadata lane. FTS over each case's structured headnotes +
+ * issue_for_consideration (not chunk text), returning one representative chunk
+ * (lowest chunk_index) per matched case so the result folds into the chunk RRF
+ * map. Ranks come from the digest-field match, not the body.
+ */
+async function metaCaseChunks(
+  query: string,
+  filters: SearchFilters,
+  limit: number
+): Promise<MethodHits> {
+  const searchSC = !filters.court || filters.court === "Supreme Court of India";
+  const searchHC = !filters.court || filters.court !== "Supreme Court of India";
+
+  const results: Array<{ hit: RawChunkHit; rank: number }> = [];
+  let scCount = 0;
+  let hcCount = 0;
+
+  if (searchSC) {
+    const { clauses, params } = buildCaseFilterClauses(filters, "sc");
+    const p = params.length;
+    const sql = `
+      WITH matched AS (
+        SELECT sc.id,
+               ts_rank(to_tsvector('english',
+                       coalesce(sc.issue_for_consideration,'') || ' ' || coalesce(sc.headnotes,'')),
+                       plainto_tsquery('english', $${p + 1})) AS rank
+          FROM supreme_court_cases sc
+         WHERE to_tsvector('english',
+                 coalesce(sc.issue_for_consideration,'') || ' ' || coalesce(sc.headnotes,''))
+               @@ plainto_tsquery('english', $${p + 1})
+           ${clauses}
+         ORDER BY rank DESC
+         LIMIT ${limit}
+      )
+      SELECT DISTINCT ON (ch.source_id)
+             ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
+             sc.title, sc.citation, sc.court, sc.judge, sc.decision_date::text AS decision_date,
+             sc.petitioner, sc.respondent, sc.disposal_nature, sc.year, sc.path,
+             sc.acts_cited, sc.judge_names, sc.keywords,
+             NULL::text AS pdf_url, m.rank
+        FROM matched m
+        JOIN supreme_court_cases sc ON sc.id = m.id
+        JOIN case_chunks ch ON ch.source_id = m.id AND ch.source_table = 'supreme_court_cases'
+       ORDER BY ch.source_id, ch.chunk_index
+    `;
+    const { rows } = await pool.query(sql, [...params, query]);
+    scCount = rows.length;
+    for (const r of rows) results.push({ hit: toHit(r, "supreme_court_cases"), rank: Number(r.rank) });
+  }
+
+  if (searchHC) {
+    const { clauses, params } = buildCaseFilterClauses(filters, "hc");
+    const p = params.length;
+    const sql = `
+      WITH matched AS (
+        SELECT hc.id,
+               ts_rank(to_tsvector('english',
+                       coalesce(hc.issue_for_consideration,'') || ' ' || coalesce(hc.headnotes,'')),
+                       plainto_tsquery('english', $${p + 1})) AS rank
+          FROM high_court_cases hc
+         WHERE to_tsvector('english',
+                 coalesce(hc.issue_for_consideration,'') || ' ' || coalesce(hc.headnotes,''))
+               @@ plainto_tsquery('english', $${p + 1})
+           ${clauses}
+         ORDER BY rank DESC
+         LIMIT ${limit}
+      )
+      SELECT DISTINCT ON (ch.source_id)
+             ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_index, ch.chunk_text,
+             ch.paragraph_numbers,
+             hc.title, NULL::text AS citation, hc.court_name AS court, hc.judge,
+             hc.decision_date::text AS decision_date,
+             NULL::text AS petitioner, NULL::text AS respondent,
+             hc.disposal_nature, hc.year, NULL::text AS path, hc.pdf_url,
+             hc.acts_cited, hc.judge_names, hc.keywords, m.rank
+        FROM matched m
+        JOIN high_court_cases hc ON hc.id = m.id
+        JOIN case_chunks ch ON ch.source_id = m.id AND ch.source_table = 'high_court_cases'
+       ORDER BY ch.source_id, ch.chunk_index
+    `;
+    const { rows } = await pool.query(sql, [...params, query]);
+    hcCount = rows.length;
+    for (const r of rows) results.push({ hit: toHit(r, "high_court_cases"), rank: Number(r.rank) });
+  }
+
+  // DISTINCT ON forced ordering by source_id; restore relevance order by rank
+  // before handing to RRF (which scores by position).
+  results.sort((a, b) => b.rank - a.rank);
+  return { hits: results.slice(0, limit).map((r) => r.hit), sc: scCount, hc: hcCount };
+}
+
 function toHit(
   r: Record<string, unknown>,
   source_table: "supreme_court_cases" | "high_court_cases"
@@ -578,6 +684,30 @@ export async function lookupByIdentifier(
 
   const chunks = await fetchChunksForCases(deduped);
   return { chunks, resolutions };
+}
+
+/**
+ * Resolve identifier specs to concrete case rows WITHOUT fetching chunk text.
+ * Used by the citation-graph tool, which only needs (source_table, source_id)
+ * for each neighbour so the model can choose which to load_case.
+ */
+export async function resolveIdentifiers(
+  specs: IdentifierSpec[]
+): Promise<Array<{ spec: IdentifierSpec; matches: IdentifierMatch[] }>> {
+  const out: Array<{ spec: IdentifierSpec; matches: IdentifierMatch[] }> = [];
+  for (const spec of specs) {
+    if (spec.source_table && typeof spec.source_id === "number") {
+      out.push({
+        spec,
+        matches: [
+          { source_table: spec.source_table, source_id: spec.source_id, match_reason: "session_pin" },
+        ],
+      });
+      continue;
+    }
+    out.push({ spec, matches: await resolveSpec(spec) });
+  }
+  return out;
 }
 
 async function resolveSpec(spec: IdentifierSpec): Promise<IdentifierMatch[]> {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
@@ -16,7 +16,6 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
 
   const { signIn, signInWithGoogle, user, loading: authLoading } = useAuth();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const returnUrl = searchParams.get("returnUrl") || "/chat";
 
@@ -25,9 +24,13 @@ function LoginForm() {
   // — send them on without making them re-enter credentials.
   useEffect(() => {
     if (!authLoading && user) {
-      router.replace(returnUrl);
+      // Full-page navigation, not router.replace: a soft App Router navigation
+      // can serve a prefetched RSC for the gated route that was generated while
+      // logged out (the proxy's redirect to /login). A hard load forces a fresh
+      // top-level request that carries the __session cookie through proxy.ts.
+      window.location.assign(returnUrl);
     }
-  }, [authLoading, user, returnUrl, router]);
+  }, [authLoading, user, returnUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,7 +38,10 @@ function LoginForm() {
     setLoading(true);
     try {
       await signIn(email, password);
-      router.push(returnUrl);
+      // signIn has already awaited the __session cookie mint; a hard navigation
+      // guarantees the browser sends that cookie on the next request so proxy.ts
+      // lets the user into the gated route instead of bouncing back here.
+      window.location.assign(returnUrl);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to sign in";
@@ -50,7 +56,7 @@ function LoginForm() {
     setLoading(true);
     try {
       await signInWithGoogle();
-      router.push(returnUrl);
+      window.location.assign(returnUrl);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to sign in with Google";

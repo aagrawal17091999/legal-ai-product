@@ -6,6 +6,7 @@ import { runAgent, buildAgentAuditSteps } from "@/lib/rag/agent";
 import { persistPipelineAudit } from "@/lib/rag/trace";
 import { generateChatTitle } from "@/lib/claude";
 import { validateCitations, type CitationMismatch } from "@/lib/rag/citationValidator";
+import { normalizeCitations } from "@/lib/rag/citationNormalizer";
 import { verifyFaithfulness } from "@/lib/rag/faithfulness";
 import { logError } from "@/lib/error-logger";
 import type { ChatMessage, SearchFilters, CitedCase } from "@/types";
@@ -124,6 +125,7 @@ export async function POST(
       let outputTokens: number | null = null;
       let citedCasesForDb: CitedCase[] = [];
       let citationMismatches: CitationMismatch[] = [];
+      let citationUpgrades = 0;
       let faithfulness: {
         ran: boolean;
         checked: number;
@@ -177,6 +179,17 @@ export async function POST(
         // visible text (rare — happens when all steps were tool_use and no
         // end_turn text block was produced), skip validation.
         if (assistantContent) {
+          // Normalize bare `[n]` / `[n, ¶p]` markers to the canonical caret form
+          // FIRST. The renderer, the citation validator, and the faithfulness
+          // judge all match `\[\^…\]`; a bare marker is invisible to all three,
+          // so this is what makes those checks (and clickable citations) work.
+          const normalized = normalizeCitations(
+            assistantContent,
+            agentResult.assembledCases.length
+          );
+          assistantContent = normalized.text;
+          citationUpgrades = normalized.upgraded;
+
           const validation = validateCitations(assistantContent, agentResult.assembledCases);
           if (validation.mismatches.length > 0) {
             const appended = validation.text.slice(assistantContent.length);
@@ -264,6 +277,7 @@ export async function POST(
         response_time_ms: responseTimeMs,
         warnings: {
           citationMismatches: citationMismatches.length,
+          citationUpgrades,
           faithfulness,
         },
       };
@@ -372,6 +386,10 @@ export async function POST(
         response_time_ms: responseTimeMs,
         steps_used: agentResult?.stepsUsed ?? 0,
         stop_reason: agentResult?.stopReason ?? null,
+        // Authoritative final text. Inline markers were normalized to the caret
+        // form AFTER streaming, so the client must replace its token-accumulated
+        // content with this for citations to render as clickable links.
+        content: assistantContent,
       });
       if (!streamClosed) {
         try {

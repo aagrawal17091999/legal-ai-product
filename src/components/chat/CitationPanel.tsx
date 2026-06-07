@@ -196,8 +196,19 @@ function CaseOverview() {
 
 function ParagraphBody({ detail }: { detail: ParagraphDetail }) {
   const paragraphs = splitIntoParagraphs(detail.paragraph_text);
+  const caption =
+    detail.matched_as === "parent"
+      ? `Exact sub-paragraph not stored separately — showing parent ¶${detail.paragraph_number}.`
+      : detail.matched_as === "chunk"
+      ? "Showing the passage that contains this paragraph (the exact text retrieved for the answer)."
+      : null;
   return (
     <div className="space-y-3 text-[14px] leading-relaxed text-charcoal-900">
+      {caption && (
+        <p className="text-[12px] italic text-charcoal-500 leading-relaxed">
+          {caption}
+        </p>
+      )}
       {paragraphs.map((p, i) => (
         <p key={i}>{p}</p>
       ))}

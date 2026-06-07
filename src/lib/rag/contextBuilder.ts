@@ -79,15 +79,32 @@ export interface ExtractionMeta {
   result_of_case: string | null;
 }
 
-// Rough 4 chars/token heuristic. Claude Sonnet accepts 200k tokens, so 60k
-// characters of context is well within budget but leaves room for the rest
-// of the system prompt, conversation history, and the answer.
-const TOTAL_CONTEXT_CHAR_BUDGET = 60_000;
-const PER_CASE_CHAR_BUDGET = 12_000;
+// Rough 4 chars/token heuristic. With prompt caching, re-reading large context
+// across agent steps is cheap (~0.1x), so we can afford to read fuller judgments
+// rather than disjoint fragments. These are the SEARCH_FRESH (breadth) defaults;
+// load_case overrides them with a much larger per-case budget to read a single
+// judgment deeply (see BuildContextOptions). All env-tunable.
+const TOTAL_CONTEXT_CHAR_BUDGET = numEnv("CONTEXT_TOTAL_CHARS", 80_000);
+const PER_CASE_CHAR_BUDGET = numEnv("CONTEXT_PER_CASE_CHARS", 12_000);
+
+function numEnv(name: string, fallback: number): number {
+  const v = parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+export interface BuildContextOptions {
+  /** Per-case excerpt char cap. Defaults to PER_CASE_CHAR_BUDGET. */
+  perCaseCharBudget?: number;
+  /** Total context char cap across all cases. Defaults to TOTAL_CONTEXT_CHAR_BUDGET. */
+  totalCharBudget?: number;
+}
 
 export async function buildContext(
-  rerankedChunks: RetrievedChunk[]
+  rerankedChunks: RetrievedChunk[],
+  opts: BuildContextOptions = {}
 ): Promise<AssembledContext> {
+  const perCaseBudget = opts.perCaseCharBudget ?? PER_CASE_CHAR_BUDGET;
+  const totalBudget = opts.totalCharBudget ?? TOTAL_CONTEXT_CHAR_BUDGET;
   if (rerankedChunks.length === 0) {
     return {
       contextString: "No relevant cases were found for this query.",
@@ -161,7 +178,7 @@ export async function buildContext(
       missingExtraction.push({ source_table: c.source_table, source_id: c.source_id });
     }
 
-    const merged = mergeChunks(c.chunks, PER_CASE_CHAR_BUDGET);
+    const merged = mergeChunks(c.chunks, perCaseBudget);
     const visibleParagraphs = collectVisibleParagraphs(c.chunks);
     const caseBlock = formatCaseBlock(
       assembled.length + 1,
@@ -171,7 +188,7 @@ export async function buildContext(
       visibleParagraphs
     );
 
-    if (totalChars + caseBlock.length > TOTAL_CONTEXT_CHAR_BUDGET && assembled.length > 0) {
+    if (totalChars + caseBlock.length > totalBudget && assembled.length > 0) {
       // Budget exhausted — stop adding cases. Having 6 fully-grounded cases
       // is better than 12 cases each with a truncated excerpt.
       droppedByBudget = caseList.length - assembled.length;

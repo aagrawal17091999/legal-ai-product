@@ -9,6 +9,8 @@ import {
   type ToolName,
 } from "./agentTools";
 import { AGENT_SYSTEM_PROMPT } from "./agentPrompt";
+import { cachedSystem, applyCacheBreakpoints } from "./promptCache";
+import { decomposeQuestion } from "./decompose";
 import type { SessionDocumentStore } from "./sessionStore";
 import type { AssembledCase } from "./contextBuilder";
 import type { PipelineStepRecord } from "./pipeline";
@@ -33,6 +35,9 @@ const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || "claude-sonnet-4-6";
 const MAX_AGENT_STEPS = 10;
 const MAX_TOKENS_PER_STEP = 4096;
 const HISTORY_TURNS = 10;
+// Below this length a question is treated as a short follow-up and skips the
+// decomposition Haiku call (#2). Balanced: avoid per-turn cost on simple asks.
+const DECOMPOSE_MIN_CHARS = 80;
 
 export interface AgentToolEvent {
   type: "start" | "end";
@@ -60,7 +65,14 @@ export interface AgentRunResult {
   assembledCases: AssembledCase[];
   citedCases: CitedCase[];
   toolTrace: ToolCallRecord[];
-  tokens: { input: number; output: number };
+  tokens: {
+    input: number;
+    output: number;
+    /** Tokens served from the prompt cache (~0.1x cost). >0 proves caching hit. */
+    cacheRead: number;
+    /** Tokens written to the prompt cache this turn (~1.25x cost). */
+    cacheWrite: number;
+  };
   model: string;
   stopReason: string | null;
   stepsUsed: number;
@@ -90,6 +102,24 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // list_session_cases for the full detail + cold-tier headnotes.
   const sessionSummary = renderSessionSummary(opts.sessionStore);
 
+  // #2 Decompose compound questions into sub-issues so the agent retrieves for
+  // each. Gated on length to avoid the extra Haiku call on short follow-ups;
+  // the decomposer itself returns not-compound for single-issue questions.
+  let researchPlan = "";
+  if (opts.userMessage.trim().length >= DECOMPOSE_MIN_CHARS) {
+    const decomposition = await decomposeQuestion(opts.userMessage);
+    if (decomposition.isCompound) {
+      researchPlan =
+        "RESEARCH PLAN — the question bundles distinct sub-issues. Make sure your retrieval and answer cover EACH of these before synthesising:\n" +
+        decomposition.subQuestions.map((s, i) => `  ${i + 1}. ${s}`).join("\n") +
+        "\n\n";
+    }
+  }
+
+  const userTurn = [researchPlan, sessionSummary ? `${sessionSummary}\n\n` : "",
+    sessionSummary || researchPlan ? `USER'S CURRENT QUESTION:\n${opts.userMessage}` : opts.userMessage,
+  ].join("");
+
   const messages: Anthropic.MessageParam[] = [
     ...opts.history.slice(-HISTORY_TURNS).map((m) => ({
       role: m.role,
@@ -97,16 +127,17 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     })),
     {
       role: "user",
-      content: sessionSummary
-        ? `${sessionSummary}\n\nUSER'S CURRENT QUESTION:\n${opts.userMessage}`
-        : opts.userMessage,
+      content: userTurn,
     },
   ];
 
   let assistantContent = "";
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let totalCacheRead = 0;
+  let totalCacheWrite = 0;
   let model = CHAT_MODEL;
+  const cachedSystemPrompt = cachedSystem(AGENT_SYSTEM_PROMPT);
   let stopReason: string | null = null;
   let stepsUsed = 0;
   let lastCasesCount = 0;
@@ -116,9 +147,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     const stream = client.messages.stream({
       model: CHAT_MODEL,
       max_tokens: MAX_TOKENS_PER_STEP,
-      system: AGENT_SYSTEM_PROMPT,
+      system: cachedSystemPrompt,
       tools: TOOL_DEFINITIONS,
-      messages,
+      messages: applyCacheBreakpoints(messages),
     });
 
     stream.on("text", (delta: string) => {
@@ -139,6 +170,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     const finalMsg = await stream.finalMessage();
     totalInputTokens += finalMsg.usage.input_tokens;
     totalOutputTokens += finalMsg.usage.output_tokens;
+    totalCacheRead += finalMsg.usage.cache_read_input_tokens ?? 0;
+    totalCacheWrite += finalMsg.usage.cache_creation_input_tokens ?? 0;
     model = finalMsg.model;
     stopReason = finalMsg.stop_reason ?? null;
 
@@ -217,10 +250,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     const finalStream = client.messages.stream({
       model: CHAT_MODEL,
       max_tokens: MAX_TOKENS_PER_STEP,
-      system: AGENT_SYSTEM_PROMPT,
+      system: cachedSystemPrompt,
       tool_choice: { type: "none" },
       tools: TOOL_DEFINITIONS,
-      messages,
+      messages: applyCacheBreakpoints(messages),
     });
     finalStream.on("text", (delta: string) => {
       assistantContent += delta;
@@ -238,6 +271,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     const finalMsg = await finalStream.finalMessage();
     totalInputTokens += finalMsg.usage.input_tokens;
     totalOutputTokens += finalMsg.usage.output_tokens;
+    totalCacheRead += finalMsg.usage.cache_read_input_tokens ?? 0;
+    totalCacheWrite += finalMsg.usage.cache_creation_input_tokens ?? 0;
     model = finalMsg.model;
     stopReason = finalMsg.stop_reason ?? null;
     stepsUsed += 1;
@@ -248,7 +283,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     assembledCases: registry.list(),
     citedCases: registry.toCitedCases(),
     toolTrace,
-    tokens: { input: totalInputTokens, output: totalOutputTokens },
+    tokens: {
+      input: totalInputTokens,
+      output: totalOutputTokens,
+      cacheRead: totalCacheRead,
+      cacheWrite: totalCacheWrite,
+    },
     model,
     stopReason,
     stepsUsed,
@@ -293,9 +333,8 @@ export function buildAgentAuditSteps(params: {
     data: {
       user_message_length: userMessage.length,
       session_cases_count: sessionStore.caseSummaries.length,
-      hot_cases_count: sessionStore.trace.hot_cases_loaded,
-      cold_cases_count: sessionStore.trace.cold_cases,
-      hot_chunks_loaded: sessionStore.trace.hot_chunks_loaded,
+      cases_enriched: sessionStore.trace.cases_enriched,
+      assistant_messages_scanned: sessionStore.trace.assistant_messages_scanned,
     },
   });
 
@@ -333,13 +372,18 @@ export function buildAgentAuditSteps(params: {
 function renderSessionSummary(store: SessionDocumentStore): string {
   if (store.caseSummaries.length === 0) return "";
   const lines: string[] = [
-    "SESSION CASES (already cited earlier in this chat — call list_session_cases for full detail, or load_case to fetch text):",
+    "SESSION CASES (already cited earlier in this chat). Before calling search_fresh, check whether one of these already covers the question — if so, use load_case on it (with an aspect) instead of searching. Each entry shows what the case is about:",
   ];
   for (const s of store.caseSummaries) {
     const cite = s.citation ? ` — ${s.citation}` : "";
     lines.push(
-      `  [${s.recency_rank}, ${s.tier}] ${s.title}${cite} (${s.source_table}:${s.source_id})`
+      `  [${s.recency_rank}] ${s.title}${cite} (${s.source_table}:${s.source_id})`
     );
+    if (s.issue) lines.push(`        issue: ${s.issue}`);
+    else if (s.headnotes_snippet) lines.push(`        about: ${s.headnotes_snippet}`);
+    if (s.acts_cited.length > 0) {
+      lines.push(`        acts: ${s.acts_cited.slice(0, 6).join("; ")}`);
+    }
   }
   return lines.join("\n");
 }

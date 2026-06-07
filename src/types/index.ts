@@ -128,6 +128,13 @@ export interface CitedCase {
   citation: string | null;
   pdf_url: string | null;
   pdf_path: string | null;
+  /**
+   * Paragraph numbers addressable in the excerpt shown for this case (the ones
+   * the model was allowed to pinpoint). Lets the "Referenced Cases" footer offer
+   * paragraph-level entry points. Optional for backward compatibility with rows
+   * persisted before this field existed.
+   */
+  paragraphs?: string[];
 }
 
 export interface CitationRef {
@@ -142,7 +149,14 @@ export interface ParagraphDetail {
   paragraph_text: string;
   paragraph_order: number;
   kind: "numbered" | "synthetic";
-  matched_as: "exact" | "parent";
+  /**
+   * "exact"  — the discrete paragraph was found in case_paragraphs.
+   * "parent" — fell back to the parent number (e.g. ¶11 for a ¶11b request).
+   * "chunk"  — the paragraph isn't individually stored, so we returned the
+   *            retrieval chunk whose text contains it (the exact passage the
+   *            model was shown) instead of 404-ing.
+   */
+  matched_as: "exact" | "parent" | "chunk";
 }
 
 // ============================================================

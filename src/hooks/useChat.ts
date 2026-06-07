@@ -338,6 +338,7 @@ export function useChat() {
               message_id?: string | null;
               status?: "success" | "error" | "degraded";
               response_time_ms?: number;
+              content?: string;
             };
             setMessages((prev) => {
               const next = prev.map((m) =>
@@ -347,6 +348,11 @@ export function useChat() {
                       id: d.message_id || m.id,
                       status: d.status || m.status,
                       response_time_ms: d.response_time_ms ?? m.response_time_ms,
+                      // Replace token-accumulated text with the server's final
+                      // version (citation markers normalized to the caret form
+                      // + any validation/groundedness footers) so citations
+                      // render as clickable links without a reload.
+                      content: d.content ?? m.content,
                     }
                   : m.id === tempUserId
                   ? { ...m, id: `user-${Date.now()}` }

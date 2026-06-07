@@ -55,8 +55,12 @@ export function useAuth() {
     const unsubscribe = onIdTokenChanged(auth, async (user) => {
       if (user) {
         const token = await user.getIdToken();
+        // Await the cookie sync BEFORE marking the user signed in. A consumer
+        // that redirects on `user` (e.g. the login page's "already authed"
+        // effect) must not navigate to a proxy-gated route before the
+        // `__session` cookie exists, or proxy.ts bounces it back to /login.
+        await syncSessionCookie(token);
         setState({ user, loading: false, token });
-        syncSessionCookie(token);
       } else {
         setState({ user: null, loading: false, token: null });
       }

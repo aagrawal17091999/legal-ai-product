@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
@@ -15,14 +14,15 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
 
   const { signUp, signInWithGoogle, user, loading: authLoading } = useAuth();
-  const router = useRouter();
 
-  // Already authenticated — skip the signup form.
+  // Already authenticated — skip the signup form. Full-page navigation (not
+  // router.replace) so the __session cookie is carried through proxy.ts; a soft
+  // navigation can hit a prefetched logged-out redirect and bounce to /login.
   useEffect(() => {
     if (!authLoading && user) {
-      router.replace("/chat");
+      window.location.assign("/chat");
     }
-  }, [authLoading, user, router]);
+  }, [authLoading, user]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,7 +30,7 @@ export default function SignupPage() {
     setLoading(true);
     try {
       await signUp(email, password, displayName);
-      router.push("/chat");
+      window.location.assign("/chat");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to create account";
       setError(message);
@@ -44,7 +44,7 @@ export default function SignupPage() {
     setLoading(true);
     try {
       await signInWithGoogle();
-      router.push("/chat");
+      window.location.assign("/chat");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to sign up with Google";
       setError(message);

@@ -7,64 +7,51 @@ import type { CitedCase } from "@/types";
  * Session-level document store.
  *
  * The chat pipeline discards retrieved chunks after each turn. For follow-ups
- * that reference prior-cited cases ("give me the paragraph numbers for those
- * propositions"), we need the original cases available without forcing a
- * fresh retrieval that might miss them.
+ * that reference prior-cited cases, the agent needs to know what is already in
+ * the conversation so it can decide between reusing a loaded case (load_case)
+ * and searching the whole database (search_fresh).
  *
- * The store is built by walking back through recent assistant messages in the
- * same session, collecting the cases they cited (`chat_messages.cited_cases`)
- * and — when available — the exact chunk ids that were reranked into context
- * (from `rag_pipeline_steps.data.scored[].chunk_id` on the rerank step).
+ * This store walks back through recent assistant messages, collects the cases
+ * they cited (`chat_messages.cited_cases`), and enriches each with enough
+ * content — the issue under consideration, a headnotes snippet, the acts cited —
+ * for the agent to judge whether a follow-up is *covered* by an already-loaded
+ * case (→ load_case) or genuinely new (→ search_fresh). Titles alone aren't
+ * enough for that judgment, which is what pushed the agent toward re-searching
+ * the same topic and surfacing fresh, unrelated cases.
  *
- * Two tiers:
- *   - hot  : the most-recently-cited N cases, loaded as full RetrievedChunks
- *            so they can flow straight into contextBuilder.buildContext().
- *   - cold : every other case cited earlier in the session, kept as a thin
- *            summary (title, citation, headnotes snippet). The router sees
- *            these and can promote any of them back to hot via a fresh
- *            retrieval targeted at the case identifier.
+ * Full chunk text is NOT preloaded here: the load_case tool fetches the whole
+ * judgment on demand (queryAllChunksForCases) and reranks it by aspect, which
+ * supersedes the old hot/cold chunk cache.
  */
 
-const HOT_TIER_CASE_LIMIT = 6;
 const LOOKBACK_ASSISTANT_MESSAGES = 20;
-const MAX_CHUNKS_PER_HOT_CASE = 16;
-const MAX_CHUNKS_PER_HOT_CASE_REUSE = 150;
-const COLD_HEADNOTE_CHARS = 400;
-
-export interface SessionColdCase {
-  source_table: "supreme_court_cases" | "high_court_cases";
-  source_id: number;
-  title: string;
-  citation: string | null;
-  headnotes_snippet: string | null;
-}
+const HEADNOTE_SNIPPET_CHARS = 400;
+const ISSUE_SNIPPET_CHARS = 600;
 
 export interface SessionCaseSummary {
   /** Order in session recency: 1 = most recently cited. */
   recency_rank: number;
-  tier: "hot" | "cold";
   source_table: "supreme_court_cases" | "high_court_cases";
   source_id: number;
   title: string;
   citation: string | null;
+  /** Issue(s) for consideration — the strongest signal of what the case covers. */
+  issue: string | null;
+  /** Short headnotes excerpt, for the agent to gauge subject matter. */
+  headnotes_snippet: string | null;
+  /** Statutes/acts the case turns on — helps match statute-anchored follow-ups. */
+  acts_cited: string[];
 }
 
 export interface SessionDocumentStore {
-  /** Chunks for the hot-tier cases, ready to feed into buildContext. */
-  hotChunks: RetrievedChunk[];
-  /** Metadata-only summaries for every other case cited earlier in the session. */
-  coldCases: SessionColdCase[];
-  /** Compact list of every case visible in the session — passed to the turn
-   *  router so it can decide "reuse" vs "retrieve new" vs "lookup identifier". */
+  /** Every case cited earlier in the session, recency-ordered, with content
+   *  signals so the agent can decide reuse-vs-research. */
   caseSummaries: SessionCaseSummary[];
-  /** Per-case diagnostic: how many chunks we loaded and from where. */
+  /** Diagnostics for the audit log. */
   trace: {
     assistant_messages_scanned: number;
     unique_cases_found: number;
-    hot_cases_loaded: number;
-    hot_chunks_loaded: number;
-    cold_cases: number;
-    used_rerank_trace: boolean;
+    cases_enriched: number;
   };
 }
 
@@ -72,7 +59,12 @@ interface CitedCaseRow {
   message_id: string;
   cited_cases: CitedCase[] | null;
   created_at: string;
-  rerank_data: { scored?: Array<{ chunk_id: number; new_rank: number }> } | null;
+}
+
+interface CaseMetaRow {
+  issue: string | null;
+  headnotes_snippet: string | null;
+  acts_cited: string[];
 }
 
 export async function hydrateSessionStore(
@@ -82,13 +74,7 @@ export async function hydrateSessionStore(
     `
     SELECT cm.id AS message_id,
            cm.cited_cases,
-           cm.created_at,
-           (
-             SELECT data
-               FROM rag_pipeline_steps
-              WHERE message_id = cm.id AND step = 'rerank'
-              LIMIT 1
-           ) AS rerank_data
+           cm.created_at
       FROM chat_messages cm
      WHERE cm.session_id = $1
        AND cm.role = 'assistant'
@@ -103,102 +89,134 @@ export async function hydrateSessionStore(
     return emptyStore();
   }
 
-  // Walk messages from newest → oldest, collecting (source_table, source_id)
-  // in order of first appearance. Also gather the chunk_ids each message
-  // actually reranked (when the trace is available).
+  // Walk messages newest → oldest, collecting cases in order of first appearance.
   const caseOrder: Array<{
     source_table: "supreme_court_cases" | "high_court_cases";
     source_id: number;
-    first_seen_message_id: string;
     title: string;
     citation: string | null;
   }> = [];
   const seenCase = new Set<string>();
-  const chunkIdsPerCase = new Map<string, Set<number>>();
-  let usedRerankTrace = false;
 
   for (const row of messageRows) {
     const cited = Array.isArray(row.cited_cases) ? row.cited_cases : [];
-    const rerankChunkIds = (row.rerank_data?.scored ?? [])
-      .map((s) => s.chunk_id)
-      .filter((n): n is number => typeof n === "number");
-    if (rerankChunkIds.length > 0) usedRerankTrace = true;
-
     for (const cc of cited) {
       const key = `${cc.source_table}:${cc.id}`;
-      if (!seenCase.has(key)) {
-        seenCase.add(key);
-        caseOrder.push({
-          source_table: cc.source_table,
-          source_id: cc.id,
-          first_seen_message_id: row.message_id,
-          title: cc.title,
-          citation: cc.citation,
-        });
-      }
-      // Even for already-seen cases we track chunk_ids; the hot-tier fetch
-      // below is keyed on (source_table, source_id) so we only use these
-      // for ranking within the case.
-      if (rerankChunkIds.length > 0) {
-        const bucket = chunkIdsPerCase.get(key) ?? new Set<number>();
-        for (const id of rerankChunkIds) bucket.add(id);
-        chunkIdsPerCase.set(key, bucket);
-      }
+      if (seenCase.has(key)) continue;
+      seenCase.add(key);
+      caseOrder.push({
+        source_table: cc.source_table,
+        source_id: cc.id,
+        title: cc.title,
+        citation: cc.citation,
+      });
     }
   }
 
-  const hotCases = caseOrder.slice(0, HOT_TIER_CASE_LIMIT);
-  const coldCases = caseOrder.slice(HOT_TIER_CASE_LIMIT);
+  const metaByKey = await loadCaseMeta(caseOrder);
 
-  const hotChunks = await loadHotChunks(hotCases, chunkIdsPerCase);
-  const coldSummaries = await loadColdSummaries(coldCases);
-
-  const caseSummaries: SessionCaseSummary[] = caseOrder.map((c, i) => ({
-    recency_rank: i + 1,
-    tier: i < HOT_TIER_CASE_LIMIT ? "hot" : "cold",
-    source_table: c.source_table,
-    source_id: c.source_id,
-    title: c.title,
-    citation: c.citation,
-  }));
+  const caseSummaries: SessionCaseSummary[] = caseOrder.map((c, i) => {
+    const meta = metaByKey.get(`${c.source_table}:${c.source_id}`);
+    return {
+      recency_rank: i + 1,
+      source_table: c.source_table,
+      source_id: c.source_id,
+      title: c.title,
+      citation: c.citation,
+      issue: meta?.issue ?? null,
+      headnotes_snippet: meta?.headnotes_snippet ?? null,
+      acts_cited: meta?.acts_cited ?? [],
+    };
+  });
 
   return {
-    hotChunks,
-    coldCases: coldSummaries,
     caseSummaries,
     trace: {
       assistant_messages_scanned: messageRows.length,
       unique_cases_found: caseOrder.length,
-      hot_cases_loaded: hotCases.length,
-      hot_chunks_loaded: hotChunks.length,
-      cold_cases: coldSummaries.length,
-      used_rerank_trace: usedRerankTrace,
+      cases_enriched: metaByKey.size,
     },
   };
 }
 
 function emptyStore(): SessionDocumentStore {
   return {
-    hotChunks: [],
-    coldCases: [],
     caseSummaries: [],
     trace: {
       assistant_messages_scanned: 0,
       unique_cases_found: 0,
-      hot_cases_loaded: 0,
-      hot_chunks_loaded: 0,
-      cold_cases: 0,
-      used_rerank_trace: false,
+      cases_enriched: 0,
     },
   };
 }
 
 /**
- * Fetch every chunk for a list of cases in chunk_index order. Used by both
- * loadHotChunks (which caps per case for cache compactness) and
- * loadFullChunksForHotCases (which does not, so a narrowing follow-up can
- * rerank over the whole judgment). Also used by the agent's tool layer
- * (load_case tool) to pull full judgment text on demand.
+ * Batch-fetch issue / headnotes / acts for every session case (one query per
+ * table). Keyed `source_table:source_id`.
+ */
+async function loadCaseMeta(
+  cases: Array<{
+    source_table: "supreme_court_cases" | "high_court_cases";
+    source_id: number;
+  }>
+): Promise<Map<string, CaseMetaRow>> {
+  const out = new Map<string, CaseMetaRow>();
+  if (cases.length === 0) return out;
+
+  const scIds = cases.filter((c) => c.source_table === "supreme_court_cases").map((c) => c.source_id);
+  const hcIds = cases.filter((c) => c.source_table === "high_court_cases").map((c) => c.source_id);
+
+  if (scIds.length > 0) {
+    const { rows } = await pool.query(
+      `SELECT id, issue_for_consideration, headnotes, acts_cited
+         FROM supreme_court_cases WHERE id = ANY($1::int[])`,
+      [scIds]
+    );
+    for (const r of rows) {
+      out.set(`supreme_court_cases:${r.id}`, rowToMeta(r));
+    }
+  }
+  if (hcIds.length > 0) {
+    const { rows } = await pool.query(
+      `SELECT id, issue_for_consideration, headnotes, acts_cited
+         FROM high_court_cases WHERE id = ANY($1::int[])`,
+      [hcIds]
+    );
+    for (const r of rows) {
+      out.set(`high_court_cases:${r.id}`, rowToMeta(r));
+    }
+  }
+
+  return out;
+}
+
+function rowToMeta(r: Record<string, unknown>): CaseMetaRow {
+  // acts_cited may be an array of strings or of objects with a `name` field.
+  let acts: string[] = [];
+  const rawActs = r.acts_cited;
+  if (Array.isArray(rawActs)) {
+    acts = rawActs
+      .map((a) =>
+        typeof a === "string"
+          ? a
+          : a && typeof a === "object" && "name" in a
+          ? String((a as Record<string, unknown>).name)
+          : ""
+      )
+      .filter((s) => s.length > 0);
+  } else {
+    acts = toStringArray(rawActs);
+  }
+  return {
+    issue: snippet(r.issue_for_consideration, ISSUE_SNIPPET_CHARS),
+    headnotes_snippet: snippet(r.headnotes, HEADNOTE_SNIPPET_CHARS),
+    acts_cited: acts,
+  };
+}
+
+/**
+ * Fetch every chunk for a list of cases in chunk_index order. Used by the
+ * agent's load_case tool to pull full judgment text on demand.
  */
 export async function queryAllChunksForCases(
   cases: Array<{
@@ -261,133 +279,62 @@ export async function queryAllChunksForCases(
   return all;
 }
 
-/**
- * For each hot-tier case, load up to MAX_CHUNKS_PER_HOT_CASE chunks in chunk_index
- * order. When a rerank-trace chunk-id set is available for the case, prefer those
- * exact chunks (so the follow-up sees the *same* passages the prior answer did).
- */
-async function loadHotChunks(
-  cases: Array<{
-    source_table: "supreme_court_cases" | "high_court_cases";
-    source_id: number;
-  }>,
-  chunkIdsPerCase: Map<string, Set<number>>
-): Promise<RetrievedChunk[]> {
-  const all = await queryAllChunksForCases(cases);
-
-  // Group by case, then pick top N per case preferring previously reranked chunks.
-  const byCase = new Map<string, RetrievedChunk[]>();
-  for (const ch of all) {
-    const k = `${ch.source_table}:${ch.source_id}`;
-    const bucket = byCase.get(k) ?? [];
-    bucket.push(ch);
-    byCase.set(k, bucket);
-  }
-
-  const picked: RetrievedChunk[] = [];
-  // Preserve the input case order (recency).
-  for (const c of cases) {
-    const k = `${c.source_table}:${c.source_id}`;
-    const chunks = byCase.get(k) ?? [];
-    const preferredIds = chunkIdsPerCase.get(k);
-    const ranked = [...chunks].sort((a, b) => {
-      const aPref = preferredIds?.has(a.chunk_id) ? 0 : 1;
-      const bPref = preferredIds?.has(b.chunk_id) ? 0 : 1;
-      if (aPref !== bPref) return aPref - bPref;
-      return a.chunk_index - b.chunk_index;
-    });
-    picked.push(...ranked.slice(0, MAX_CHUNKS_PER_HOT_CASE));
-  }
-
-  return picked;
+export interface CitedCaseRef {
+  name: string;
+  citation: string | null;
 }
 
 /**
- * Load every chunk for each hot-tier case in the session (up to
- * MAX_CHUNKS_PER_HOT_CASE_REUSE per case to keep Voyage rerank payload bounded).
- *
- * Used by the reuse_session branch when the follow-up narrows to a *new aspect*
- * of a loaded case — the cached hot chunks were biased to whatever the previous
- * turn reranked, so a fresh rerank over the full judgment is what surfaces
- * previously-unseen paragraphs (arguments, submissions, disposal, etc.).
+ * Parse the `cases_cited` JSONB column (array of {name, citation}) into a clean
+ * list. Exported for unit testing. Tolerant of strings, missing fields, and
+ * malformed entries.
  */
-export async function loadFullChunksForHotCases(
-  store: SessionDocumentStore
-): Promise<RetrievedChunk[]> {
-  const hotCases = store.caseSummaries
-    .filter((c) => c.tier === "hot")
-    .map((c) => ({ source_table: c.source_table, source_id: c.source_id }));
-
-  const all = await queryAllChunksForCases(hotCases);
-
-  // Cap per case so total payload stays under Voyage's 1000-doc rerank limit
-  // even with 6 hot cases of a long judgment.
-  const byCase = new Map<string, RetrievedChunk[]>();
-  for (const ch of all) {
-    const k = `${ch.source_table}:${ch.source_id}`;
-    const bucket = byCase.get(k) ?? [];
-    bucket.push(ch);
-    byCase.set(k, bucket);
-  }
-  const out: RetrievedChunk[] = [];
-  for (const c of hotCases) {
-    const k = `${c.source_table}:${c.source_id}`;
-    const chunks = byCase.get(k) ?? [];
-    out.push(...chunks.slice(0, MAX_CHUNKS_PER_HOT_CASE_REUSE));
+export function parseCitedCases(value: unknown): CitedCaseRef[] {
+  if (!Array.isArray(value)) return [];
+  const out: CitedCaseRef[] = [];
+  const seen = new Set<string>();
+  for (const v of value) {
+    let name = "";
+    let citation: string | null = null;
+    if (typeof v === "string") {
+      name = v.trim();
+    } else if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      name = typeof o.name === "string" ? o.name.trim() : "";
+      citation = typeof o.citation === "string" && o.citation.trim() ? o.citation.trim() : null;
+    }
+    if (!name && !citation) continue;
+    const key = `${name.toLowerCase()}|${(citation ?? "").toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, citation });
   }
   return out;
 }
 
-async function loadColdSummaries(
-  cases: Array<{
-    source_table: "supreme_court_cases" | "high_court_cases";
-    source_id: number;
-    title: string;
-    citation: string | null;
-  }>
-): Promise<SessionColdCase[]> {
-  if (cases.length === 0) return [];
-
-  const scIds = cases.filter((c) => c.source_table === "supreme_court_cases").map((c) => c.source_id);
-  const hcIds = cases.filter((c) => c.source_table === "high_court_cases").map((c) => c.source_id);
-
-  const headnotesMap = new Map<string, string | null>();
-
-  if (scIds.length > 0) {
-    const { rows } = await pool.query(
-      `SELECT id, headnotes FROM supreme_court_cases WHERE id = ANY($1::int[])`,
-      [scIds]
-    );
-    for (const r of rows) {
-      headnotesMap.set(`supreme_court_cases:${r.id}`, snippet(r.headnotes));
-    }
-  }
-  if (hcIds.length > 0) {
-    const { rows } = await pool.query(
-      `SELECT id, headnotes FROM high_court_cases WHERE id = ANY($1::int[])`,
-      [hcIds]
-    );
-    for (const r of rows) {
-      headnotesMap.set(`high_court_cases:${r.id}`, snippet(r.headnotes));
-    }
-  }
-
-  return cases.map((c) => ({
-    source_table: c.source_table,
-    source_id: c.source_id,
-    title: c.title,
-    citation: c.citation,
-    headnotes_snippet: headnotesMap.get(`${c.source_table}:${c.source_id}`) ?? null,
-  }));
+/**
+ * Fetch the cases a given judgment cites (from the `cases_cited` column). Used by
+ * the citation-graph tool to find the authorities a loaded case relies on.
+ */
+export async function queryCitedCases(
+  source_table: "supreme_court_cases" | "high_court_cases",
+  source_id: number
+): Promise<CitedCaseRef[]> {
+  const table =
+    source_table === "supreme_court_cases" ? "supreme_court_cases" : "high_court_cases";
+  const { rows } = await pool.query(
+    `SELECT cases_cited FROM ${table} WHERE id = $1`,
+    [source_id]
+  );
+  if (rows.length === 0) return [];
+  return parseCitedCases(rows[0].cases_cited);
 }
 
-function snippet(value: unknown): string | null {
+function snippet(value: unknown, maxChars: number): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  return trimmed.length > COLD_HEADNOTE_CHARS
-    ? trimmed.slice(0, COLD_HEADNOTE_CHARS) + "…"
-    : trimmed;
+  return trimmed.length > maxChars ? trimmed.slice(0, maxChars) + "…" : trimmed;
 }
 
 function rowToChunk(
@@ -429,21 +376,4 @@ function normalizeParagraphNumbers(value: unknown): string[] | null {
     if (typeof v === "string" && v.trim()) out.push(v.trim());
   }
   return out.length > 0 ? out : null;
-}
-
-/**
- * Render the session summary as a compact string for the turn router's prompt.
- * Shape (one per line):
- *   [rank, tier] Title — Citation (source_table:id)
- */
-export function renderCaseSummariesForRouter(
-  summaries: SessionCaseSummary[]
-): string {
-  if (summaries.length === 0) return "(no cases cited yet in this session)";
-  return summaries
-    .map((s) => {
-      const cite = s.citation ? ` — ${s.citation}` : "";
-      return `[${s.recency_rank}, ${s.tier}] ${s.title}${cite} (${s.source_table}:${s.source_id})`;
-    })
-    .join("\n");
 }

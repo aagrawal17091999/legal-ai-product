@@ -49,35 +49,68 @@ export async function GET(request: NextRequest) {
         [sourceTable, sourceId, p]
       );
 
-    let matchedAs: "exact" | "parent" = "exact";
+    const parent = paragraphNumber.replace(/[A-Za-z]$/, "");
+
+    let matchedAs: "exact" | "parent" | "chunk" = "exact";
     let { rows } = await lookup(paragraphNumber);
 
-    if (rows.length === 0) {
-      const parent = paragraphNumber.replace(/[A-Za-z]$/, "");
-      if (parent && parent !== paragraphNumber) {
-        const fallback = await lookup(parent);
-        if (fallback.rows.length > 0) {
-          rows = fallback.rows;
-          matchedAs = "parent";
-        }
+    if (rows.length === 0 && parent && parent !== paragraphNumber) {
+      const fallback = await lookup(parent);
+      if (fallback.rows.length > 0) {
+        rows = fallback.rows;
+        matchedAs = "parent";
       }
     }
 
-    if (rows.length === 0) {
-      return NextResponse.json({ error: "Paragraph not found" }, { status: 404 });
+    if (rows.length > 0) {
+      const row = rows[0];
+      const detail: ParagraphDetail = {
+        source_table: sourceTable as ParagraphDetail["source_table"],
+        source_id: sourceId,
+        paragraph_number: row.paragraph_number,
+        paragraph_text: row.paragraph_text,
+        paragraph_order: row.paragraph_order,
+        kind: row.kind,
+        matched_as: matchedAs,
+      };
+      return NextResponse.json(detail);
     }
 
-    const row = rows[0];
-    const detail: ParagraphDetail = {
-      source_table: sourceTable as ParagraphDetail["source_table"],
-      source_id: sourceId,
-      paragraph_number: row.paragraph_number,
-      paragraph_text: row.paragraph_text,
-      paragraph_order: row.paragraph_order,
-      kind: row.kind,
-      matched_as: matchedAs,
-    };
-    return NextResponse.json(detail);
+    // Fallback: the paragraph isn't individually stored in case_paragraphs, but
+    // the validator only lets the model pinpoint paragraphs visible in a
+    // retrieval chunk. Return the chunk whose paragraph_numbers contains the
+    // requested (or parent) number — the exact passage the model was shown — so
+    // the user sees grounded text instead of a "not stored" dead end.
+    const chunkLookup = async (p: string) =>
+      pool.query(
+        `SELECT chunk_text, chunk_index
+           FROM case_chunks
+          WHERE source_table = $1 AND source_id = $2 AND $3 = ANY(paragraph_numbers)
+          ORDER BY chunk_index
+          LIMIT 1`,
+        [sourceTable, sourceId, p]
+      );
+
+    let chunkRows = (await chunkLookup(paragraphNumber)).rows;
+    if (chunkRows.length === 0 && parent && parent !== paragraphNumber) {
+      chunkRows = (await chunkLookup(parent)).rows;
+    }
+
+    if (chunkRows.length > 0) {
+      const c = chunkRows[0];
+      const detail: ParagraphDetail = {
+        source_table: sourceTable as ParagraphDetail["source_table"],
+        source_id: sourceId,
+        paragraph_number: paragraphNumber,
+        paragraph_text: c.chunk_text,
+        paragraph_order: c.chunk_index,
+        kind: "synthetic",
+        matched_as: "chunk",
+      };
+      return NextResponse.json(detail);
+    }
+
+    return NextResponse.json({ error: "Paragraph not found" }, { status: 404 });
   } catch (err) {
     logError({
       category: "search",

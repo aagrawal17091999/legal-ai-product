@@ -2,6 +2,7 @@
 
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage, CitationRef } from "@/types";
 
 interface MessageBubbleProps {
@@ -54,8 +55,9 @@ function MessageBubble({
             {message.content}
           </p>
         ) : (
-          <div className="prose prose-sm max-w-none prose-p:text-charcoal-900 prose-p:leading-relaxed prose-headings:font-serif prose-headings:text-charcoal-900 prose-strong:text-charcoal-900 prose-li:text-charcoal-900 prose-a:text-gold-600 hover:prose-a:text-gold-700">
+          <div className="prose prose-sm max-w-none [&>:first-child]:mt-0 [&>:last-child]:mb-0 prose-p:text-charcoal-900 prose-p:leading-relaxed prose-p:my-3 prose-headings:font-serif prose-headings:font-semibold prose-headings:text-charcoal-900 prose-h1:text-2xl prose-h1:mt-7 prose-h1:mb-3 prose-h2:text-xl prose-h2:mt-7 prose-h2:mb-3 prose-h3:text-lg prose-h3:mt-5 prose-h3:mb-2 prose-strong:text-charcoal-900 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:text-charcoal-900 prose-li:my-1 prose-li:marker:text-charcoal-400 prose-hr:my-6 prose-hr:border-ivory-200 prose-table:text-[13px] prose-th:text-charcoal-900 prose-th:font-semibold prose-th:border-ivory-200 prose-td:text-charcoal-900 prose-td:border-ivory-200 prose-blockquote:text-charcoal-600 prose-blockquote:border-gold-400 prose-a:text-gold-600 hover:prose-a:text-gold-700">
             <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
               components={{
                 a: ({ href, children, ...rest }) => {
                   if (href && href.startsWith("#case-")) {
@@ -98,17 +100,37 @@ function MessageBubble({
               <p className="text-[11px] font-medium text-charcoal-400 uppercase tracking-wider mb-3">
                 Referenced Cases
               </p>
-              <div className="flex flex-wrap gap-2">
-                {message.cited_cases.map((c, i) => (
-                  <button
-                    key={i}
-                    id={`case-${i + 1}`}
-                    onClick={() => onCitationClick?.({ case: c, paragraph: null })}
-                    className="text-[12px] bg-gold-100 text-gold-700 hover:bg-gold-100/80 hover:text-gold-600 px-2.5 py-1 rounded transition-colors truncate max-w-xs font-medium"
-                  >
-                    [{i + 1}] {c.title}
-                  </button>
-                ))}
+              <div className="flex flex-col gap-2">
+                {message.cited_cases.map((c, i) => {
+                  const paras = c.paragraphs ?? [];
+                  const shownParas = paras.slice(0, 6);
+                  return (
+                    <div key={i} className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        id={`case-${i + 1}`}
+                        onClick={() => onCitationClick?.({ case: c, paragraph: null })}
+                        className="text-[12px] bg-gold-100 text-gold-700 hover:bg-gold-100/80 hover:text-gold-600 px-2.5 py-1 rounded transition-colors truncate max-w-xs font-medium"
+                      >
+                        [{i + 1}] {c.title}
+                      </button>
+                      {shownParas.map((p) => (
+                        <button
+                          key={p}
+                          onClick={() => onCitationClick?.({ case: c, paragraph: p })}
+                          className="text-[11px] text-charcoal-500 hover:text-gold-700 bg-ivory-50 hover:bg-gold-100/60 border border-ivory-200 rounded px-1.5 py-0.5 font-mono transition-colors"
+                          title={`Open paragraph ¶${p}`}
+                        >
+                          ¶{p}
+                        </button>
+                      ))}
+                      {paras.length > shownParas.length && (
+                        <span className="text-[11px] text-charcoal-400">
+                          +{paras.length - shownParas.length}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

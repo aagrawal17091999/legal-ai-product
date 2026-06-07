@@ -2,13 +2,18 @@ import type Anthropic from "@anthropic-ai/sdk";
 import {
   retrieveChunks,
   lookupByIdentifier,
+  resolveIdentifiers,
   type RetrievedChunk,
   type IdentifierSpec,
 } from "../search";
 import { rerank } from "../voyage";
 import { expandQueries } from "./queryExpansion";
 import { buildContext, type AssembledCase } from "./contextBuilder";
-import { queryAllChunksForCases, type SessionDocumentStore } from "./sessionStore";
+import {
+  queryAllChunksForCases,
+  queryCitedCases,
+  type SessionDocumentStore,
+} from "./sessionStore";
 import { logError } from "../error-logger";
 import type { SearchFilters, CitedCase } from "@/types";
 
@@ -27,7 +32,16 @@ import type { SearchFilters, CitedCase } from "@/types";
  * back to the model as `tool_result` content blocks inside the conversation.
  */
 
-const LOAD_CASE_MAX_CHUNKS = 30;
+const numEnv = (name: string, fallback: number): number => {
+  const v = parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+};
+
+// #4 Read more, chunk less. load_case is the "read this judgment deeply" path,
+// so it pulls more chunks and gets a much larger per-case char budget than the
+// breadth-oriented search_fresh. Prompt caching keeps re-reading this cheap.
+const LOAD_CASE_MAX_CHUNKS = numEnv("LOAD_CASE_MAX_CHUNKS", 60);
+const LOAD_CASE_PER_CASE_CHARS = numEnv("LOAD_CASE_PER_CASE_CHARS", 28_000);
 const LOAD_CASE_RERANK_POOL = 80;
 const SEARCH_FRESH_POOL = 40;
 const SEARCH_FRESH_DEFAULT_LIMIT = 10;
@@ -76,6 +90,9 @@ export class CaseRegistry {
       citation: c.extraction.extracted_citation ?? c.meta.citation,
       pdf_url: c.pdf_url,
       pdf_path: c.pdf_path,
+      // Paragraphs visible in this case's excerpt — the ones the model is
+      // allowed to pinpoint — so the UI can offer paragraph-level entry points.
+      paragraphs: c.chunk_paragraphs ?? [],
     }));
   }
 }
@@ -90,7 +107,8 @@ export type ToolName =
   | "list_session_cases"
   | "load_case"
   | "search_fresh"
-  | "lookup_by_citation";
+  | "lookup_by_citation"
+  | "expand_cited_cases";
 
 export interface ToolCallRecord {
   tool: ToolName;
@@ -119,7 +137,7 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   {
     name: "list_session_cases",
     description:
-      "Returns every case already cited in this chat session, in recency order. Use this FIRST whenever the user refers to a prior case by pronoun or role noun ('this judgment', 'the respondent', 'the bench', 'that case') so you can identify which case they mean before loading more content. Each entry includes a tier marker (hot = most recently-discussed, cold = cached earlier) and a headnotes snippet for cold-tier cases.",
+      "Returns every case already cited in this chat session, in recency order, each with its issue/subject/acts. Use this FIRST whenever the user refers to a prior case by pronoun or role noun ('this judgment', 'the respondent', 'the bench', 'that case'), AND whenever a follow-up refines an earlier question — the issue/subject fields let you tell whether a loaded case already covers it (use load_case) before reaching for search_fresh.",
     input_schema: {
       type: "object",
       properties: {},
@@ -200,6 +218,25 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "expand_cited_cases",
+    description:
+      "Given a case already loaded (by source_table + source_id), returns the authorities THAT case cites which also exist in our database, each with its (source_table, source_id). Use this to follow the citation graph: when a loaded judgment relies on a specific precedent for the proposition the user needs, call expand_cited_cases, then load_case the relevant authority to read and cite it directly. Only cases present in our DB are returned.",
+    input_schema: {
+      type: "object",
+      properties: {
+        source_table: {
+          type: "string",
+          enum: ["supreme_court_cases", "high_court_cases"],
+        },
+        source_id: {
+          type: "integer",
+          description: "The case ID whose cited authorities you want to resolve.",
+        },
+      },
+      required: ["source_table", "source_id"],
+    },
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -246,6 +283,12 @@ export async function executeTool(
         auditData = out.audit;
         break;
       }
+      case "expand_cited_cases": {
+        const out = await executeExpandCitedCases(input as unknown as ExpandCitedCasesInput);
+        result = out.text;
+        auditData = out.audit;
+        break;
+      }
       default:
         status = "error";
         error = `unknown tool: ${name}`;
@@ -285,24 +328,29 @@ export async function executeTool(
 function executeListSessionCases(
   ctx: ToolContext
 ): { text: string; audit: Record<string, unknown> } {
-  const cases = ctx.sessionStore.caseSummaries.map((s) => {
-    const cold = ctx.sessionStore.coldCases.find(
-      (c) => c.source_id === s.source_id && c.source_table === s.source_table
-    );
-    return {
-      recency_rank: s.recency_rank,
-      tier: s.tier,
-      source_table: s.source_table,
-      source_id: s.source_id,
-      title: s.title,
-      citation: s.citation,
-      headnotes_snippet: cold?.headnotes_snippet ?? null,
-    };
-  });
+  const cases = ctx.sessionStore.caseSummaries.map((s) => ({
+    recency_rank: s.recency_rank,
+    source_table: s.source_table,
+    source_id: s.source_id,
+    title: s.title,
+    citation: s.citation,
+    // Content signals so the agent can decide whether this case already covers
+    // the user's follow-up (→ load_case) or it needs a fresh search.
+    issue: s.issue,
+    headnotes_snippet: s.headnotes_snippet,
+    acts_cited: s.acts_cited,
+  }));
   const text =
     cases.length === 0
       ? JSON.stringify({ cases: [], note: "No cases cited in this session yet." }, null, 2)
-      : JSON.stringify({ cases }, null, 2);
+      : JSON.stringify(
+          {
+            cases,
+            note: "If one of these cases already covers the user's question, call load_case on it (optionally with an aspect) instead of search_fresh.",
+          },
+          null,
+          2
+        );
   return { text, audit: { case_count: cases.length } };
 }
 
@@ -365,7 +413,9 @@ async function executeLoadCase(
     selected = allChunks.slice(0, LOAD_CASE_MAX_CHUNKS);
   }
 
-  const text = await renderChunksForAgent(selected, ctx.registry);
+  const text = await renderChunksForAgent(selected, ctx.registry, {
+    perCaseCharBudget: LOAD_CASE_PER_CASE_CHARS,
+  });
   return {
     text,
     audit: {
@@ -465,9 +515,31 @@ async function executeSearchFresh(
 
   const reranked = passing.map((r) => chunks[r.index]);
 
-  const text = await renderChunksForAgent(reranked, ctx.registry);
+  // Session-awareness: when fresh results include cases already cited earlier in
+  // this chat, surface them FIRST and tell the model to prefer them. This keeps
+  // a same-topic follow-up anchored to the established working set instead of
+  // drifting onto new cases that merely share vocabulary — without DROPPING the
+  // new cases, so a genuinely new sub-topic can still be answered.
+  const sessionKeys = new Set(
+    ctx.sessionStore.caseSummaries.map((s) => `${s.source_table}:${s.source_id}`)
+  );
+  const keyOf = (ch: RetrievedChunk) => `${ch.source_table}:${ch.source_id}`;
+  const inSession = (ch: RetrievedChunk) => sessionKeys.has(keyOf(ch));
+  const sessionFirst = [
+    ...reranked.filter(inSession),
+    ...reranked.filter((ch) => !inSession(ch)),
+  ];
+  const distinctSession = new Set(reranked.filter(inSession).map(keyOf)).size;
+  const distinctNew = new Set(reranked.filter((ch) => !inSession(ch)).map(keyOf)).size;
+
+  const body = await renderChunksForAgent(sessionFirst, ctx.registry);
+  const note =
+    distinctSession > 0
+      ? `NOTE: ${distinctSession} of these result(s) are cases already in this session (listed first). Prefer building your answer on them; only bring in the ${distinctNew} new case(s) if they add something the session cases genuinely lack.\n\n`
+      : "";
+
   return {
-    text,
+    text: note + body,
     audit: {
       query: input.query,
       queries,
@@ -475,6 +547,8 @@ async function executeSearchFresh(
       filters: merged,
       candidates: chunks.length,
       returned: reranked.length,
+      already_in_session: distinctSession,
+      new_cases: distinctNew,
       dropped_below_floor: results.length - passing.length,
       relevance_floor: SEARCH_RELEVANCE_FLOOR,
       top_score: topScore,
@@ -511,10 +585,100 @@ async function executeLookupByCitation(
   }
 
   const selected = chunks.slice(0, LOAD_CASE_MAX_CHUNKS);
-  const text = await renderChunksForAgent(selected, ctx.registry);
+  const text = await renderChunksForAgent(selected, ctx.registry, {
+    perCaseCharBudget: LOAD_CASE_PER_CASE_CHARS,
+  });
   return {
     text,
     audit: { resolutions, chunks_returned: selected.length },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Tool 5: expand_cited_cases (#3 — follow the citation graph)
+// ─────────────────────────────────────────────────────────────
+
+interface ExpandCitedCasesInput {
+  source_table: "supreme_court_cases" | "high_court_cases";
+  source_id: number;
+}
+
+const EXPAND_MAX_NEIGHBOURS = 30;
+
+async function executeExpandCitedCases(
+  input: ExpandCitedCasesInput
+): Promise<{ text: string; audit: Record<string, unknown> }> {
+  if (!input.source_table || typeof input.source_id !== "number") {
+    throw new Error("source_table and source_id are required");
+  }
+
+  const cited = await queryCitedCases(input.source_table, input.source_id);
+  if (cited.length === 0) {
+    return {
+      text: JSON.stringify({
+        cited_cases: [],
+        note: "No extracted citations are recorded for this case.",
+      }),
+      audit: { cited_total: 0, resolved: 0 },
+    };
+  }
+
+  const capped = cited.slice(0, EXPAND_MAX_NEIGHBOURS);
+  const specs: IdentifierSpec[] = capped.map((c) => ({
+    citation: c.citation,
+    title: c.name || null,
+  }));
+  const resolutions = await resolveIdentifiers(specs);
+
+  // De-dupe resolved neighbours by case key; exclude the origin case itself.
+  const originKey = `${input.source_table}:${input.source_id}`;
+  const seen = new Set<string>();
+  const inDb: Array<{
+    name: string;
+    citation: string | null;
+    source_table: string;
+    source_id: number;
+  }> = [];
+  const notFound: Array<{ name: string; citation: string | null }> = [];
+
+  resolutions.forEach((res, i) => {
+    const ref = capped[i];
+    const match = res.matches[0];
+    if (!match) {
+      notFound.push({ name: ref.name, citation: ref.citation });
+      return;
+    }
+    const key = `${match.source_table}:${match.source_id}`;
+    if (key === originKey || seen.has(key)) return;
+    seen.add(key);
+    inDb.push({
+      name: ref.name,
+      citation: ref.citation,
+      source_table: match.source_table,
+      source_id: match.source_id,
+    });
+  });
+
+  const text = JSON.stringify(
+    {
+      cited_cases_in_db: inDb,
+      not_in_db_count: notFound.length,
+      note:
+        inDb.length > 0
+          ? "These authorities cited by the case are present in our database. Call load_case on the one(s) relevant to the user's question to read and cite them directly."
+          : "None of this case's cited authorities were found in our database.",
+    },
+    null,
+    2
+  );
+
+  return {
+    text,
+    audit: {
+      cited_total: cited.length,
+      resolved: inDb.length,
+      not_found: notFound.length,
+    },
   };
 }
 
@@ -533,9 +697,10 @@ async function executeLookupByCitation(
  */
 async function renderChunksForAgent(
   chunks: RetrievedChunk[],
-  registry: CaseRegistry
+  registry: CaseRegistry,
+  buildOpts?: { perCaseCharBudget?: number; totalCharBudget?: number }
 ): Promise<string> {
-  const { contextString, cases } = await buildContext(chunks);
+  const { contextString, cases } = await buildContext(chunks, buildOpts);
   if (cases.length === 0) return contextString;
 
   const mapping: Array<{ localMarker: string; placeholder: string; finalMarker: string }> = [];

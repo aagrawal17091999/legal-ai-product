@@ -32,6 +32,12 @@ import type { SearchFilters, CitedCase } from "@/types";
  * back to the model as `tool_result` content blocks inside the conversation.
  */
 
+function qualityLabel(score: number): string {
+  if (score >= 0.6) return "strong";
+  if (score >= 0.45) return "moderate";
+  return "weak";
+}
+
 const numEnv = (name: string, fallback: number): number => {
   const v = parseInt(process.env[name] ?? "", 10);
   return Number.isFinite(v) && v > 0 ? v : fallback;
@@ -538,8 +544,15 @@ async function executeSearchFresh(
       ? `NOTE: ${distinctSession} of these result(s) are cases already in this session (listed first). Prefer building your answer on them; only bring in the ${distinctNew} new case(s) if they add something the session cases genuinely lack.\n\n`
       : "";
 
+  // #1 Surface retrieval quality so the model can judge whether to re-search
+  // with a different phrasing before answering.
+  const quality =
+    topScore === null
+      ? ""
+      : `RETRIEVAL QUALITY: top relevance ${topScore.toFixed(2)} (${qualityLabel(topScore)}); ${reranked.length} on-point of ${chunks.length} candidates. If these are weak or tangential to the question, refine the query and search again before answering.\n\n`;
+
   return {
-    text: note + body,
+    text: quality + note + body,
     audit: {
       query: input.query,
       queries,

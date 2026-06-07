@@ -32,8 +32,8 @@ const faqs = [
     a: "NyayaSearch is a legal research tool that assists advocates in finding and reviewing case law. It does not provide legal advice, represent clients, or replace the professional judgment of a qualified advocate. Use of AI-assisted research tools is consistent with an advocate's professional duty to be thorough and well-prepared.",
   },
   {
-    q: "What happens when my free queries run out for the day?",
-    a: "The free plan includes 5 queries per day, which reset at midnight IST. If you need more, the Pro plan offers unlimited queries for ₹3,000 per month or ₹30,000 per year. You can upgrade instantly from your account settings.",
+    q: "What happens when my free queries run out?",
+    a: "The free plan includes 3 free queries total — a one-time allotment, not a daily reset. If you need more, the Pro plan offers unlimited queries for ₹3,000 per month or ₹30,000 per year. You can upgrade instantly from your account settings.",
   },
   {
     q: "Can I cancel the Pro plan at any time?",

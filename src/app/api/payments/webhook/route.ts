@@ -3,6 +3,7 @@ import {
   verifyWebhookSignature,
   getPlanTypeFromId,
   markSubscriptionActive,
+  computeSubscriptionEndDate,
 } from "@/lib/razorpay";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
@@ -81,10 +82,14 @@ export async function POST(request: NextRequest) {
       }
 
       case "subscription.charged": {
-        const subscriptionId = payload.subscription?.entity?.id;
+        const entity = payload.subscription?.entity;
+        const subscriptionId = entity?.id;
         if (subscriptionId) {
-          const endDate = new Date();
-          endDate.setMonth(endDate.getMonth() + 1);
+          // Advance the end date by the actual billing interval. Deriving it
+          // from the plan_id keeps yearly subscriptions from being marked as
+          // expiring a month after each annual charge.
+          const plan = getPlanTypeFromId(entity?.plan_id) ?? "monthly";
+          const endDate = computeSubscriptionEndDate(plan);
 
           await pool.query(
             `UPDATE users SET

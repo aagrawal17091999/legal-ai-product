@@ -17,7 +17,7 @@ const plans = {
 };
 
 const freeFeatures = [
-  "5 queries per day",
+  "3 free queries (lifetime)",
   "Streaming, cited answers",
   "Supreme Court and High Court coverage",
   "Inline citations linked to source judgments",
@@ -41,7 +41,7 @@ const proFeatures = [
 const pricingFaqs = [
   {
     q: "Can I try Pro before committing?",
-    a: "The free plan gives you a genuine sense of how NyayaSearch works. Five queries per day, with the same quality of cited answers as the Pro plan. The primary difference is volume: Pro removes the daily limit and unlocks all pre-filters.",
+    a: "The free plan gives you a genuine sense of how NyayaSearch works. Three free queries, with the same quality of cited answers as the Pro plan. The primary difference is volume: Pro removes the limit and unlocks all pre-filters.",
   },
   {
     q: "What payment methods do you accept?",

@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
       email: user.email,
       display_name: user.display_name,
       plan: user.plan,
-      queries_used_today: user.queries_used_today,
+      queries_used_total: user.queries_used_total,
       subscription_status: user.subscription_status,
       subscription_end_date: user.subscription_end_date,
     });
@@ -58,7 +58,7 @@ export async function PATCH(request: NextRequest) {
     // Update in database
     const { rows } = await pool.query(
       `UPDATE users SET display_name = $1, updated_at = NOW() WHERE firebase_uid = $2
-       RETURNING id, email, display_name, plan, queries_used_today, subscription_status, subscription_end_date`,
+       RETURNING id, email, display_name, plan, queries_used_total, subscription_status, subscription_end_date`,
       [displayName, decoded.uid]
     );
 

@@ -29,7 +29,7 @@ const rows: [string, boolean | string, boolean | string, boolean | string][] = [
     "Varies by platform",
     "10+ filter dimensions",
   ],
-  ["Free to start", true, false, "5 free queries per day"],
+  ["Free to start", true, false, "3 free queries"],
 ];
 
 function Cell({ value, accent }: { value: boolean | string; accent?: boolean }) {

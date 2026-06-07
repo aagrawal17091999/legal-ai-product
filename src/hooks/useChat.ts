@@ -8,6 +8,42 @@ import type { ChatSession, ChatMessage, SearchFilters, CitedCase } from "@/types
 const SESSIONS_CACHE_PREFIX = "nyaya:sessions:";
 const MESSAGES_CACHE_PREFIX = "nyaya:messages:";
 
+// What the agent is doing right now, in user-facing words. Drafts are not
+// streamed token-by-token (the agent searches → verifies → only then streams
+// the accepted answer), so this status line is the only feedback during the
+// long pre-answer phase — it keeps a waiting user from assuming the app stalled.
+const DEFAULT_SEARCH_STATUS = "Searching case law…";
+
+// Map a tool's start event to what the user should think is happening.
+function labelForTool(tool: string): string {
+  switch (tool) {
+    case "search_fresh":
+      return "Searching case law…";
+    case "lookup_by_citation":
+      return "Looking up the citation…";
+    case "load_case":
+      return "Reading the judgment…";
+    case "expand_cited_cases":
+      return "Following cited cases…";
+    case "list_session_cases":
+      return "Reviewing your cases…";
+    default:
+      return DEFAULT_SEARCH_STATUS;
+  }
+}
+
+// Map an agent status phase to user-facing words.
+function labelForPhase(phase: string): string {
+  switch (phase) {
+    case "researching":
+      return "Searching for more on-point cases…";
+    case "verifying":
+      return "Verifying citations…";
+    default:
+      return DEFAULT_SEARCH_STATUS;
+  }
+}
+
 function readCachedSessions(uid: string): ChatSession[] | null {
   if (typeof window === "undefined") return null;
   try {
@@ -62,6 +98,9 @@ export function useChat() {
   const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  // Live "what the agent is doing" text shown next to the loading spinner.
+  // null falls back to DEFAULT_SEARCH_STATUS in the UI.
+  const [searchStatus, setSearchStatus] = useState<string | null>(null);
   // True while a session's messages are being fetched and we have nothing
   // cached to show yet — drives the skeleton so the empty "new chat" state
   // never flashes when opening an existing conversation.
@@ -220,6 +259,7 @@ export function useChat() {
       if (!currentSession) return false;
 
       setIsLoading(true);
+      setSearchStatus(null);
       setLimitReached(false);
       setError(null);
 
@@ -310,6 +350,16 @@ export function useChat() {
                 m.id === tempAssistantId ? { ...m, content: m.content + delta } : m
               )
             );
+          } else if (event === "tool") {
+            // Each tool call announces itself; reflect the latest one in the
+            // status line so the user sees real, changing activity.
+            const d = data as { phase?: string; tool?: string };
+            if (d.phase === "start" && d.tool) {
+              setSearchStatus(labelForTool(d.tool));
+            }
+          } else if (event === "status") {
+            const phase = (data as { phase?: string }).phase;
+            if (phase) setSearchStatus(labelForPhase(phase));
           } else if (event === "cases") {
             const cases = (data as CitedCase[]) ?? [];
             setMessages((prev) =>
@@ -469,6 +519,7 @@ export function useChat() {
           streamingSessionRef.current = null;
         }
         setIsLoading(false);
+        setSearchStatus(null);
       }
     },
     [currentSession, authHeaders, user]
@@ -484,6 +535,7 @@ export function useChat() {
     currentSession,
     messages,
     isLoading,
+    searchStatus,
     sessionLoading,
     limitReached,
     setLimitReached,

@@ -77,7 +77,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Upgrade to Pro">
       <p className="text-[15px] text-charcoal-600 leading-relaxed">
-        You&apos;ve used all five free queries for today. Upgrade to Pro for
+        You&apos;ve used all three free queries. Upgrade to Pro for
         unlimited, citation-backed research.
       </p>
 

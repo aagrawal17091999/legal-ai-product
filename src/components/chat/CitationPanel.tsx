@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/hooks/useAuth";
-import type { CitationRef, ParagraphDetail } from "@/types";
+import type { CitationRef, ParagraphDetail, SupportSpan } from "@/types";
 
 interface CitationPanelProps {
   citation: CitationRef | null;
@@ -146,7 +146,11 @@ export default function CitationPanel({ citation, onClose }: CitationPanelProps)
 
       <div className="flex-1 overflow-y-auto px-5 py-5">
         {display.status === "idle" ? (
-          <CaseOverview />
+          citation.case.support && citation.case.support.length > 0 ? (
+            <SupportBody spans={citation.case.support} />
+          ) : (
+            <CaseOverview />
+          )
         ) : display.status === "loading" ? (
           <div className="flex items-center gap-2 text-charcoal-600 text-[13px]">
             <Spinner size="sm" />
@@ -191,6 +195,30 @@ function CaseOverview() {
       Click a paragraph marker like <span className="font-mono text-charcoal-900">¶11b</span> in the
       answer to see the exact text pinpointed in this judgment.
     </p>
+  );
+}
+
+// The passages the grounding judge verified as backing this case's cited
+// statements — each quote is a verbatim span of the retrieved excerpt, so it is
+// safe to show as the source the answer relied on.
+function SupportBody({ spans }: { spans: SupportSpan[] }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-[12px] text-charcoal-500 leading-relaxed">
+        Passages from this judgment that support the cited statements in the
+        answer, quoted from the retrieved text:
+      </p>
+      {spans.map((s, i) => (
+        <div key={i} className="space-y-1.5">
+          <p className="text-[12px] italic text-charcoal-500 leading-relaxed">
+            {s.claim}
+          </p>
+          <blockquote className="border-l-2 border-gold-400 pl-3 text-[14px] leading-relaxed text-charcoal-900">
+            {s.quote}
+          </blockquote>
+        </div>
+      ))}
+    </div>
   );
 }
 

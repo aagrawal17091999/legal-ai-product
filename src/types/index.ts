@@ -70,6 +70,7 @@ export interface User {
   plan: UserPlan;
   queries_used_today: number;
   queries_reset_date: string;
+  queries_used_total: number;
   razorpay_customer_id: string | null;
   razorpay_subscription_id: string | null;
   subscription_status: SubscriptionStatus;
@@ -135,6 +136,28 @@ export interface CitedCase {
    * persisted before this field existed.
    */
   paragraphs?: string[];
+  /**
+   * Verified supporting passages for this case: for each answer sentence that
+   * cites this case and was confirmed grounded by the faithfulness judge, the
+   * exact verbatim span from the retrieved excerpt that backs it. Each quote is
+   * validated as a substring of the excerpt the model was actually shown, so it
+   * is safe to display as provenance without a separate paragraph lookup.
+   * Optional for backward compatibility with rows persisted before this field.
+   */
+  support?: SupportSpan[];
+}
+
+/**
+ * One grounded answer-sentence ↔ source-passage pairing for a cited case. The
+ * `quote` is copied verbatim from the case's retrieved excerpt (and verified as
+ * a substring of it), so the citation panel can show exactly where a statement
+ * came from instead of relying on paragraph-number ingestion.
+ */
+export interface SupportSpan {
+  /** The cited sentence from the answer, with citation markers stripped. */
+  claim: string;
+  /** Verbatim passage from the case's retrieved excerpt that supports the claim. */
+  quote: string;
 }
 
 export interface CitationRef {

@@ -8,6 +8,8 @@ import type { ChatMessage, CitationRef } from "@/types";
 interface ChatAreaProps {
   messages: ChatMessage[];
   isLoading: boolean;
+  /** Live "what the agent is doing" text (searching, verifying, …). */
+  searchStatus?: string | null;
   /** True while an existing session's messages are still being fetched. */
   sessionLoading?: boolean;
   error?: string | null;
@@ -45,6 +47,7 @@ const SUGGESTIONS = [
 export default function ChatArea({
   messages,
   isLoading,
+  searchStatus,
   sessionLoading,
   error,
   onDismissError,
@@ -135,7 +138,9 @@ export default function ChatArea({
             return (
               <div className="flex items-center gap-3 text-charcoal-600 mb-4">
                 <Spinner size="sm" />
-                <span className="text-[14px]">Searching case law…</span>
+                <span className="text-[14px] transition-opacity duration-200">
+                  {searchStatus ?? "Searching case law…"}
+                </span>
               </div>
             );
           })()}

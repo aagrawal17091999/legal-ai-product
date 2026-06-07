@@ -12,7 +12,7 @@ interface UserData {
   email: string;
   display_name: string | null;
   plan: string;
-  queries_used_today: number;
+  queries_used_total: number;
   subscription_status: string;
   subscription_end_date: string | null;
 }
@@ -308,10 +308,10 @@ export default function AccountPage() {
               </span>
             </div>
             <div className="flex items-center justify-between py-2 border-b border-ivory-200">
-              <span className="text-[14px] text-charcoal-600">Queries today</span>
+              <span className="text-[14px] text-charcoal-600">Free queries used</span>
               <span className="text-[14px] font-medium text-charcoal-900 font-mono">
                 {userData?.plan === "free"
-                  ? `${userData?.queries_used_today || 0} / 5`
+                  ? `${userData?.queries_used_total || 0} / 3`
                   : "Unlimited"}
               </span>
             </div>

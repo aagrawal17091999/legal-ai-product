@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { logError } from "../error-logger";
 import type { AssembledCase } from "./contextBuilder";
+import type { SupportSpan } from "@/types";
 
 /**
  * Post-generation faithfulness (groundedness) check.
@@ -35,6 +36,13 @@ export interface FaithfulnessFinding {
   case_index: number;
   verdict: FaithfulnessVerdict;
   reason: string;
+  /**
+   * For "supported" verdicts: the verbatim span from the cited case's excerpt
+   * that backs the claim, validated as a substring of that excerpt. Undefined
+   * when the judge returned no quote or the quote could not be verified verbatim
+   * (we never surface an unverified quote as provenance).
+   */
+  quote?: string;
 }
 
 export interface FaithfulnessResult {
@@ -52,15 +60,23 @@ interface Claim {
   indices: number[];
 }
 
+export interface GradeResult {
+  findings: FaithfulnessFinding[];
+  unsupported: FaithfulnessFinding[];
+  checked: number;
+  ran: boolean;
+}
+
 /**
- * Verify that each cited sentence in `answer` is supported by the excerpt of the
- * case it cites. Best-effort: any failure degrades to "no findings, text
- * unchanged" so a flaky judge never blocks the user's answer.
+ * Grade each cited sentence in `answer` against the excerpt of the case it cites,
+ * returning findings WITHOUT mutating the text. Used by the in-loop grounding
+ * gate (#5) to decide whether to send the draft back for revision before
+ * streaming it. Best-effort: any failure returns `ran: false` with no findings.
  */
-export async function verifyFaithfulness(
+export async function gradeDraft(
   answer: string,
   cases: AssembledCase[]
-): Promise<FaithfulnessResult> {
+): Promise<GradeResult> {
   const byIndex = new Map<number, AssembledCase>();
   for (const c of cases) byIndex.set(c.index, c);
 
@@ -68,7 +84,7 @@ export async function verifyFaithfulness(
     cl.indices.some((i) => byIndex.has(i))
   );
   if (claims.length === 0) {
-    return { text: answer, findings: [], checked: 0, ran: false };
+    return { findings: [], unsupported: [], checked: 0, ran: false };
   }
 
   // One (claim, case) pair per cited index, capped.
@@ -86,26 +102,71 @@ export async function verifyFaithfulness(
 
   try {
     const findings = await runJudge(pairs, citedIndices, byIndex);
-    const unsupported = findings.filter((f) => f.verdict === "unsupported");
-    if (unsupported.length === 0) {
-      return { text: answer, findings, checked: pairs.length, ran: true };
-    }
     return {
-      text: answer + buildFooter(unsupported, byIndex),
       findings,
+      unsupported: findings.filter((f) => f.verdict === "unsupported"),
       checked: pairs.length,
       ran: true,
     };
   } catch (err) {
     logError({
       category: "chat",
-      message: `faithfulness check failed: ${err instanceof Error ? err.message : String(err)}`,
+      message: `faithfulness grading failed: ${err instanceof Error ? err.message : String(err)}`,
       error: err,
       severity: "warning",
       metadata: { model: JUDGE_MODEL, pairs: pairs.length },
     });
-    return { text: answer, findings: [], checked: 0, ran: false };
+    return { findings: [], unsupported: [], checked: 0, ran: false };
   }
+}
+
+/**
+ * Build the user-facing groundedness-warning footer for unsupported claims.
+ * Exported so the agent loop can append it to the final answer (after the
+ * in-loop revision budget is spent) without a second judge call.
+ */
+export function buildGroundingFooter(
+  unsupported: FaithfulnessFinding[],
+  cases: AssembledCase[]
+): string {
+  if (unsupported.length === 0) return "";
+  const byIndex = new Map<number, AssembledCase>();
+  for (const c of cases) byIndex.set(c.index, c);
+  return buildFooter(unsupported, byIndex);
+}
+
+/**
+ * Render a human-readable list of unsupported claims, for feeding back to the
+ * model during a grounding-gate revision. Exported for the agent loop.
+ */
+export function describeUnsupported(findings: FaithfulnessFinding[]): string {
+  return findings
+    .map((f) => `- (cites Case ${f.case_index}) "${f.claim}" — ${f.reason}`)
+    .join("\n");
+}
+
+/**
+ * Verify that each cited sentence in `answer` is supported, appending a warning
+ * footer for unsupported claims. Thin wrapper over gradeDraft — kept as a
+ * post-hoc backstop in the route. Returns the (possibly-augmented) text.
+ */
+export async function verifyFaithfulness(
+  answer: string,
+  cases: AssembledCase[]
+): Promise<FaithfulnessResult> {
+  const byIndex = new Map<number, AssembledCase>();
+  for (const c of cases) byIndex.set(c.index, c);
+
+  const grade = await gradeDraft(answer, cases);
+  if (!grade.ran || grade.unsupported.length === 0) {
+    return { text: answer, findings: grade.findings, checked: grade.checked, ran: grade.ran };
+  }
+  return {
+    text: answer + buildFooter(grade.unsupported, byIndex),
+    findings: grade.findings,
+    checked: grade.checked,
+    ran: grade.ran,
+  };
 }
 
 /**
@@ -174,15 +235,64 @@ async function runJudge(
   const findings: FaithfulnessFinding[] = [];
   for (const p of pairs) {
     const v = byId.get(p.id);
+    const verdict = v?.verdict ?? "uncertain";
+    // Only attach a quote for supported claims, and only after confirming it is
+    // a verbatim span of the cited case's full excerpt. A model-emitted quote we
+    // cannot verify is dropped — provenance must be grounded, not plausible.
+    const quote =
+      verdict === "supported" && v?.quote
+        ? verifyVerbatim(v.quote, byIndex.get(p.index)?.excerpt ?? "")
+        : undefined;
     findings.push({
       claim: p.claim,
       case_index: p.index,
       // Missing verdict ⇒ "uncertain" (never silently treat as supported).
-      verdict: v?.verdict ?? "uncertain",
+      verdict,
       reason: v?.reason ?? "no verdict returned",
+      ...(quote ? { quote } : {}),
     });
   }
   return findings;
+}
+
+const MIN_QUOTE_CHARS = 12; // reject trivially-short "quotes" that match by accident
+const MAX_QUOTE_CHARS = 600; // cap a single displayed span
+
+/**
+ * Confirm `quote` appears verbatim in `excerpt`, tolerating only the whitespace
+ * differences introduced by PDF line-wrapping (the excerpt collapses soft wraps
+ * differently than the judge may echo them). Returns the cleaned quote when it
+ * is genuinely present, else undefined. This is the guard that keeps the support
+ * panel grounded: anything not literally in the retrieved text is discarded.
+ */
+function verifyVerbatim(quote: string, excerpt: string): string | undefined {
+  const cleaned = quote.replace(/\s+/g, " ").trim();
+  if (cleaned.length < MIN_QUOTE_CHARS) return undefined;
+  const haystack = excerpt.replace(/\s+/g, " ");
+  if (!haystack.includes(cleaned)) return undefined;
+  return cleaned.length > MAX_QUOTE_CHARS
+    ? cleaned.slice(0, MAX_QUOTE_CHARS).trimEnd() + "…"
+    : cleaned;
+}
+
+/**
+ * Group verified supporting spans by cited case index, for attaching to the
+ * CitedCase payload the UI renders. Only "supported" findings that carry a
+ * verified `quote` contribute. Deduplicates identical (claim, quote) pairs that
+ * can arise when a sentence cites the same case twice.
+ */
+export function buildSupportByCase(
+  findings: FaithfulnessFinding[]
+): Map<number, SupportSpan[]> {
+  const byCase = new Map<number, SupportSpan[]>();
+  for (const f of findings) {
+    if (f.verdict !== "supported" || !f.quote) continue;
+    const spans = byCase.get(f.case_index) ?? [];
+    if (spans.some((s) => s.claim === f.claim && s.quote === f.quote)) continue;
+    spans.push({ claim: f.claim, quote: f.quote });
+    byCase.set(f.case_index, spans);
+  }
+  return byCase;
 }
 
 const JUDGE_SYSTEM_PROMPT = `You are a strict legal citation auditor. You are given case excerpts and a numbered list of claims. Each claim is tagged with the case it cites.
@@ -194,12 +304,14 @@ For each claim, decide whether the CITED case's excerpt SUPPORTS the claim:
 
 Be conservative: only mark "supported" when the excerpt genuinely backs the specific assertion. A claim about a holding needs the holding in the excerpt, not just related discussion. Do not use outside knowledge — judge ONLY against the provided excerpt.
 
+For every "supported" claim, also return "quote": the single most relevant passage from the CITED case's excerpt that backs the claim, copied CHARACTER-FOR-CHARACTER from the excerpt (verbatim — do not paraphrase, summarise, fix typos, or join non-adjacent sentences). Keep it to one or two sentences. For "unsupported" and "uncertain" claims, set "quote" to "".
+
 Return ONLY a JSON object:
-{"verdicts":[{"claim":<number>,"verdict":"supported|unsupported|uncertain","reason":"<short>"}]}`;
+{"verdicts":[{"claim":<number>,"verdict":"supported|unsupported|uncertain","reason":"<short>","quote":"<verbatim span or empty string>"}]}`;
 
 function parseVerdicts(
   raw: string
-): Array<{ claim: number; verdict: FaithfulnessVerdict; reason: string }> {
+): Array<{ claim: number; verdict: FaithfulnessVerdict; reason: string; quote: string }> {
   if (!raw) return [];
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
@@ -208,7 +320,7 @@ function parseVerdicts(
     const parsed = JSON.parse(raw.slice(start, end + 1));
     const arr = parsed?.verdicts;
     if (!Array.isArray(arr)) return [];
-    const out: Array<{ claim: number; verdict: FaithfulnessVerdict; reason: string }> = [];
+    const out: Array<{ claim: number; verdict: FaithfulnessVerdict; reason: string; quote: string }> = [];
     for (const v of arr) {
       const claim = Number(v?.claim);
       const verdict = v?.verdict;
@@ -216,7 +328,12 @@ function parseVerdicts(
       if (verdict !== "supported" && verdict !== "unsupported" && verdict !== "uncertain") {
         continue;
       }
-      out.push({ claim, verdict, reason: typeof v?.reason === "string" ? v.reason : "" });
+      out.push({
+        claim,
+        verdict,
+        reason: typeof v?.reason === "string" ? v.reason : "",
+        quote: typeof v?.quote === "string" ? v.quote : "",
+      });
     }
     return out;
   } catch {

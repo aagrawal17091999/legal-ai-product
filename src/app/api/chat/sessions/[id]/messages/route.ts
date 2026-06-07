@@ -7,7 +7,6 @@ import { persistPipelineAudit } from "@/lib/rag/trace";
 import { generateChatTitle } from "@/lib/claude";
 import { validateCitations, type CitationMismatch } from "@/lib/rag/citationValidator";
 import { normalizeCitations } from "@/lib/rag/citationNormalizer";
-import { verifyFaithfulness } from "@/lib/rag/faithfulness";
 import { logError } from "@/lib/error-logger";
 import type { ChatMessage, SearchFilters, CitedCase } from "@/types";
 
@@ -167,10 +166,16 @@ export async function POST(
             citedCasesForDb = cases;
             send("cases", cases);
           },
+          onStatus: (s) => send("status", s),
         });
 
         assistantContent = agentResult.assistantContent;
         citedCasesForDb = agentResult.citedCases;
+        // The streamed "cases" events during retrieval carried no verified
+        // support spans (grounding runs only after the draft is written). Re-send
+        // the final, support-enriched payload so the live citation panel can show
+        // the source passages without waiting for a reload.
+        send("cases", citedCasesForDb);
         model = agentResult.model;
         inputTokens = agentResult.tokens.input;
         outputTokens = agentResult.tokens.output;
@@ -198,21 +203,17 @@ export async function POST(
             citationMismatches = validation.mismatches;
           }
 
-          // Faithfulness (groundedness) check: confirm each cited sentence is
-          // actually supported by the excerpt of the case it cites. Appends a
-          // warning footer for unsupported claims. Best-effort — never blocks.
-          const faith = await verifyFaithfulness(assistantContent, agentResult.assembledCases);
-          faithfulness = {
-            ran: faith.ran,
-            checked: faith.checked,
-            unsupported: faith.findings.filter((f) => f.verdict === "unsupported").length,
-            uncertain: faith.findings.filter((f) => f.verdict === "uncertain").length,
-          };
-          if (faith.text.length > assistantContent.length) {
-            const appended = faith.text.slice(assistantContent.length);
-            send("token", { delta: appended });
-            assistantContent = faith.text;
-          }
+          // Groundedness was already checked (and, if needed, revised + footed)
+          // INSIDE the agent loop's draft→verify→stream gate — no second judge
+          // call here. We just surface its outcome for the audit log.
+          faithfulness = agentResult.faithfulness
+            ? {
+                ran: agentResult.faithfulness.ran,
+                checked: agentResult.faithfulness.checked,
+                unsupported: agentResult.faithfulness.unsupported,
+                uncertain: agentResult.faithfulness.uncertain,
+              }
+            : null;
         } else {
           // The agent returned no usable text even after the forced-synthesis
           // pass in runAgent. Mark the turn "degraded" (not "success") so these
@@ -273,12 +274,18 @@ export async function POST(
         })),
         session_store: sessionStoreForTurn?.trace ?? null,
         case_count: citedCasesForDb.length,
-        tokens: { input: inputTokens, output: outputTokens },
+        tokens: {
+          input: inputTokens,
+          output: outputTokens,
+          cache_read: agentResult?.tokens.cacheRead ?? 0,
+          cache_write: agentResult?.tokens.cacheWrite ?? 0,
+        },
         response_time_ms: responseTimeMs,
         warnings: {
           citationMismatches: citationMismatches.length,
           citationUpgrades,
           faithfulness,
+          revised: agentResult?.faithfulness?.revised ?? false,
         },
       };
 

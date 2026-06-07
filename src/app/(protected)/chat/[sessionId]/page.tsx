@@ -17,6 +17,7 @@ export default function ChatSessionPage({
   const {
     messages,
     isLoading,
+    searchStatus,
     sessionLoading,
     limitReached,
     setLimitReached,
@@ -49,6 +50,7 @@ export default function ChatSessionPage({
           <ChatArea
             messages={messages}
             isLoading={isLoading}
+            searchStatus={searchStatus}
             sessionLoading={sessionLoading}
             error={error}
             onDismissError={() => setError(null)}

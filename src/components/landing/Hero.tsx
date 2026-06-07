@@ -46,7 +46,7 @@ export default function Hero() {
 
             {/* Trust line */}
             <p className="mt-8 text-sm text-charcoal-400">
-              Free plan includes 5 queries per day. No credit card required.
+              Free plan includes 3 free queries. No credit card required.
             </p>
           </div>
 

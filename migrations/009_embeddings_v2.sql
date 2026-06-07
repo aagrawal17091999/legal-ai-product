@@ -12,17 +12,31 @@
 
 BEGIN;
 
--- Drop the HNSW index before touching the column (type change would invalidate it anyway).
-DROP INDEX IF EXISTS idx_chunks_embedding;
+-- GUARDED + IDEMPOTENT. The original purpose was to wipe legacy embeddings made
+-- at the wrong dimension/model (512d / unspecified) so they couldn't be mixed
+-- with voyage-law-2 1024d vectors. We ONLY do that destructive step when the
+-- column is not already vector(1024). Once it is, re-running this migration must
+-- NEVER truncate populated data — an unconditional TRUNCATE here previously cost
+-- a full (paid) re-embed of the whole corpus.
+DO $$
+DECLARE
+  current_mod integer;
+BEGIN
+  SELECT atttypmod INTO current_mod
+    FROM pg_attribute
+   WHERE attrelid = 'case_chunks'::regclass
+     AND attname = 'embedding'
+     AND NOT attisdropped;
 
--- Wipe existing chunks. They were produced by a different model + dimension
--- and cannot be mixed with voyage-law-2 1024d vectors.
-TRUNCATE TABLE case_chunks RESTART IDENTITY;
-
--- Ensure the column is exactly vector(1024). ALTER is a no-op if already correct,
--- but we re-declare to be explicit and to survive environments where the type
--- drifted.
-ALTER TABLE case_chunks ALTER COLUMN embedding TYPE vector(1024);
+  IF current_mod IS DISTINCT FROM 1024 THEN
+    RAISE NOTICE 'case_chunks.embedding is not vector(1024) (typmod=%); wiping and retyping legacy embeddings.', current_mod;
+    DROP INDEX IF EXISTS idx_chunks_embedding;
+    TRUNCATE TABLE case_chunks RESTART IDENTITY;
+    ALTER TABLE case_chunks ALTER COLUMN embedding TYPE vector(1024);
+  ELSE
+    RAISE NOTICE 'case_chunks.embedding already vector(1024); leaving existing data intact (no truncate).';
+  END IF;
+END $$;
 
 -- Progress table for resumable re-embed. Keyed on the case, not the chunk,
 -- so pipeline/reembed_all.py can skip cases it has already processed.

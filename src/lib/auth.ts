@@ -4,7 +4,7 @@ import pool from "./db";
 import { logError } from "./error-logger";
 import type { User } from "@/types";
 
-const FREE_QUERY_LIMIT = 5;
+const FREE_QUERY_LIMIT = 3;
 
 /** Name of the httpOnly session cookie minted by /api/auth/session. */
 export const SESSION_COOKIE = "__session";
@@ -116,16 +116,9 @@ export async function getOrCreateUser(firebaseUser: {
 export async function checkQueryLimit(
   userId: number
 ): Promise<{ allowed: boolean; remaining: number }> {
-  // Reset counter if it's a new day
-  await pool.query(
-    `UPDATE users
-     SET queries_used_today = 0, queries_reset_date = CURRENT_DATE
-     WHERE id = $1 AND queries_reset_date < CURRENT_DATE`,
-    [userId]
-  );
-
+  // Free tier is a lifetime quota: queries_used_total never resets.
   const { rows } = await pool.query<User>(
-    `SELECT plan, queries_used_today FROM users WHERE id = $1`,
+    `SELECT plan, queries_used_total FROM users WHERE id = $1`,
     [userId]
   );
 
@@ -140,13 +133,13 @@ export async function checkQueryLimit(
     return { allowed: true, remaining: Infinity };
   }
 
-  const remaining = FREE_QUERY_LIMIT - user.queries_used_today;
+  const remaining = FREE_QUERY_LIMIT - user.queries_used_total;
   return { allowed: remaining > 0, remaining: Math.max(0, remaining) };
 }
 
 export async function incrementQueryCount(userId: number): Promise<void> {
   await pool.query(
-    `UPDATE users SET queries_used_today = queries_used_today + 1 WHERE id = $1`,
+    `UPDATE users SET queries_used_total = queries_used_total + 1 WHERE id = $1`,
     [userId]
   );
 }

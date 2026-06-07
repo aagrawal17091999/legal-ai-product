@@ -104,8 +104,8 @@ All migration files live in `migrations/` and are numbered sequentially.
 bash scripts/migrate.sh
 ```
 
-**When:** On initial setup, or after adding new migration files. Safe to re-run — all statements use `IF NOT EXISTS` / `IF NOT EXISTS`.
-**Why:** Applies every `migrations/*.sql` file in order against the PostgreSQL database. Loads `DATABASE_URL` from `.env.local` automatically.
+**When:** On initial setup, or after adding new migration files. Safe to re-run — `migrate.sh` records every applied file in a `schema_migrations` ledger and **skips** anything already applied, so each migration runs at most once. (Before this ledger existed, re-running blindly re-executed the destructive `TRUNCATE` in `009` and wiped all embeddings — that footgun is now closed, and `009` is additionally guarded to be a no-op once `case_chunks.embedding` is already `vector(1024)`.)
+**Why:** Applies each new `migrations/*.sql` file in order against the PostgreSQL database. Loads `DATABASE_URL` from `.env.local` automatically.
 
 ### Run a single migration
 
@@ -128,7 +128,7 @@ psql "$DATABASE_URL" -f migrations/005_extraction_fields.sql
 | `006_extraction_timestamps.sql` | Extraction timestamp column |
 | `007_chat_message_tracing.sql` | `chat_messages` tracing columns (model, token_usage, context_sent, response_time_ms) |
 | `008_error_logs.sql` | `error_logs` table |
-| `009_embeddings_v2.sql` | **DESTRUCTIVE** — truncates `case_chunks`, enforces `vector(1024)`, adds chunk-level FTS GIN index, rebuilds HNSW, creates `reembed_progress` tracking table. Required before switching to the `voyage-law-2` RAG pipeline. |
+| `009_embeddings_v2.sql` | Enforces `vector(1024)`, adds chunk-level FTS GIN index, rebuilds HNSW, creates `reembed_progress`. **Destructive ONLY on first run** (when the column isn't yet `vector(1024)` it truncates legacy embeddings); guarded to be a no-op — never truncating populated data — once the column is already `vector(1024)`. Required before switching to the `voyage-law-2` RAG pipeline. |
 | `010_chat_rag_trace.sql` | Adds `chat_messages.rag_trace JSONB` for per-message RAG pipeline tracing (rewritten queries, reranked chunk ids, per-stage timings) |
 | `011_rag_audit_tables.sql` | Adds `rag_pipeline_steps` (one row per pipeline stage per message) and `rag_query_embeddings` (query-side `vector(1024)` for each rewritten/HyDE query). Used for per-stage drill-down debugging. |
 

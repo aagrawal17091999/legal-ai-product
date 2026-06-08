@@ -156,6 +156,37 @@ async function vectorChunks(embedding, limit) {
   return [...sc.rows, ...hc.rows];
 }
 
+// #6 metadata lane — mirrors metaCaseChunks() in search.ts. FTS over each
+// case's headnotes + issue_for_consideration, one representative chunk per
+// matched case, folded into the chunk RRF map.
+const META_LANE_LIMIT = 20;
+async function metaCaseChunks(query, limit) {
+  const tableSQL = (table) => `
+    WITH matched AS (
+      SELECT c.id,
+             ts_rank(to_tsvector('english',
+                     coalesce(c.issue_for_consideration,'')||' '||coalesce(c.headnotes,'')),
+                     plainto_tsquery('english', $1)) AS rank
+        FROM ${table} c
+       WHERE to_tsvector('english',
+               coalesce(c.issue_for_consideration,'')||' '||coalesce(c.headnotes,''))
+             @@ plainto_tsquery('english', $1)
+       ORDER BY rank DESC LIMIT $2
+    )
+    SELECT DISTINCT ON (ch.source_id)
+           ch.id AS chunk_id, ch.source_table, ch.source_id, ch.chunk_text, m.rank
+      FROM matched m
+      JOIN case_chunks ch ON ch.source_id = m.id AND ch.source_table = '${table}'
+     ORDER BY ch.source_id, ch.chunk_index`;
+  const [sc, hc] = await Promise.all([
+    pool.query(tableSQL("supreme_court_cases"), [query, limit]),
+    pool.query(tableSQL("high_court_cases"), [query, limit]),
+  ]);
+  return [...sc.rows, ...hc.rows]
+    .sort((a, b) => Number(b.rank) - Number(a.rank))
+    .slice(0, limit);
+}
+
 // ── retrieval: mirrors retrieveChunks() from search.ts ──────────────────
 async function retrieve(queries) {
   const embeddings = await embedQueries(queries);
@@ -170,12 +201,14 @@ async function retrieve(queries) {
   };
 
   for (let i = 0; i < queries.length; i++) {
-    const [fts, vec] = await Promise.all([
+    const [fts, vec, meta] = await Promise.all([
       ftsChunks(queries[i], CANDIDATE_POOL),
       vectorChunks(embeddings[i], CANDIDATE_POOL),
+      metaCaseChunks(queries[i], META_LANE_LIMIT),
     ]);
     addRrf(fts);
     addRrf(vec);
+    addRrf(meta);
   }
 
   return Array.from(scoreMap.values())

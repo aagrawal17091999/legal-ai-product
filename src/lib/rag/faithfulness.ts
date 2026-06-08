@@ -169,29 +169,64 @@ export async function verifyFaithfulness(
   };
 }
 
+// Sentence boundary inside a single line of prose. The lookbehind treats the
+// boundary as sentence punctuation followed by any closing quotes/brackets and
+// any trailing citation markers — so a marker placed AFTER the period
+// ("…held X. [^3] Next…") or a closing quote ("…offences." Next…) stays with the
+// sentence it ends, and the split lands before the NEXT sentence. The lookahead
+// excludes `[` so a marker's own bracket never reads as a new sentence start.
+const SENTENCE_BOUNDARY_RE =
+  /(?<=[.!?](?:["'”’)\]]|\s*\[\^[^\]]*\])*)\s+(?=[A-Z("'“])/;
+
 /**
- * Split the answer into sentences and keep those that carry citation markers.
- * Each such sentence becomes a claim tagged with the case indices it cites.
- * Over-splitting on legal abbreviations ("v.", "S.") is harmless: markers sit at
- * sentence end, so the marker stays attached to the substantive tail.
+ * Strip Markdown decoration from one line so a claim reads as plain prose: drop
+ * leading block markers (blockquote, heading, list bullet, ordered-list number),
+ * unwrap emphasis/code/links, and discard horizontal rules. Citation markers
+ * (`[^n]`, `[^n, ¶p]`) are preserved — the link rule only unwraps `[text](url)`,
+ * whose text never starts with `^`.
  */
-function extractClaims(text: string): Claim[] {
-  const sentences = text.split(/(?<=[.!?])\s+(?=[A-Z(["'“])/);
+function stripMarkdown(line: string): string {
+  let s = line.replace(/^\s*>+\s?/, ""); // blockquote
+  s = s.replace(/^\s*#{1,6}\s+/, ""); // heading
+  s = s.replace(/^\s*\d+\.\s+/, ""); // ordered list
+  s = s.replace(/^\s*[-*+]\s+/, ""); // bullet
+  if (/^\s*([-*_])\1{2,}\s*$/.test(s)) return ""; // horizontal rule
+  s = s.replace(/\[([^^\]][^\]]*)\]\([^)]*\)/g, "$1"); // [text](url) → text
+  s = s.replace(/`([^`]+)`/g, "$1"); // inline code
+  s = s.replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, (_m, a, b) => a ?? b); // bold
+  s = s.replace(/\*([^*]+)\*/g, "$1"); // italic *
+  s = s.replace(/[*`]/g, ""); // stray emphasis chars
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Pull the citable sentences out of a Markdown answer. The answer is processed
+ * line by line — headings, list items, blockquotes and rules each sit on their
+ * own line, so a line is already a natural claim boundary — and each line is
+ * de-marked-down then sentence-split. Each sentence carrying a citation marker
+ * becomes a claim tagged with the case indices it cites. Treating the whole
+ * answer as flat prose (the old approach) let Markdown punctuation after a
+ * period defeat the splitter, fusing an entire formatted block into one "claim".
+ */
+export function extractClaims(text: string): Claim[] {
   const claims: Claim[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = stripMarkdown(rawLine);
+    if (!line) continue;
+    for (const sentence of line.split(SENTENCE_BOUNDARY_RE)) {
+      const indices = new Set<number>();
+      MARKER_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = MARKER_RE.exec(sentence)) !== null) {
+        indices.add(parseInt(m[1], 10));
+      }
+      if (indices.size === 0) continue;
 
-  for (const sentence of sentences) {
-    const indices = new Set<number>();
-    MARKER_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = MARKER_RE.exec(sentence)) !== null) {
-      indices.add(parseInt(m[1], 10));
+      const cleaned = sentence.replace(MARKER_RE, "").replace(/\s+/g, " ").trim();
+      if (cleaned.length < MIN_CLAIM_CHARS) continue;
+
+      claims.push({ text: cleaned, indices: Array.from(indices) });
     }
-    if (indices.size === 0) continue;
-
-    const cleaned = sentence.replace(MARKER_RE, "").replace(/\s+/g, " ").trim();
-    if (cleaned.length < MIN_CLAIM_CHARS) continue;
-
-    claims.push({ text: cleaned, indices: Array.from(indices) });
   }
   return claims;
 }
@@ -220,9 +255,16 @@ async function runJudge(
     "\n\n"
   )}\n\nCLAIMS TO CHECK:\n${claimLines.join("\n")}`;
 
+  // The response carries one object per claim, and each "supported" claim now
+  // includes a verbatim quote (a sentence or two). With many citations that
+  // easily exceeds a flat 1500-token cap — and a truncated response fails to
+  // parse, silently collapsing EVERY claim to "uncertain". Budget per claim and
+  // cap at the model's ceiling so the JSON comes back whole.
+  const maxTokens = Math.min(8192, 600 + pairs.length * 220);
+
   const response = await client.messages.create({
     model: JUDGE_MODEL,
-    max_tokens: 1500,
+    max_tokens: maxTokens,
     system: JUDGE_SYSTEM_PROMPT,
     messages: [{ role: "user", content: userContent }],
   });
@@ -256,23 +298,44 @@ async function runJudge(
 }
 
 const MIN_QUOTE_CHARS = 12; // reject trivially-short "quotes" that match by accident
-const MAX_QUOTE_CHARS = 600; // cap a single displayed span
+const MAX_QUOTE_CHARS = 1600; // safety ceiling for a runaway enumeration
 
 /**
- * Confirm `quote` appears verbatim in `excerpt`, tolerating only the whitespace
- * differences introduced by PDF line-wrapping (the excerpt collapses soft wraps
- * differently than the judge may echo them). Returns the cleaned quote when it
- * is genuinely present, else undefined. This is the guard that keeps the support
- * panel grounded: anything not literally in the retrieved text is discarded.
+ * Confirm `quote` appears verbatim in `excerpt` (tolerating only the whitespace
+ * differences introduced by PDF line-wrapping), then EXPAND it to whole-sentence
+ * boundaries so the panel shows the complete sentence(s) the passage sits in —
+ * never a mid-sentence fragment, even when the judge copied only a clause.
+ * Returns the verified, sentence-complete span, or undefined when the quote is
+ * not genuinely present. This is the guard that keeps provenance grounded:
+ * anything not literally in the retrieved text is discarded.
  */
-function verifyVerbatim(quote: string, excerpt: string): string | undefined {
+export function verifyVerbatim(quote: string, excerpt: string): string | undefined {
   const cleaned = quote.replace(/\s+/g, " ").trim();
   if (cleaned.length < MIN_QUOTE_CHARS) return undefined;
-  const haystack = excerpt.replace(/\s+/g, " ");
-  if (!haystack.includes(cleaned)) return undefined;
-  return cleaned.length > MAX_QUOTE_CHARS
-    ? cleaned.slice(0, MAX_QUOTE_CHARS).trimEnd() + "…"
-    : cleaned;
+  const hay = excerpt.replace(/\s+/g, " ");
+  const at = hay.indexOf(cleaned);
+  if (at === -1) return undefined;
+
+  // Expand to whole-sentence boundaries. Left: back to just after the previous
+  // terminator (a span that already starts a sentence finds the PRIOR sentence's
+  // terminator, so start lands correctly). Right: only extend when the span does
+  // NOT already end a sentence — otherwise we'd swallow the following sentence.
+  let start = 0;
+  for (let i = at - 1; i >= 0; i--) {
+    if (/[.!?]/.test(hay[i])) { start = i + 1; break; }
+  }
+  const matchEnd = at + cleaned.length;
+  let end = matchEnd;
+  if (!/[.!?]["'”’)\]]*$/.test(cleaned)) {
+    end = hay.length;
+    for (let i = matchEnd; i < hay.length; i++) {
+      if (/[.!?]/.test(hay[i])) { end = i + 1; break; }
+    }
+  }
+  const sentence = hay.slice(start, end).trim();
+  // If expansion ran away (e.g. an un-terminated list), fall back to the
+  // verified clause rather than dumping a huge block.
+  return sentence.length <= MAX_QUOTE_CHARS ? sentence : cleaned;
 }
 
 /**
@@ -304,7 +367,7 @@ For each claim, decide whether the CITED case's excerpt SUPPORTS the claim:
 
 Be conservative: only mark "supported" when the excerpt genuinely backs the specific assertion. A claim about a holding needs the holding in the excerpt, not just related discussion. Do not use outside knowledge — judge ONLY against the provided excerpt.
 
-For every "supported" claim, also return "quote": the single most relevant passage from the CITED case's excerpt that backs the claim, copied CHARACTER-FOR-CHARACTER from the excerpt (verbatim — do not paraphrase, summarise, fix typos, or join non-adjacent sentences). Keep it to one or two sentences. For "unsupported" and "uncertain" claims, set "quote" to "".
+For every "supported" claim, also return "quote": the single most relevant passage from the CITED case's excerpt that backs the claim, copied CHARACTER-FOR-CHARACTER from the excerpt (verbatim — do not paraphrase, summarise, fix typos, or join non-adjacent sentences). Quote COMPLETE sentences, not a mid-sentence fragment — begin at the start of a sentence and end at its full stop. One or two sentences is ideal. For "unsupported" and "uncertain" claims, set "quote" to "".
 
 Return ONLY a JSON object:
 {"verdicts":[{"claim":<number>,"verdict":"supported|unsupported|uncertain","reason":"<short>","quote":"<verbatim span or empty string>"}]}`;
@@ -317,8 +380,15 @@ function parseVerdicts(
   const end = raw.lastIndexOf("}");
   if (start === -1 || end === -1 || end <= start) return [];
   try {
-    const parsed = JSON.parse(raw.slice(start, end + 1));
-    const arr = parsed?.verdicts;
+    let arr: unknown;
+    try {
+      arr = (JSON.parse(raw.slice(start, end + 1)) as { verdicts?: unknown })?.verdicts;
+    } catch {
+      // The response was likely truncated mid-array (a quote ran long). Salvage
+      // every complete verdict object rather than discarding the whole batch —
+      // otherwise one overflow silently maps all claims to "uncertain".
+      arr = salvageVerdictObjects(raw);
+    }
     if (!Array.isArray(arr)) return [];
     const out: Array<{ claim: number; verdict: FaithfulnessVerdict; reason: string; quote: string }> = [];
     for (const v of arr) {
@@ -339,6 +409,50 @@ function parseVerdicts(
   } catch {
     return [];
   }
+}
+
+/**
+ * Recover complete verdict objects from a truncated JSON response. Scans for
+ * top-level `{...}` objects inside the `verdicts` array, tracking string state
+ * so braces inside quoted text don't miscount, and JSON-parses each complete
+ * object individually. The trailing incomplete object (if any) is skipped.
+ */
+function salvageVerdictObjects(raw: string): unknown[] {
+  const out: unknown[] = [];
+  let depth = 0;
+  let objStart = -1;
+  let inStr = false;
+  let escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inStr) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+    } else if (ch === "{") {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        try {
+          const obj = JSON.parse(raw.slice(objStart, i + 1));
+          // Only keep verdict-shaped objects (skip the outer wrapper object).
+          if (obj && typeof obj === "object" && "claim" in obj && "verdict" in obj) {
+            out.push(obj);
+          }
+        } catch {
+          /* skip unparseable fragment */
+        }
+        objStart = -1;
+      }
+    }
+  }
+  return out;
 }
 
 function buildFooter(

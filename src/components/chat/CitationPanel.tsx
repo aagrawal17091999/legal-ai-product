@@ -145,28 +145,21 @@ export default function CitationPanel({ citation, onClose }: CitationPanelProps)
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-5">
-        {display.status === "idle" ? (
-          citation.case.support && citation.case.support.length > 0 ? (
-            <SupportBody spans={citation.case.support} />
-          ) : (
-            <CaseOverview />
-          )
+        {display.status === "ok" ? (
+          // The paragraph was actually located in the DB — show it.
+          <ParagraphBody detail={display.detail} />
         ) : display.status === "loading" ? (
           <div className="flex items-center gap-2 text-charcoal-600 text-[13px]">
             <Spinner size="sm" />
             <span>Loading paragraph…</span>
           </div>
-        ) : display.status === "ok" ? (
-          <ParagraphBody detail={display.detail} />
-        ) : display.status === "not_found" ? (
-          <p className="text-[13px] text-charcoal-600 leading-relaxed">
-            Paragraph ¶{paragraph} isn&apos;t individually stored for this
-            judgment. Open the full judgment below to locate it.
-          </p>
+        ) : // idle (no paragraph clicked), not_found, or fetch error: never show a
+        // dead-end "paragraph not stored" message. Fall back to the verified
+        // support passages for this case, or the overview hint if there are none.
+        citation.case.support && citation.case.support.length > 0 ? (
+          <SupportBody spans={citation.case.support} />
         ) : (
-          <p className="text-[13px] text-burgundy-700">
-            Could not load paragraph: {display.message}
-          </p>
+          <CaseOverview />
         )}
       </div>
 
@@ -198,24 +191,33 @@ function CaseOverview() {
   );
 }
 
+// Strip residual Markdown from a claim sentence for plain-text display. The
+// extractor now removes Markdown at the source, but answers persisted before
+// that change can still carry stray markers. The full sentence is shown — not a
+// truncated part — so the reader sees exactly which statement the passage backs.
+function claimLabel(claim: string): string {
+  return claim.replace(/[*_`>#]/g, "").replace(/\s+/g, " ").trim();
+}
+
 // The passages the grounding judge verified as backing this case's cited
-// statements — each quote is a verbatim span of the retrieved excerpt, so it is
-// safe to show as the source the answer relied on.
+// statements — each quote is a verbatim, sentence-complete span of the retrieved
+// excerpt, so it is safe to show as the source the answer relied on. The quote
+// is the primary content; the full answer sentence it backs is the caption.
 function SupportBody({ spans }: { spans: SupportSpan[] }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <p className="text-[12px] text-charcoal-500 leading-relaxed">
         Passages from this judgment that support the cited statements in the
-        answer, quoted from the retrieved text:
+        answer, quoted verbatim from the retrieved text:
       </p>
       {spans.map((s, i) => (
         <div key={i} className="space-y-1.5">
-          <p className="text-[12px] italic text-charcoal-500 leading-relaxed">
-            {s.claim}
-          </p>
           <blockquote className="border-l-2 border-gold-400 pl-3 text-[14px] leading-relaxed text-charcoal-900">
             {s.quote}
           </blockquote>
+          <p className="text-[11px] text-charcoal-400 leading-relaxed pl-3">
+            supports: “{claimLabel(s.claim)}”
+          </p>
         </div>
       ))}
     </div>

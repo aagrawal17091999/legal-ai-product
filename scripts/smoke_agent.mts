@@ -99,6 +99,12 @@ async function runQuestion(label: string, question: string) {
 
   check(`${label}: produced a non-empty answer`, answer.trim().length > 50);
   check(`${label}: answer === result.assistantContent`, answer === result.assistantContent);
+  // No process/meta preamble or tool-internals leaked into the answer.
+  const opener = answer.trimStart().slice(0, 200);
+  const metaLeak =
+    /^(i\b|i['’](?:ll|ve|m)|understood\b|got it\b|let me\b|here(?:'s| is)\b|based on\b|this is (?:a|an) (?:rich|comprehensive|strong|good|clear|detailed))/i.test(opener) ||
+    /\b(load_case|search_fresh|lookup_by_citation|expand_cited_cases|the initial search|search results|already retrieved|i (?:now )?have (?:sufficient|comprehensive|the|all|full)|i now have|i can see|the cases surfaced|reconstruct the answer|here is (?:a )?(?:comprehensive|doctrinal))\b/i.test(opener);
+  check(`${label}: no meta/tool preamble leaked`, !metaLeak, metaLeak ? `opener="${opener.slice(0, 80)}"` : "");
   if (result.stepsUsed >= 2) {
     check(`${label}: prompt cache HIT (cacheRead>0)`, t.cacheRead > 0, `${t.cacheRead} tokens`);
   } else {

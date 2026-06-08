@@ -482,33 +482,45 @@ export function buildAgentAuditSteps(params: {
   return steps;
 }
 
-// Leading-meta openers the model sometimes emits when replying to an internal
-// revision/reflection nudge. Matched case-insensitively at the very start.
-const META_OPENERS =
-  /^(understood\b|got it\b|sure\b|okay\b|ok\b|i (will|'ll|now have|can see|have gathered)|let me\b|here(?:'s| is) (?:the|my)\b|based on the (?:tool results|cases|evidence)\b|i have (?:now )?(?:gathered|reviewed|loaded))/i;
+/**
+ * True when a leading paragraph is process/meta narration (the model talking
+ * about its tools or its own steps) rather than the substantive legal answer.
+ * The final answer is formal, impersonal legal writing, so first-person openers
+ * ("I now have…", "I will reconstruct…") and tool-name mentions are reliable
+ * tells — even when the paragraph also contains a citation marker.
+ */
+function isMetaParagraph(p: string): boolean {
+  if (/^#{1,6}\s/.test(p)) return false; // markdown heading → the real answer
+  if (/^>/.test(p)) return false; // the "> NOTE:" grounding banner → real
+  // Process/framing openers. Legal answers are impersonal and start with
+  // doctrine or a heading, never "I …" or "This is a rich set of authorities".
+  if (
+    /^(i\b|i['’](?:ll|ve|m)|understood\b|got it\b|sure\b|okay\b|ok\b|let me\b|here(?:'s| is)\b|based on\b|this is (?:a |an )?(?:rich|comprehensive|strong|good|helpful|useful|solid|robust|clear|detailed|nice)\b)/i.test(p)
+  ) {
+    return true;
+  }
+  // Mentions of the retrieval machinery or step/process narration. Multi-word
+  // phrases are used so genuine legal prose (e.g. "excerpts of the lease") is
+  // not caught — only talk about THIS system's search/tools is. No length cap:
+  // a long paragraph of process narration is still process narration.
+  return /\b(load_case|search_fresh|lookup_by_citation|expand_cited_cases|the initial search|search results|already retrieved|passages?(?: that were| already)? retrieved|i (?:now )?have (?:sufficient|comprehensive|the|all|full|enough)|i now have|i can see (?:clearly|from|that)|i will (?:now )?(?:reconstruct|compose|provide|give|answer)|the cases surfaced|reconstruct the answer|here is (?:a |my |the )?(?:comprehensive|doctrinal|detailed|brief)?\s*(?:overview|summary|analysis)\b)/i.test(p);
+}
 
 /**
- * Strip a single leading meta/preamble paragraph if it acknowledges an internal
- * instruction rather than starting the answer. Conservative: only removes the
- * first block (up to the first blank line) when it matches a known opener, is
- * short (< 320 chars), carries no citation marker, and substantive content
- * remains afterward. Exported for unit testing.
+ * Strip leading process/meta paragraphs the model sometimes emits when replying
+ * to an internal revision/reflection nudge, so they don't leak into the answer.
+ * Walks paragraphs from the top, dropping meta ones until the first substantive
+ * paragraph (or heading/banner). Safety rails: never drops the only remaining
+ * paragraph, and returns the original if stripping would gut the answer.
+ * Exported for unit testing.
  */
 export function stripLeadingMeta(text: string): string {
-  const trimmed = text.trimStart();
-  const splitAt = trimmed.indexOf("\n\n");
-  if (splitAt === -1) return text;
-  const head = trimmed.slice(0, splitAt).trim();
-  const rest = trimmed.slice(splitAt + 2).trimStart();
-  if (
-    head.length < 320 &&
-    rest.length > 200 &&
-    !/\[\^\d+/.test(head) &&
-    META_OPENERS.test(head)
-  ) {
-    return rest;
-  }
-  return text;
+  const paras = text.replace(/^\s+/, "").split(/\n\n+/);
+  let i = 0;
+  while (i < paras.length - 1 && isMetaParagraph(paras[i].trim())) i++;
+  if (i === 0) return text;
+  const rest = paras.slice(i).join("\n\n").trimStart();
+  return rest.length > 150 ? rest : text;
 }
 
 /** Concatenate the text blocks of a model message. */

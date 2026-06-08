@@ -512,23 +512,23 @@ bash scripts/deploy.sh
 ```
 
 **When:** To deploy the latest code to production.
-**Why:** Pulls from `origin main`, runs `npm install` + `npm run build`, restarts the app via PM2. Assumes the production directory is `/opt/nyayasearch`.
+**Why:** Pulls from `origin main`, runs `npm install` + `npm run build`, restarts the app via PM2. The app and Postgres run on the same CAX21 box; the app directory is `/opt/legal-ai-product` (override with `APP_DIR` / `PM2_APP` env vars). The script fails fast if the directory or pm2 process name is wrong.
 
 **What it does (step by step):**
-1. `cd /opt/nyayasearch`
+1. `cd /opt/legal-ai-product`
 2. `git pull origin main`
 3. `npm install`
 4. `npm run build`
-5. `pm2 restart nyayasearch`
+5. `pm2 restart nyayasearch --update-env`
 
 ### Manual deploy (if not using the script)
 
 ```bash
-cd /opt/nyayasearch
+cd /opt/legal-ai-product
 git pull origin main
 npm install
 npm run build
-pm2 restart nyayasearch
+pm2 restart nyayasearch --update-env
 ```
 
 ---

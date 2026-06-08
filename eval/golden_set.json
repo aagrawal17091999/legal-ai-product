@@ -1,6 +1,6 @@
 {
-  "_note": "Retrieval gold set. Each entry is a question + the (source_table, source_id) of cases that MUST appear in the top-K retrieval. Add entries as you discover questions that regress or improve — then re-run `npm run eval:retrieval` before and after a change to see the delta.",
-  "_version": "1",
+  "_note": "Retrieval gold set. Each entry is a question + the (source_table, source_id) of cases that MUST/SHOULD appear in the top-K retrieval. Re-run `npm run eval:retrieval` before and after a change to see the delta. Entries below tagged 'bootstrapped' were auto-anchored from the corpus (a real case picked per topic, with a paraphrased question) — review/curate them with a lawyer's eye and promote 'should' -> 'must' once verified.",
+  "_version": "2",
   "_format": {
     "id": "stable short id, used in the report",
     "question": "natural-language query as a user would type it",
@@ -14,14 +14,117 @@
       "question": "What is the applicability of grounds of arrest under Article 22?",
       "filters": {},
       "expected_cases": [
-        {
-          "source_table": "supreme_court_cases",
-          "source_id": 49,
-          "weight": "must",
-          "note": "Prabir Purkayastha v State (NCT of Delhi) — landmark on grounds of arrest"
-        }
+        { "source_table": "supreme_court_cases", "source_id": 49, "weight": "must", "note": "Prabir Purkayastha v State (NCT of Delhi) — landmark on grounds of arrest" }
       ],
       "notes": "Original failing case from 2026-04-19 CrPC bug."
+    },
+    {
+      "id": "q_anticipatory_bail_other_state",
+      "question": "Can a Court of Session or High Court grant anticipatory bail for an offence registered in another State?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 36613, "weight": "should", "note": "Priya Indoria v State of Karnataka — extra-territorial anticipatory bail" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_dowry_death_304b",
+      "question": "What must the prosecution establish to sustain a conviction for dowry death under Section 304B IPC?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 18918, "weight": "should", "note": "Kaliyaperumal v State of Tamil Nadu — ingredients of 304B/498A" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_dying_declaration",
+      "question": "What is the evidentiary value of a dying declaration and can a conviction rest on it alone?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 38300, "weight": "should", "note": "Sanjay Kumar Sharma v State of Bihar — reliance on dying declaration" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_cheque_138_director",
+      "question": "Is a company director personally liable under Section 138 of the Negotiable Instruments Act for a cheque signed in an official capacity?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 752, "weight": "should", "note": "Bijoy Kumar Moni v Paresh Manna — s.138 signatory liability" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_specific_performance_readiness",
+      "question": "What must a plaintiff prove regarding readiness and willingness to obtain specific performance of a contract?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 11, "weight": "should", "note": "Janardan Das v Durga Prasad Agarwalla — readiness and willingness" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_motor_accident_pain_suffering",
+      "question": "How are damages for pain and suffering enhanced in a motor accident compensation claim?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 185, "weight": "should", "note": "K.S. Muralidhar v R. Subbulakshmi — enhancement of compensation" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_eviction_bona_fide_need",
+      "question": "Eviction of a tenant on the ground of the landlord's bona fide requirement",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 38010, "weight": "should", "note": "Murlidhar Aggarwal v ... — bona fide need eviction" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_arbitration_modify_award",
+      "question": "Can a court modify an arbitral award while exercising powers under Section 34 of the Arbitration and Conciliation Act?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 38031, "weight": "should", "note": "Gayatri Balasamy v ISG Novasoft — s.34 modification of award" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_preemption_exemption_notification",
+      "question": "Does a State exemption notification defeat a tenant's right of pre-emption over urban immovable property?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 688, "weight": "should", "note": "Jagmohan v Badri Nath — pre-emption & exemption notification" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_quash_fir_482",
+      "question": "On what grounds can a High Court quash an FIR under Section 482 CrPC?",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 37192, "weight": "should", "note": "Mohammad Wajid v State of U.P. — quashing under s.482" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_murder_circumstantial",
+      "question": "Conviction for murder based on circumstantial evidence and the last-seen-together theory",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 37926, "weight": "should", "note": "Md. Bani Alam Mazid v State of Assam — circumstantial evidence" }
+      ],
+      "notes": "bootstrapped"
+    },
+    {
+      "id": "q_mental_cruelty_divorce",
+      "question": "Mental cruelty as a ground for dissolution of marriage",
+      "filters": {},
+      "expected_cases": [
+        { "source_table": "supreme_court_cases", "source_id": 37733, "weight": "should", "note": "A. Ranjithkumar v E. Kavitha — mental cruelty / divorce" }
+      ],
+      "notes": "bootstrapped"
     }
   ]
 }

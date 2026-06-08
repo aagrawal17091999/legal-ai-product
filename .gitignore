@@ -45,3 +45,9 @@ next-env.d.ts
 /data/
 __pycache__/
 *.pyc
+
+# DB dumps / exports — never commit (can be multi-GB; GitHub rejects >100MB)
+/*.csv
+*.dump
+*.sql.gz
+*.backup

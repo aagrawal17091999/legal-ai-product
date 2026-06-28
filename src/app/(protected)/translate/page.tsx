@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 
@@ -49,35 +50,14 @@ export default function TranslatePage() {
     loadJobs();
   }, [loadJobs]);
 
-  // Poll any job still processing; fetch a download URL when one turns ready.
-  useEffect(() => {
-    const pending = jobs.filter((j) => j.status === "processing");
-    if (pending.length === 0) return;
-    const t = setInterval(async () => {
-      const headers = await authHeaders();
-      const updates = await Promise.all(
-        pending.map(async (j) => {
-          const res = await fetch(`/api/translate/${j.id}`, { headers });
-          if (!res.ok) return null;
-          return res.json();
-        })
-      );
-      let changed = false;
-      setJobs((prev) =>
-        prev.map((j) => {
-          const u = updates.find((x) => x?.job?.id === j.id);
-          if (u?.job && u.job.status !== j.status) {
-            changed = true;
-            if (u.downloadUrl) setDownloads((d) => ({ ...d, [j.id]: u.downloadUrl }));
-            return u.job;
-          }
-          return j;
-        })
-      );
-      if (changed) loadJobs();
-    }, 4000);
-    return () => clearInterval(t);
-  }, [jobs, authHeaders, loadJobs]);
+  // Push instead of poll: subscribe to each processing job's Firestore status
+  // doc and refresh the list (Postgres is source of truth) the moment one turns
+  // ready/failed. Download URLs are fetched on click via fetchDownload.
+  useJobStatusPush(
+    "translate",
+    jobs.filter((j) => j.status === "processing").map((j) => j.id),
+    loadJobs
+  );
 
   const fetchDownload = async (jobId: string) => {
     const res = await fetch(`/api/translate/${jobId}`, { headers: await authHeaders() });

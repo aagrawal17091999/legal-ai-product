@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 
@@ -24,7 +25,6 @@ export default function OcrPage() {
   const { getToken } = useAuth();
   const [jobs, setJobs] = useState<OcrJob[]>([]);
   const [file, setFile] = useState<File | null>(null);
-  const [pages, setPages] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -47,34 +47,14 @@ export default function OcrPage() {
     loadJobs();
   }, [loadJobs]);
 
-  // Poll any job still processing; refresh the list when one turns ready.
-  useEffect(() => {
-    const pending = jobs.filter((j) => j.status === "processing");
-    if (pending.length === 0) return;
-    const t = setInterval(async () => {
-      const headers = await authHeaders();
-      const updates = await Promise.all(
-        pending.map(async (j) => {
-          const res = await fetch(`/api/ocr/${j.id}`, { headers });
-          if (!res.ok) return null;
-          return res.json();
-        })
-      );
-      let changed = false;
-      setJobs((prev) =>
-        prev.map((j) => {
-          const u = updates.find((x) => x?.job?.id === j.id);
-          if (u?.job && u.job.status !== j.status) {
-            changed = true;
-            return u.job;
-          }
-          return j;
-        })
-      );
-      if (changed) loadJobs();
-    }, 4000);
-    return () => clearInterval(t);
-  }, [jobs, authHeaders, loadJobs]);
+  // Push instead of poll: subscribe to each processing job's Firestore status
+  // doc and refresh the list (Postgres is source of truth) the moment one turns
+  // ready/failed.
+  useJobStatusPush(
+    "ocr",
+    jobs.filter((j) => j.status === "processing").map((j) => j.id),
+    loadJobs
+  );
 
   // Fetch a fresh signed URL and open it (URLs are short-lived, so fetch on click).
   const download = async (jobId: string, kind: "pdf" | "docx") => {
@@ -110,7 +90,6 @@ export default function OcrPage() {
     try {
       const form = new FormData();
       form.append("file", file);
-      if (pages.trim()) form.append("pageRange", pages.trim());
       const res = await fetch("/api/ocr", {
         method: "POST",
         headers: await authHeaders(),
@@ -122,7 +101,6 @@ export default function OcrPage() {
         return;
       }
       setFile(null);
-      setPages("");
       if (fileRef.current) fileRef.current.value = "";
       await loadJobs();
     } finally {
@@ -162,22 +140,6 @@ export default function OcrPage() {
                 className="block w-full text-[13px] text-charcoal-700 file:mr-3 file:rounded-lg file:border-0 file:bg-navy-950 file:px-4 file:py-2 file:text-ivory-50 file:text-[13px] file:font-medium hover:file:bg-navy-800"
               />
               <p className="text-[11px] text-charcoal-400 mt-1.5">PDF, DOCX, JPG, PNG · up to 25 MB</p>
-            </div>
-            <div>
-              <label className="block text-[13px] font-medium text-charcoal-700 mb-1.5">
-                Pages <span className="font-normal text-charcoal-400">(optional, PDF only)</span>
-              </label>
-              <input
-                type="text"
-                value={pages}
-                onChange={(e) => setPages(e.target.value)}
-                placeholder="e.g. 1-40, 55-60"
-                className="w-full rounded-lg border border-ivory-200 bg-ivory-50 px-4 py-2.5 text-[14px] text-charcoal-900 focus:outline-none focus:border-gold-400"
-              />
-              <p className="text-[11px] text-charcoal-400 mt-1.5">
-                Leave blank for the whole document. Large files must be limited to a page range
-                (up to 150 pages per run).
-              </p>
             </div>
             {error && <p className="text-[13px] text-burgundy-700">{error}</p>}
             <div>

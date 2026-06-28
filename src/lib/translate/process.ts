@@ -1,21 +1,28 @@
 /**
- * Async translation pipeline (Feature 2): runs off the upload request.
- * Job row → read source from R2 → single vision pass (OCR + translate +
- * structure) → render structured .docx → store output in R2 → mark job
- * ready/failed.
+ * Translation assembly step (runs in the cron worker, NOT off the upload request).
+ *
+ * The vision work (OCR + translate + structure, one call per page-range batch) is
+ * done by the durable queue (job_batches). Once every batch for a job is `done`,
+ * the worker wins the assembly CAS (status → 'assembling') and calls
+ * `assembleTranslationJob(jobId)`: read the per-batch results in reading order,
+ * assemble the block model, render the structured .docx, store it in R2, mark the
+ * job ready, and mirror the status to Firestore for an instant client push.
  */
 
 import pool from "../db";
-import { getR2Object, uploadToR2 } from "../r2";
-import { translateDocumentStructured } from "./translate";
+import { uploadToR2 } from "../r2";
+import { assembleTranslationResult } from "./translate";
 import { renderBlocksDocx } from "./docx";
+import { getJobBatches } from "../jobs/batches";
+import { sourceKind } from "../vision/structured";
+import { mirrorJobStatus } from "../firebase-admin";
 import { logError } from "../error-logger";
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-export async function processTranslation(jobId: string): Promise<void> {
+export async function assembleTranslationJob(jobId: string): Promise<void> {
   const { rows } = await pool.query(
-    `SELECT id, user_id, source_filename, source_mime, source_r2_key, target_language, status
+    `SELECT id, user_id, source_filename, source_mime, target_language, status
        FROM translation_jobs WHERE id = $1`,
     [jobId]
   );
@@ -24,14 +31,11 @@ export async function processTranslation(jobId: string): Promise<void> {
   if (job.status === "ready") return;
 
   try {
-    const buffer = await getR2Object(job.source_r2_key);
-
-    // Single vision-native pass: OCR + translation + structuring together, on
-    // the raw source — no lossy extract→flat-text step in between.
-    const translation = await translateDocumentStructured(
-      buffer,
-      job.source_mime,
-      job.source_filename,
+    const batches = await getJobBatches(jobId);
+    const kind = sourceKind(job.source_mime, job.source_filename);
+    const translation = assembleTranslationResult(
+      batches.map((b) => b.result_json),
+      kind,
       job.target_language
     );
 
@@ -73,18 +77,20 @@ export async function processTranslation(jobId: string): Promise<void> {
         JSON.stringify(translation),
       ]
     );
+    await mirrorJobStatus("translate", jobId, { status: "ready" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await pool.query(
       `UPDATE translation_jobs SET status = 'failed', error = $2, updated_at = NOW() WHERE id = $1`,
       [jobId, message]
     );
+    await mirrorJobStatus("translate", jobId, { status: "failed", error: message });
     logError({
       category: "extraction",
-      message: `Translation job failed: ${message}`,
+      message: `Translation assembly failed: ${message}`,
       error: err,
       severity: "error",
-      metadata: { feature: "translate_process", jobId },
+      metadata: { feature: "translate_assemble", jobId },
     });
   }
 }

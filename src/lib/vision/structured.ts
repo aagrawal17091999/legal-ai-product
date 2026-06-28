@@ -33,6 +33,13 @@ const DEFAULT_MODEL =
   "claude-sonnet-4-6";
 const MAX_TOKENS = 16000;
 
+// NOTE: structured outputs (output_config.format) is intentionally NOT used for
+// the block model. The full typed block schema is rejected by the API ("compiled
+// grammar too large"), and any loose-enough schema lets the model emit `runs` as
+// a scalar (" "/null) instead of an array — yielding empty transcriptions. We
+// rely on the detailed prompt + robust JSON parsing + coerceBlock() instead. The
+// generic `schema` param below is kept for callers that have a small, safe schema.
+
 // Pages per vision call. Kept small so each request stays well under Claude's
 // document-block size limit on heavy scans AND so the structured-JSON output
 // fits inside MAX_TOKENS. Short filings/orders run in a single call.
@@ -48,11 +55,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const IMAGE_MIME = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 
-type Source =
-  | { kind: "pdf"; batches: Buffer[] }
-  | { kind: "image"; mediaType: string; data: Buffer }
-  | { kind: "text"; text: string };
-
 function isPdf(mime: string, filename: string): boolean {
   return (mime || "").toLowerCase() === "application/pdf" || /\.pdf$/i.test(filename);
 }
@@ -63,6 +65,13 @@ function isDocx(mime: string, filename: string): boolean {
     /\.docx$/i.test(filename)
   );
 }
+/** The processing kind for a source — drives batching and `ocrUsed`. */
+export function sourceKind(mime: string, filename: string): "pdf" | "image" | "text" {
+  if (isDocx(mime, filename)) return "text";
+  if (isPdf(mime, filename)) return "pdf";
+  return "image";
+}
+
 function imageMediaType(mime: string, filename: string): string {
   const m = (mime || "").toLowerCase();
   if (IMAGE_MIME.has(m)) return m === "image/jpg" ? "image/jpeg" : m;
@@ -71,47 +80,103 @@ function imageMediaType(mime: string, filename: string): string {
   return "image/jpeg";
 }
 
-/** Split a PDF into page-range sub-PDFs so each vision call stays bounded. */
-async function splitPdf(buffer: Buffer): Promise<Buffer[]> {
-  const src = await PDFDocument.load(buffer, { ignoreEncryption: true });
-  const total = src.getPageCount();
-  if (total > MAX_TOTAL_PAGES) {
-    throw new Error(
-      `Document has ${total} pages; this supports up to ${MAX_TOTAL_PAGES}. ` +
-        `Please split the file and try again.`
-    );
-  }
-  if (total <= PAGES_PER_BATCH) return [buffer];
-
-  const batches: Buffer[] = [];
-  for (let start = 0; start < total; start += PAGES_PER_BATCH) {
-    const sub = await PDFDocument.create();
-    const indices: number[] = [];
-    for (let i = start; i < Math.min(start + PAGES_PER_BATCH, total); i++) indices.push(i);
-    const copied = await sub.copyPages(src, indices);
-    copied.forEach((p) => sub.addPage(p));
-    batches.push(Buffer.from(await sub.save()));
-  }
-  return batches;
+/** One unit of work: a 0-based, inclusive page range (null for non-PDF sources
+ *  that are processed whole). `index` preserves reading order across batches. */
+export interface BatchPlanItem {
+  index: number;
+  pageStart: number | null;
+  pageEnd: number | null;
 }
 
-async function prepareSource(buffer: Buffer, mime: string, filename: string): Promise<Source> {
+export interface BatchPlan {
+  kind: "pdf" | "image" | "text";
+  totalPages: number;
+  batches: BatchPlanItem[];
+}
+
+/**
+ * Plan how a source document will be chunked into vision calls WITHOUT doing any
+ * model work. The durable queue stores one row per returned batch and the worker
+ * processes them across separate function invocations (each with a fresh budget,
+ * which is how arbitrarily large documents avoid the 300s cap). Returns page
+ * RANGES only — the worker re-derives the sub-PDF bytes per batch from the stored
+ * source via {@link runBatch}.
+ *
+ * Mirrors the bounds and batch sizing of the old splitPdf; a PDF over the page
+ * cap throws the same user-facing message so the upload route can 400.
+ */
+export async function planBatches(
+  buffer: Buffer,
+  mime: string,
+  filename: string
+): Promise<BatchPlan> {
   if (isDocx(mime, filename)) {
-    const { value } = await mammoth.extractRawText({ buffer });
-    return { kind: "text", text: (value || "").trim() };
+    return { kind: "text", totalPages: 1, batches: [{ index: 0, pageStart: null, pageEnd: null }] };
   }
   if (isPdf(mime, filename)) {
+    let total: number;
     try {
-      return { kind: "pdf", batches: await splitPdf(buffer) };
-    } catch (err) {
-      // pdf-lib couldn't parse it (or it's over the page cap which we re-throw):
-      // a page-cap error must surface; anything else falls back to a single block.
-      if (err instanceof Error && /supports up to/.test(err.message)) throw err;
-      return { kind: "pdf", batches: [buffer] };
+      const src = await PDFDocument.load(buffer, { ignoreEncryption: true });
+      total = src.getPageCount();
+    } catch {
+      // pdf-lib couldn't parse it — fall back to a single whole-document batch
+      // (matches the old single-block fallback for unparseable PDFs).
+      return { kind: "pdf", totalPages: 1, batches: [{ index: 0, pageStart: null, pageEnd: null }] };
     }
+    if (total > MAX_TOTAL_PAGES) {
+      throw new Error(
+        `Document has ${total} pages; this supports up to ${MAX_TOTAL_PAGES}. ` +
+          `Please split the file and try again.`
+      );
+    }
+    if (total <= PAGES_PER_BATCH) {
+      return { kind: "pdf", totalPages: total, batches: [{ index: 0, pageStart: 0, pageEnd: total - 1 }] };
+    }
+    const batches: BatchPlanItem[] = [];
+    let index = 0;
+    for (let start = 0; start < total; start += PAGES_PER_BATCH) {
+      batches.push({
+        index: index++,
+        pageStart: start,
+        pageEnd: Math.min(start + PAGES_PER_BATCH, total) - 1,
+      });
+    }
+    return { kind: "pdf", totalPages: total, batches };
   }
-  // Treat everything else as an image.
-  return { kind: "image", mediaType: imageMediaType(mime, filename), data: buffer };
+  return { kind: "image", totalPages: 1, batches: [{ index: 0, pageStart: null, pageEnd: null }] };
+}
+
+/** Extract an inclusive 0-based page range from a PDF buffer into a new sub-PDF. */
+async function extractPdfRange(buffer: Buffer, pageStart: number, pageEnd: number): Promise<Buffer> {
+  const src = await PDFDocument.load(buffer, { ignoreEncryption: true });
+  const sub = await PDFDocument.create();
+  const indices: number[] = [];
+  for (let i = pageStart; i <= pageEnd; i++) indices.push(i);
+  const copied = await sub.copyPages(src, indices);
+  copied.forEach((p) => sub.addPage(p));
+  return Buffer.from(await sub.save());
+}
+
+/** Build the message content for one batch from the raw source buffer. */
+async function buildBatchContent(
+  buffer: Buffer,
+  mime: string,
+  filename: string,
+  batch: BatchPlanItem,
+  prompt: string
+): Promise<Array<Record<string, unknown>>> {
+  if (isDocx(mime, filename)) {
+    const { value } = await mammoth.extractRawText({ buffer });
+    return textContent((value || "").trim(), prompt);
+  }
+  if (isPdf(mime, filename)) {
+    const bytes =
+      batch.pageStart != null && batch.pageEnd != null
+        ? await extractPdfRange(buffer, batch.pageStart, batch.pageEnd)
+        : buffer;
+    return pdfContent(bytes, prompt);
+  }
+  return imageContent({ mediaType: imageMediaType(mime, filename), data: buffer }, prompt);
 }
 
 function pdfContent(batch: Buffer, prompt: string): Array<Record<string, unknown>> {
@@ -130,7 +195,10 @@ function textContent(text: string, prompt: string): Array<Record<string, unknown
   return [{ type: "text", text: `${prompt}\n\nDOCUMENT TEXT:\n"""\n${text}\n"""` }];
 }
 
-type ParsedBatch = { detected_language?: string; blocks?: unknown } | null;
+/** The parsed result of one batch — the raw `{detected_language, blocks}` object
+ *  the model returned, or null if the call failed. Stored as `result_json` on the
+ *  batch row and later fed to {@link assembleBlocks} in reading order. */
+export type ParsedBatch = { detected_language?: string; blocks?: unknown } | null;
 
 function parseJsonObject(raw: string): ParsedBatch {
   const s = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
@@ -151,7 +219,8 @@ async function callBatch(
   content: Array<Record<string, unknown>>,
   index: number,
   feature: string,
-  model: string
+  model: string,
+  schema: Record<string, unknown> | null
 ): Promise<ParsedBatch> {
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -161,6 +230,8 @@ async function callBatch(
         max_tokens: MAX_TOKENS,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         messages: [{ role: "user", content: content as any }],
+        // Structured outputs: force schema-valid JSON when a schema is supplied.
+        ...(schema ? { output_config: { format: { type: "json_schema" as const, schema } } } : {}),
       });
       const txt = resp.content
         .filter((b): b is Anthropic.TextBlock => b.type === "text")
@@ -264,46 +335,43 @@ export interface StructuredVisionResult {
 }
 
 /**
- * Run the vision-native structured pass over a source document.
- *
- * @param buildPrompt receives nothing and returns the full instruction string;
- *   the caller bakes in any feature-specific intent (translate vs. transcribe).
- * @param feature short label used in error logs ("translate" / "ocr").
- * @param modelOverride model id to use for this pass; falls back to DEFAULT_MODEL.
+ * Run the vision call for ONE batch and return its parsed JSON (never throws —
+ * a failed call returns null so the caller can mark the batch failed/retry). The
+ * durable-queue worker calls this once per batch, each in its own invocation.
  */
-export async function runStructuredVisionPass(
+export async function runBatch(
   buffer: Buffer,
   mime: string,
   filename: string,
-  buildPrompt: () => string,
+  batch: BatchPlanItem,
+  prompt: string,
   feature: string,
-  modelOverride?: string
-): Promise<StructuredVisionResult> {
+  modelOverride?: string,
+  schema: Record<string, unknown> | null = null
+): Promise<ParsedBatch> {
   const client = getAnthropicClient();
   const model = modelOverride?.trim() || DEFAULT_MODEL;
-  const source = await prepareSource(buffer, mime, filename);
-  const prompt = buildPrompt();
+  const content = await buildBatchContent(buffer, mime, filename, batch, prompt);
+  return callBatch(client, content, batch.index, feature, model, schema);
+}
 
-  const contents: Array<Array<Record<string, unknown>>> =
-    source.kind === "pdf"
-      ? source.batches.map((b) => pdfContent(b, prompt))
-      : source.kind === "image"
-        ? [imageContent(source, prompt)]
-        : [textContent(source.text, prompt)];
-
-  // Run batches with bounded concurrency, preserving order.
-  const parsed: ParsedBatch[] = new Array(contents.length);
-  for (let start = 0; start < contents.length; start += CONCURRENCY) {
-    const slice = contents.slice(start, start + CONCURRENCY);
-    const results = await Promise.all(slice.map((c, j) => callBatch(client, c, start + j, feature, model)));
-    results.forEach((r, j) => (parsed[start + j] = r));
-  }
-
+/**
+ * Combine per-batch parsed results (in reading order) into the final block model.
+ * `parsed[i]` is the result of batch index `i`; a null/unparseable entry becomes a
+ * flagged paragraph so content is never silently dropped.
+ *
+ * @param kind source kind from {@link planBatches} — drives `ocrUsed` (a DOCX
+ *   text path is the only non-OCR source).
+ */
+export function assembleBlocks(
+  parsed: ParsedBatch[],
+  kind: BatchPlan["kind"]
+): StructuredVisionResult {
   let detectedLanguage = "Unknown";
   const blocks: Block[] = [];
   for (let i = 0; i < parsed.length; i++) {
     const p = parsed[i];
-    if (p && i === 0 && typeof p.detected_language === "string" && p.detected_language.trim()) {
+    if (p && typeof p.detected_language === "string" && p.detected_language.trim() && detectedLanguage === "Unknown") {
       detectedLanguage = p.detected_language.trim();
     }
     if (p && Array.isArray(p.blocks)) {
@@ -330,6 +398,40 @@ export async function runStructuredVisionPass(
   return {
     detectedLanguage,
     blocks: dedupeRunningHeaders(blocks),
-    ocrUsed: source.kind !== "text",
+    ocrUsed: kind !== "text",
   };
+}
+
+/**
+ * Run the vision-native structured pass over a source document.
+ *
+ * @param buildPrompt receives nothing and returns the full instruction string;
+ *   the caller bakes in any feature-specific intent (translate vs. transcribe).
+ * @param feature short label used in error logs ("translate" / "ocr").
+ * @param modelOverride model id to use for this pass; falls back to DEFAULT_MODEL.
+ * @param schema JSON schema to constrain output via structured outputs, or null.
+ */
+export async function runStructuredVisionPass(
+  buffer: Buffer,
+  mime: string,
+  filename: string,
+  buildPrompt: () => string,
+  feature: string,
+  modelOverride?: string,
+  schema: Record<string, unknown> | null = null
+): Promise<StructuredVisionResult> {
+  const plan = await planBatches(buffer, mime, filename);
+  const prompt = buildPrompt();
+
+  // Run batches with bounded concurrency, preserving reading order.
+  const parsed: ParsedBatch[] = new Array(plan.batches.length);
+  for (let start = 0; start < plan.batches.length; start += CONCURRENCY) {
+    const slice = plan.batches.slice(start, start + CONCURRENCY);
+    const results = await Promise.all(
+      slice.map((b) => runBatch(buffer, mime, filename, b, prompt, feature, modelOverride, schema))
+    );
+    results.forEach((r, j) => (parsed[slice[j].index] = r));
+  }
+
+  return assembleBlocks(parsed, plan.kind);
 }

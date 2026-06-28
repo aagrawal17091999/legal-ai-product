@@ -19,24 +19,28 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     const { rows } = await pool.query(
       `SELECT id, source_filename, target_language, detected_language, status,
               segment_count, flagged_count, ocr_used, output_r2_key, result_json,
-              error, created_at
+              output_locked, error, created_at
          FROM translation_jobs WHERE id = $1 AND user_id = $2`,
       [id, user.id]
     );
     if (rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     const job = rows[0];
+    // Output is withheld when the job's credit cost pushed the wallet negative.
+    // The work is done and stored — the client just can't see it until top-up.
+    const locked = job.output_locked === true;
     let downloadUrl: string | null = null;
-    if (job.status === "ready" && job.output_r2_key) {
+    if (job.status === "ready" && job.output_r2_key && !locked) {
       downloadUrl = await getSignedObjectUrl(job.output_r2_key);
     }
     // The structured translation for the in-app viewer (null for jobs created
     // before the result was persisted — the viewer falls back to download).
-    const result = job.result_json ?? null;
+    // Suppressed while locked so the preview can't bypass the paywall.
+    const result = locked ? null : job.result_json ?? null;
     // Don't leak the storage key (or the bulky raw column) to the client.
     delete job.output_r2_key;
     delete job.result_json;
-    return NextResponse.json({ job, downloadUrl, result });
+    return NextResponse.json({ job, downloadUrl, result, locked });
   } catch (err) {
     logError({
       category: "database",

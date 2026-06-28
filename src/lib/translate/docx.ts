@@ -86,6 +86,10 @@ function renderBlock(block: Block, size: number): Array<Paragraph | Table> {
       return [new Paragraph({ alignment: AlignmentType.RIGHT, spacing: { before: 240 }, children: toTextRuns(block.runs, size) })];
 
     case "kv":
+      // A docx Table with zero rows throws "Invalid array length" (it does
+      // Array(Math.max(...[])) === Array(-Infinity)). A model can emit an empty
+      // kv block, so skip it rather than crash the whole render.
+      if (block.rows.length === 0) return [];
       // Borderless two-column table for the cause-title (label : value) block.
       return [
         new Table({
@@ -162,8 +166,27 @@ export async function renderBlocksDocx(
   }
 
   // ── Translated content only — no draft banner / language line / AI notice ──
+  // Fault-isolate per block: a single degenerate block (e.g. a malformed table
+  // that trips the docx library) must not crash the whole document — render it as
+  // a visible flagged marker and keep going.
   for (const block of result.blocks) {
-    body.push(...renderBlock(block, size));
+    try {
+      body.push(...renderBlock(block, size));
+    } catch {
+      body.push(
+        new Paragraph({
+          spacing: { after: 120 },
+          children: [
+            new TextRun({
+              text: "[⚠ A section could not be rendered and needs human review]",
+              bold: true,
+              color: FLAG_COLOR,
+              size,
+            }),
+          ],
+        })
+      );
+    }
   }
 
   // ── Header / footer: only real house-style content, if explicitly set. No AI

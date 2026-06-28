@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { getAnthropicClient } from "../claude";
 import { logError } from "../error-logger";
 import type { AssembledCase } from "./contextBuilder";
 import type { SupportSpan } from "@/types";
@@ -236,9 +236,7 @@ async function runJudge(
   citedIndices: number[],
   byIndex: Map<number, AssembledCase>
 ): Promise<FaithfulnessFinding[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set.");
-  const client = new Anthropic({ apiKey });
+  const client = getAnthropicClient();
 
   const excerptBlocks = citedIndices.map((idx) => {
     const c = byIndex.get(idx)!;

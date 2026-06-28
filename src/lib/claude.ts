@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { addClaudeUsage } from "./billing/meter";
 
 /**
  * Anthropic client utilities. The chat streaming used to live here
@@ -12,13 +13,7 @@ function getClient(): Anthropic {
   return getAnthropicClient();
 }
 
-/**
- * Shared Anthropic client factory. Exported so the new document-workspace and
- * translation features (vision OCR, scoped chat, translation) construct the
- * client the same way the existing chat does, instead of each re-reading the
- * env key.
- */
-export function getAnthropicClient(): Anthropic {
+function rawClient(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -26,6 +21,47 @@ export function getAnthropicClient(): Anthropic {
     );
   }
   return new Anthropic({ apiKey });
+}
+
+/**
+ * Shared Anthropic client factory. Every Claude call in the app should go
+ * through this so usage is metered for billing (see lib/billing). The returned
+ * client is a thin Proxy that auto-reports `.messages.create()` usage to the
+ * active request meter; the few `.messages.stream()` call sites report usage
+ * explicitly from their `finalMessage()` (they already hold it), so the proxy
+ * deliberately leaves `.stream` untouched to avoid double counting.
+ */
+export function getAnthropicClient(): Anthropic {
+  const client = rawClient();
+  const messages = client.messages;
+
+  const meteredMessages = new Proxy(messages, {
+    get(target, prop, receiver) {
+      if (prop === "create") {
+        return (...args: Parameters<typeof messages.create>) => {
+          const model = (args[0] as { model?: string })?.model ?? "";
+          const ret = (messages.create as (...a: unknown[]) => unknown)(...args);
+          // Non-streaming create() returns a Promise<Message>; meter its usage.
+          // (No call site passes stream:true to create(); streaming uses .stream().)
+          return Promise.resolve(ret).then((res) => {
+            const usage = (res as Anthropic.Message | undefined)?.usage;
+            if (usage) addClaudeUsage(model, usage);
+            return res;
+          });
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      if (prop === "messages") return meteredMessages;
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+    },
+  });
 }
 
 /**

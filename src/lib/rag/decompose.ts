@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { getAnthropicClient } from "../claude";
 import { logError } from "../error-logger";
 
 /**
@@ -43,9 +43,7 @@ export async function decomposeQuestion(
   if (!base) return { isCompound: false, subQuestions: [base] };
 
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set.");
-    const client = new Anthropic({ apiKey });
+    const client = getAnthropicClient();
 
     const response = await client.messages.create({
       model: DECOMPOSE_MODEL,

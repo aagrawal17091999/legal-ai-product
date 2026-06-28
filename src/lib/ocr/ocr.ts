@@ -11,7 +11,11 @@
  * module only supplies the transcription prompt and wraps the result.
  */
 
-import { runStructuredVisionPass } from "../vision/structured";
+import {
+  runStructuredVisionPass,
+  assembleBlocks,
+  type ParsedBatch,
+} from "../vision/structured";
 import {
   type Block,
   type TranslatedSegment,
@@ -19,11 +23,12 @@ import {
   flattenToSegments,
 } from "../translate/model";
 
-// OCR runs on Haiku by default — far cheaper, and adequate for transcription on
-// reasonable scans. Override with OCR_MODEL (e.g. a Sonnet/Opus tier) for hard,
-// faded, or heavily non-Latin documents. Translation stays on the stronger
-// DEFAULT_MODEL — this override is OCR-only.
-const OCR_MODEL = process.env.OCR_MODEL?.trim() || "claude-haiku-4-5";
+// OCR runs on Sonnet by default — Haiku proved too weak/variable on real legal
+// scans (it produced empty-runs paragraphs and malformed blocks, e.g. empty kv
+// rows that crashed the docx render). Sonnet gives reliable, well-formed output.
+// Override with OCR_MODEL (e.g. Haiku for cheap, clean digital PDFs, or an Opus
+// tier for the hardest scans). Translation uses its own DEFAULT_MODEL.
+const OCR_MODEL = process.env.OCR_MODEL?.trim() || "claude-sonnet-4-6";
 
 /** The stored OCR result. Shares the block model with translation; `segments`
  *  is the flattened projection the in-app viewer + segment_count column use. */
@@ -71,6 +76,11 @@ export async function ocrDocumentStructured(
   mime: string,
   filename: string
 ): Promise<OcrResult> {
+  // No structured-output schema: it backfired. The full typed block schema is
+  // rejected by the API ("grammar too large"), and a loose schema makes the model
+  // emit `runs` as a scalar (" "/null) instead of an array — producing empty
+  // transcriptions. Sonnet + the detailed prompt returns clean, valid JSON on its
+  // own (the parser strips any code fence), so we rely on that + coerceBlock.
   const { detectedLanguage, blocks, ocrUsed } = await runStructuredVisionPass(
     buffer,
     mime,
@@ -80,6 +90,32 @@ export async function ocrDocumentStructured(
     OCR_MODEL
   );
 
+  return {
+    detectedLanguage,
+    blocks,
+    segments: flattenToSegments(blocks),
+    flaggedCount: countFlagged(blocks),
+    ocrUsed,
+  };
+}
+
+/** Per-batch vision config for the durable-queue worker. No structured-output
+ *  schema — see ocrDocumentStructured for why it's omitted. */
+export function ocrBatchConfig(): {
+  prompt: string;
+  model: string;
+  schema: Record<string, unknown> | null;
+  feature: string;
+} {
+  return { prompt: buildPrompt(), model: OCR_MODEL, schema: null, feature: "ocr" };
+}
+
+/** Assemble per-batch results (in reading order) into the final OcrResult. */
+export function assembleOcrResult(
+  parsed: ParsedBatch[],
+  kind: "pdf" | "image" | "text"
+): OcrResult {
+  const { detectedLanguage, blocks, ocrUsed } = assembleBlocks(parsed, kind);
   return {
     detectedLanguage,
     blocks,

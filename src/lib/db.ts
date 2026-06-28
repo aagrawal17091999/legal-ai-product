@@ -12,10 +12,13 @@ function getPool(): Pool {
     );
   }
 
-  pool = new Pool({
-    connectionString,
-    max: process.env.NODE_ENV === "production" ? 20 : 5,
-  });
+  // Per-instance pool ceiling. Under load many serverless instances (app traffic
+  // + overlapping batch-worker invocations) each open their own pool, so the sum
+  // can exhaust Postgres `max_connections`. Point DATABASE_URL at a transaction-
+  // mode pooler (PgBouncer / Neon pooled / Supavisor) and keep this modest; raise
+  // DB_POOL_MAX only with headroom to spare.
+  const max = Number(process.env.DB_POOL_MAX) || (process.env.NODE_ENV === "production" ? 20 : 5);
+  pool = new Pool({ connectionString, max });
 
   return pool;
 }

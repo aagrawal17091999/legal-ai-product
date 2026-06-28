@@ -64,6 +64,56 @@ export async function createCustomer(email: string, name: string) {
   return customer;
 }
 
+/**
+ * Create a one-time Razorpay ORDER for a credit top-up pack (distinct from the
+ * recurring subscription). The tier's credits + user are stamped into `notes`
+ * so the verify route / webhook can grant the right amount, tamper-proof.
+ */
+export async function createCreditOrder(opts: {
+  userId: number;
+  tierId: string;
+  credits: number;
+  amountInr: number;
+}) {
+  const client = getClient();
+  return client.orders.create({
+    amount: Math.round(opts.amountInr * 100), // paise
+    currency: "INR",
+    notes: {
+      user_id: String(opts.userId),
+      tier_id: opts.tierId,
+      credits: String(opts.credits),
+      kind: "credit_topup",
+    },
+  });
+}
+
+/** Fetch an order (to read its server-set `notes` during payment verification). */
+export async function fetchOrder(orderId: string) {
+  const client = getClient();
+  return client.orders.fetch(orderId);
+}
+
+/**
+ * Verify a Razorpay checkout signature for a one-time order payment:
+ * HMAC_SHA256(order_id + "|" + payment_id, key_secret) === razorpay_signature.
+ */
+export function verifyPaymentSignature(opts: {
+  orderId: string;
+  paymentId: string;
+  signature: string;
+}): boolean {
+  const secret = process.env.RAZORPAY_KEY_SECRET;
+  if (!secret) throw new Error("RAZORPAY_KEY_SECRET is not configured");
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${opts.orderId}|${opts.paymentId}`)
+    .digest("hex");
+  const a = Buffer.from(opts.signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 export async function cancelSubscription(subscriptionId: string) {
   const client = getClient();
   return await client.subscriptions.cancel(subscriptionId);

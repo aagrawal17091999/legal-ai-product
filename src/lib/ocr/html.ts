@@ -52,6 +52,7 @@ function renderBlock(block: Block): string {
     case "signature":
       return `<p class="sig">${renderRuns(block.runs)}</p>`;
     case "kv":
+      if (block.rows.length === 0) return "";
       return `<table class="kv">${block.rows
         .map(
           (row) =>
@@ -103,7 +104,17 @@ export interface RenderedHtml {
 export function renderOcrHtml(result: OcrResult): RenderedHtml {
   const fonts = fontsForText(allText(result));
   const fontStack = fontFamilyStack(fonts);
-  const body = result.blocks.map(renderBlock).join("\n");
+  // Fault-isolate per block: a single degenerate block must not break the whole
+  // page render — emit a visible flagged marker and keep going.
+  const body = result.blocks
+    .map((block) => {
+      try {
+        return renderBlock(block);
+      } catch {
+        return `<p class="flag">[⚠ A section could not be rendered and needs human review]</p>`;
+      }
+    })
+    .join("\n");
 
   // @font-face per needed script. Chromium fetches a font only when a glyph
   // actually uses it, so listing the matched set is cheap; ./pdf.ts waits for

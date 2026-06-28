@@ -1,14 +1,17 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { verifyAuth, getRequestUser, checkQueryLimit, incrementQueryCount } from "@/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
+import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
 import pool from "@/lib/db";
 import { uploadToR2 } from "@/lib/r2";
-import { processOcr } from "@/lib/ocr/process";
 import { expireStaleOcrJobs } from "@/lib/ocr/expire";
-import { subsetPdfByRanges } from "@/lib/ocr/pages";
+import { planBatches } from "@/lib/vision/structured";
+import { enqueueBatches } from "@/lib/jobs/batches";
+import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
 
-// Vision OCR pass + PDF/DOCX render run in after().
-export const maxDuration = 300;
+// Upload only splits the document into batch rows; the cron worker
+// (/api/cron/process-batches) runs the vision passes and assembles the result.
+export const maxDuration = 60;
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const ACCEPTED = new Set([
@@ -32,8 +35,18 @@ export async function POST(request: NextRequest) {
 
   const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
 
-  const { allowed, remaining } = await checkQueryLimit(user.id);
-  if (!allowed) return NextResponse.json({ error: "limit_reached", remaining }, { status: 403 });
+  // Gate on credits; batches are metered in the worker (output locked on overshoot).
+  try {
+    await requireCredits(user.id);
+  } catch (e) {
+    if (e instanceof OutOfCreditsError) {
+      return NextResponse.json(
+        { error: "insufficient_credits", remaining: e.remaining },
+        { status: 402 }
+      );
+    }
+    throw e;
+  }
 
   let form: FormData;
   try {
@@ -43,7 +56,6 @@ export async function POST(request: NextRequest) {
   }
 
   const file = form.get("file");
-  const pageRange = String(form.get("pageRange") || "").trim();
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
   }
@@ -58,25 +70,13 @@ export async function POST(request: NextRequest) {
   }
 
   const mime = file.type || "application/pdf";
-  const isPdf = mime.toLowerCase() === "application/pdf" || /\.pdf$/i.test(file.name);
-
-  // Page-range selection only applies to PDFs. Subset here (at upload) so the
-  // stored source — and everything the OCR pipeline sees — is just the selected
-  // pages. A malformed/out-of-bounds range is rejected up front with a 400.
-  let buffer: Buffer = Buffer.from(await file.arrayBuffer());
-  if (pageRange && isPdf) {
-    try {
-      const { buffer: subset } = await subsetPdfByRanges(buffer, pageRange);
-      buffer = subset;
-    } catch (err) {
-      return NextResponse.json(
-        { error: err instanceof Error ? err.message : "Invalid page range." },
-        { status: 400 }
-      );
-    }
-  }
+  const buffer: Buffer = Buffer.from(await file.arrayBuffer());
 
   try {
+    // Plan the page-range batches up front so an over-cap document is rejected
+    // here (same 400 as before) rather than failing later in the worker.
+    const plan = await planBatches(buffer, mime, file.name);
+
     const safeName = file.name.replace(/[^\w.\-]+/g, "_").slice(-120);
     const key = `ocr/${user.id}/src/${globalThis.crypto.randomUUID()}-${safeName}`;
     await uploadToR2(key, buffer, mime);
@@ -90,11 +90,19 @@ export async function POST(request: NextRequest) {
     );
     const job = rows[0];
 
-    await incrementQueryCount(user.id);
-    after(() => processOcr(job.id));
+    // Enqueue one batch row per planned page range; the cron worker drains them.
+    await enqueueBatches(job.id, "ocr", plan.batches);
+    // Seed the Firestore mirror so the client can subscribe immediately. ownerUid
+    // is the Firebase uid the security rule checks; the worker updates status.
+    await mirrorJobStatus("ocr", job.id, { ownerUid: decoded.uid, status: "processing" });
 
+    // Credits are debited per batch in the worker as the vision passes run.
     return NextResponse.json({ job });
   } catch (err) {
+    // An over-cap document throws from planBatches with a user-facing message.
+    if (err instanceof Error && /supports up to/.test(err.message)) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
     logError({
       category: "fetching",
       message: err instanceof Error ? err.message : String(err),

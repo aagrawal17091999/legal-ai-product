@@ -10,6 +10,8 @@ import {
 } from "./agentTools";
 import { AGENT_SYSTEM_PROMPT } from "./agentPrompt";
 import { cachedSystem, applyCacheBreakpoints } from "./promptCache";
+import { getAnthropicClient } from "../claude";
+import { addClaudeUsage } from "../billing/meter";
 import { decomposeQuestion } from "./decompose";
 import { reflectSufficiency } from "./reflect";
 import { gradeDraft, describeUnsupported, buildGroundingFooter, buildSupportByCase, type GradeResult } from "./faithfulness";
@@ -106,9 +108,7 @@ export interface AgentRunResult {
 }
 
 function getClient(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set.");
-  return new Anthropic({ apiKey });
+  return getAnthropicClient();
 }
 
 export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
@@ -176,6 +176,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     totalOutputTokens += u.output_tokens;
     totalCacheRead += u.cache_read_input_tokens ?? 0;
     totalCacheWrite += u.cache_creation_input_tokens ?? 0;
+    // Report the streamed Sonnet usage to the request meter (the proxy in
+    // getAnthropicClient only auto-meters .create, not .stream).
+    addClaudeUsage(CHAT_MODEL, u);
   };
 
   // Drafts are NOT streamed to the user as they generate; we suppress interim

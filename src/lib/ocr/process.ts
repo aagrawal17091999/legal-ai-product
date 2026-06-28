@@ -1,23 +1,30 @@
 /**
- * Async OCR pipeline: runs off the upload request.
- * Job row → read source from R2 → single vision pass (OCR + structure) →
- * render PDF (primary) + DOCX (editable) → store both in R2 → mark job
- * ready/failed.
+ * OCR assembly step (runs in the cron worker, NOT off the upload request).
+ *
+ * The vision work is done batch-by-batch by the durable queue (job_batches);
+ * once every batch for a job is `done`, the worker wins the assembly CAS
+ * (status → 'assembling') and calls `assembleOcrJob(jobId)`. This reads the
+ * per-batch results in reading order, assembles the block model, renders the PDF
+ * (primary) + DOCX (editable), stores both in R2, marks the job ready, and
+ * mirrors the status to Firestore so the client gets an instant push.
  */
 
 import pool from "../db";
-import { getR2Object, uploadToR2 } from "../r2";
+import { uploadToR2 } from "../r2";
 import { renderBlocksDocx } from "../translate/docx";
-import { ocrDocumentStructured } from "./ocr";
+import { assembleOcrResult } from "./ocr";
 import { renderOcrPdf } from "./pdf";
+import { getJobBatches } from "../jobs/batches";
+import { sourceKind } from "../vision/structured";
+import { mirrorJobStatus } from "../firebase-admin";
 import { logError } from "../error-logger";
 
 const PDF_MIME = "application/pdf";
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-export async function processOcr(jobId: string): Promise<void> {
+export async function assembleOcrJob(jobId: string): Promise<void> {
   const { rows } = await pool.query(
-    `SELECT id, user_id, source_filename, source_mime, source_r2_key, status
+    `SELECT id, user_id, source_filename, source_mime, status
        FROM ocr_jobs WHERE id = $1`,
     [jobId]
   );
@@ -26,10 +33,12 @@ export async function processOcr(jobId: string): Promise<void> {
   if (job.status === "ready") return;
 
   try {
-    const buffer = await getR2Object(job.source_r2_key);
-
-    // Single vision-native pass: OCR + structuring together on the raw source.
-    const result = await ocrDocumentStructured(buffer, job.source_mime, job.source_filename);
+    const batches = await getJobBatches(jobId);
+    const kind = sourceKind(job.source_mime, job.source_filename);
+    const result = assembleOcrResult(
+      batches.map((b) => b.result_json),
+      kind
+    );
 
     // Guard against shipping a blank "success": if nothing could be read with
     // confidence (every segment flagged, or nothing transcribed), fail the job
@@ -74,18 +83,20 @@ export async function processOcr(jobId: string): Promise<void> {
         JSON.stringify(result),
       ]
     );
+    await mirrorJobStatus("ocr", jobId, { status: "ready" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await pool.query(
       `UPDATE ocr_jobs SET status = 'failed', error = $2, updated_at = NOW() WHERE id = $1`,
       [jobId, message]
     );
+    await mirrorJobStatus("ocr", jobId, { status: "failed", error: message });
     logError({
       category: "extraction",
-      message: `OCR job failed: ${message}`,
+      message: `OCR assembly failed: ${message}`,
       error: err,
       severity: "error",
-      metadata: { feature: "ocr_process", jobId },
+      metadata: { feature: "ocr_assemble", jobId },
     });
   }
 }

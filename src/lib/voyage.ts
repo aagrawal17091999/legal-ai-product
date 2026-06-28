@@ -1,4 +1,5 @@
 import { logError } from "./error-logger";
+import { addVoyageUsage } from "./billing/meter";
 
 const VOYAGE_EMBED_URL = "https://api.voyageai.com/v1/embeddings";
 const VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank";
@@ -57,6 +58,7 @@ export async function embedQuery(text: string): Promise<number[]> {
   }
 
   const data: VoyageEmbedResponse = await response.json();
+  addVoyageUsage(VOYAGE_EMBED_MODEL, data.usage?.total_tokens);
   return data.data[0].embedding;
 }
 
@@ -102,6 +104,7 @@ export async function embedQueries(texts: string[]): Promise<EmbedQueriesResult>
   }
 
   const data: VoyageEmbedResponse = await response.json();
+  addVoyageUsage(VOYAGE_EMBED_MODEL, data.usage?.total_tokens);
   return {
     embeddings: data.data.map((d) => d.embedding),
     totalTokens: data.usage?.total_tokens ?? 0,
@@ -144,6 +147,7 @@ export async function embedBatch(texts: string[]): Promise<number[][]> {
   }
 
   const data: VoyageEmbedResponse = await response.json();
+  addVoyageUsage(VOYAGE_EMBED_MODEL, data.usage?.total_tokens);
   return data.data.map((d) => d.embedding);
 }
 
@@ -205,6 +209,7 @@ export async function rerank(
   }
 
   const data: VoyageRerankResponse = await response.json();
+  addVoyageUsage(VOYAGE_RERANK_MODEL, data.usage?.total_tokens);
   return {
     results: data.data.map((d) => ({ index: d.index, score: d.relevance_score })),
     totalTokens: data.usage?.total_tokens ?? 0,

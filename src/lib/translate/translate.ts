@@ -18,7 +18,11 @@
  * the source it flags that span rather than guessing.
  */
 
-import { runStructuredVisionPass } from "../vision/structured";
+import {
+  runStructuredVisionPass,
+  assembleBlocks,
+  type ParsedBatch,
+} from "../vision/structured";
 import {
   type TranslationResult,
   countFlagged,
@@ -75,6 +79,34 @@ export async function translateDocumentStructured(
     targetLanguage,
     blocks,
     segments,
+    flaggedCount: countFlagged(blocks),
+    ocrUsed,
+  };
+}
+
+/** Per-batch vision config for the durable-queue worker (translate: default
+ *  model, no schema — the stronger model + detailed prompt suffice). */
+export function translateBatchConfig(targetLanguage: string): {
+  prompt: string;
+  model: string | undefined;
+  schema: Record<string, unknown> | null;
+  feature: string;
+} {
+  return { prompt: buildPrompt(targetLanguage), model: undefined, schema: null, feature: "translate" };
+}
+
+/** Assemble per-batch results (in reading order) into the final TranslationResult. */
+export function assembleTranslationResult(
+  parsed: ParsedBatch[],
+  kind: "pdf" | "image" | "text",
+  targetLanguage: string
+): TranslationResult {
+  const { detectedLanguage, blocks, ocrUsed } = assembleBlocks(parsed, kind);
+  return {
+    detectedLanguage,
+    targetLanguage,
+    blocks,
+    segments: flattenToSegments(blocks),
     flaggedCount: countFlagged(blocks),
     ocrUsed,
   };

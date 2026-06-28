@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// Firestore is used ONLY as a job-status push channel for OCR + Translation.
+// The server (firebase-admin) writes {feature}_jobs/{jobId} docs; clients only
+// read their own jobs via onSnapshot. firebase-admin bypasses these rules, so
+// `allow write: if false` blocks all client writes while the worker still updates.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /ocr_jobs/{jobId} {
+      // `resource == null` keeps a listener alive on a doc that doesn't exist yet
+      // (or whose create-mirror was dropped) so it fires when the worker writes
+      // the terminal status. Once the doc exists, only its owner may read it.
+      allow read: if request.auth != null
+                  && (resource == null || resource.data.ownerUid == request.auth.uid);
+      allow write: if false;
+    }
+    match /translate_jobs/{jobId} {
+      // `resource == null` keeps a listener alive on a doc that doesn't exist yet
+      // (or whose create-mirror was dropped) so it fires when the worker writes
+      // the terminal status. Once the doc exists, only its owner may read it.
+      allow read: if request.auth != null
+                  && (resource == null || resource.data.ownerUid == request.auth.uid);
+      allow write: if false;
+    }
+  }
+}

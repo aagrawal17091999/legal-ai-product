@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { getAnthropicClient } from "../claude";
 import { logError } from "../error-logger";
 
 /**
@@ -23,10 +23,8 @@ const EXPANSION_MODEL =
 // How many ADDITIONAL queries to request (the original is always included).
 const MAX_EXTRA_QUERIES = 4;
 
-function getClient(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set.");
-  return new Anthropic({ apiKey });
+function getClient() {
+  return getAnthropicClient();
 }
 
 const EXPANSION_PROMPT = `You rewrite a legal search query into a few complementary search queries for an Indian case-law database (Supreme Court + High Courts).

@@ -22,6 +22,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { getAnthropicClient } from "../claude";
+import { addClaudeUsage } from "../billing/meter";
 import { cachedSystem } from "../rag/promptCache";
 import {
   retrieveWorkspaceChunks,
@@ -315,6 +316,8 @@ async function streamAnswer(
     onTextDelta(delta);
   });
   const finalMsg = await stream.finalMessage();
+  // .stream() isn't auto-metered by the client proxy; report its usage here.
+  addClaudeUsage(finalMsg.model, finalMsg.usage);
   if (!content) {
     content = finalMsg.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")

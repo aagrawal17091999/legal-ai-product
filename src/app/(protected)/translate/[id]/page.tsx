@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, use as usePromise } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 
@@ -99,12 +100,9 @@ export default function TranslationViewerPage({
     void load();
   }, [load]);
 
-  // Keep polling while the job is still processing.
-  useEffect(() => {
-    if (job?.status !== "processing") return;
-    const t = setInterval(load, 4000);
-    return () => clearInterval(t);
-  }, [job?.status, load]);
+  // Push instead of poll: re-load from Postgres when the job's Firestore status
+  // doc flips out of `processing`.
+  useJobStatusPush("translate", job?.status === "processing" ? [id] : [], load);
 
   return (
     <div className="flex-1 overflow-y-auto">

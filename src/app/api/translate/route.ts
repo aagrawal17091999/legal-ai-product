@@ -1,13 +1,17 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { verifyAuth, getRequestUser, checkQueryLimit, incrementQueryCount } from "@/lib/auth";
+import { NextRequest, NextResponse } from "next/server";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
+import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
 import pool from "@/lib/db";
 import { uploadToR2 } from "@/lib/r2";
-import { processTranslation } from "@/lib/translate/process";
 import { expireStaleTranslations } from "@/lib/translate/expire";
+import { planBatches } from "@/lib/vision/structured";
+import { enqueueBatches } from "@/lib/jobs/batches";
+import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
 
-// Extraction/OCR + multi-call translation + docx render run in after().
-export const maxDuration = 300;
+// Upload only splits the document into batch rows; the cron worker
+// (/api/cron/process-batches) runs the vision passes and assembles the result.
+export const maxDuration = 60;
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const ACCEPTED = new Set([
@@ -31,8 +35,20 @@ export async function POST(request: NextRequest) {
 
   const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
 
-  const { allowed, remaining } = await checkQueryLimit(user.id);
-  if (!allowed) return NextResponse.json({ error: "limit_reached", remaining }, { status: 403 });
+  // Gate on credits: allow the job to start while any balance remains. Its
+  // batches are metered in the worker; if they overshoot, the finished output is
+  // locked (page count is capped at 150, so a single job's overshoot is bounded).
+  try {
+    await requireCredits(user.id);
+  } catch (e) {
+    if (e instanceof OutOfCreditsError) {
+      return NextResponse.json(
+        { error: "insufficient_credits", remaining: e.remaining },
+        { status: 402 }
+      );
+    }
+    throw e;
+  }
 
   let form: FormData;
   try {
@@ -62,6 +78,11 @@ export async function POST(request: NextRequest) {
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
     const mime = file.type || "application/pdf";
+
+    // Plan the page-range batches up front so an over-cap document is rejected
+    // here (same 400 as before) rather than failing later in the worker.
+    const plan = await planBatches(buffer, mime, file.name);
+
     const safeName = file.name.replace(/[^\w.\-]+/g, "_").slice(-120);
     const key = `translations/${user.id}/src/${globalThis.crypto.randomUUID()}-${safeName}`;
     await uploadToR2(key, buffer, mime);
@@ -75,11 +96,18 @@ export async function POST(request: NextRequest) {
     );
     const job = rows[0];
 
-    await incrementQueryCount(user.id);
-    after(() => processTranslation(job.id));
+    // Enqueue one batch row per planned page range; the cron worker drains them.
+    await enqueueBatches(job.id, "translate", plan.batches);
+    // Seed the Firestore mirror so the client can subscribe immediately.
+    await mirrorJobStatus("translate", job.id, { ownerUid: decoded.uid, status: "processing" });
 
+    // Credits are debited per batch in the worker as the vision passes run.
     return NextResponse.json({ job });
   } catch (err) {
+    // An over-cap document throws from planBatches with a user-facing message.
+    if (err instanceof Error && /supports up to/.test(err.message)) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
     logError({
       category: "fetching",
       message: err instanceof Error ? err.message : String(err),

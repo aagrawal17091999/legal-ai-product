@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth, getRequestUser, checkQueryLimit, incrementQueryCount } from "@/lib/auth";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
+import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
+import { withMeter } from "@/lib/billing/meter";
 import pool from "@/lib/db";
 import { hydrateSessionStore } from "@/lib/rag/sessionStore";
 import { runAgent, buildAgentAuditSteps } from "@/lib/rag/agent";
@@ -37,12 +39,18 @@ export async function POST(
 
   const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
 
-  const { allowed, remaining } = await checkQueryLimit(user.id);
-  if (!allowed) {
-    return NextResponse.json(
-      { error: "limit_reached", remaining },
-      { status: 403 }
-    );
+  // Gate on the credit wallet: allow the question through while any balance
+  // remains (it may overshoot one action); block once exhausted.
+  try {
+    await requireCredits(user.id);
+  } catch (e) {
+    if (e instanceof OutOfCreditsError) {
+      return NextResponse.json(
+        { error: "insufficient_credits", remaining: e.remaining },
+        { status: 402 }
+      );
+    }
+    throw e;
   }
 
   const { id: sessionId } = await params;
@@ -144,30 +152,38 @@ export async function POST(
           history_turns: Math.min(conversationHistory.length, 10),
         });
 
-        agentResult = await runAgent({
-          userMessage,
-          history: conversationHistory,
-          sessionStore: sessionStoreForTurn,
-          sessionFilters,
-          onTextDelta: (delta) => send("token", { delta }),
-          onToolEvent: (event) => {
-            send("tool", {
-              phase: event.type,
-              step_index: event.step_index,
-              tool: event.record.tool,
-              input: event.record.input,
-              status: event.type === "end" ? event.record.status : undefined,
-              duration_ms: event.type === "end" ? event.record.duration_ms : undefined,
-              error: event.type === "end" ? event.record.error : undefined,
-              data: event.type === "end" ? event.record.data : undefined,
-            });
-          },
-          onCasesUpdate: (cases) => {
-            citedCasesForDb = cases;
-            send("cases", cases);
-          },
-          onStatus: (s) => send("status", s),
-        });
+        // Meter the whole agent turn: withMeter establishes the request-scoped
+        // usage context here (inside the stream producer), so every Claude +
+        // Voyage call nested in runAgent is captured, then debited once the turn
+        // completes. The streamed Sonnet steps report usage via addClaudeUsage.
+        ({ result: agentResult } = await withMeter(
+          { userId: user.id, feature: "chat" },
+          () =>
+            runAgent({
+              userMessage,
+              history: conversationHistory,
+              sessionStore: sessionStoreForTurn!,
+              sessionFilters,
+              onTextDelta: (delta) => send("token", { delta }),
+              onToolEvent: (event) => {
+                send("tool", {
+                  phase: event.type,
+                  step_index: event.step_index,
+                  tool: event.record.tool,
+                  input: event.record.input,
+                  status: event.type === "end" ? event.record.status : undefined,
+                  duration_ms: event.type === "end" ? event.record.duration_ms : undefined,
+                  error: event.type === "end" ? event.record.error : undefined,
+                  data: event.type === "end" ? event.record.data : undefined,
+                });
+              },
+              onCasesUpdate: (cases) => {
+                citedCasesForDb = cases;
+                send("cases", cases);
+              },
+              onStatus: (s) => send("status", s),
+            })
+        ));
 
         assistantContent = agentResult.assistantContent;
         citedCasesForDb = agentResult.citedCases;
@@ -374,7 +390,8 @@ export async function POST(
             [sessionId]
           );
         }
-        await incrementQueryCount(user.id);
+        // Credits are debited by withMeter() when the agent turn finalizes —
+        // no per-question counter to bump here anymore.
       } catch (err) {
         logError({
           category: "database",

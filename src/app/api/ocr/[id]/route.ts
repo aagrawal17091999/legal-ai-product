@@ -19,26 +19,28 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     const { rows } = await pool.query(
       `SELECT id, source_filename, detected_language, status,
               segment_count, flagged_count, ocr_used, output_pdf_r2_key,
-              output_docx_r2_key, result_json, error, created_at
+              output_docx_r2_key, result_json, output_locked, error, created_at
          FROM ocr_jobs WHERE id = $1 AND user_id = $2`,
       [id, user.id]
     );
     if (rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     const job = rows[0];
+    // Output withheld when the job's credit cost pushed the wallet negative.
+    const locked = job.output_locked === true;
     let pdfUrl: string | null = null;
     let docxUrl: string | null = null;
-    if (job.status === "ready") {
+    if (job.status === "ready" && !locked) {
       if (job.output_pdf_r2_key) pdfUrl = await getSignedObjectUrl(job.output_pdf_r2_key);
       if (job.output_docx_r2_key) docxUrl = await getSignedObjectUrl(job.output_docx_r2_key);
     }
     // The structured OCR result for the in-app viewer (null for older jobs).
-    const result = job.result_json ?? null;
+    const result = locked ? null : job.result_json ?? null;
     // Don't leak storage keys (or the bulky raw column) to the client.
     delete job.output_pdf_r2_key;
     delete job.output_docx_r2_key;
     delete job.result_json;
-    return NextResponse.json({ job, pdfUrl, docxUrl, result });
+    return NextResponse.json({ job, pdfUrl, docxUrl, result, locked });
   } catch (err) {
     logError({
       category: "database",

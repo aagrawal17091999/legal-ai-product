@@ -6,6 +6,8 @@ import {
   computeSubscriptionEndDate,
 } from "@/lib/razorpay";
 import pool from "@/lib/db";
+import { grant, unlockOutputs } from "@/lib/billing/credits";
+import { PLAN_CREDITS } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
 
 export async function POST(request: NextRequest) {
@@ -67,7 +69,14 @@ export async function POST(request: NextRequest) {
             });
             break;
           }
-          await markSubscriptionActive({ userId, subscriptionId, plan });
+          const { endDate } = await markSubscriptionActive({ userId, subscriptionId, plan });
+          // Grant this cycle's Pro credit allowance (resets plan_credits, no rollover).
+          await grant({
+            userId,
+            type: "monthly_reset",
+            credits: PLAN_CREDITS.monthly,
+            periodEnd: endDate,
+          });
         } else {
           logError({
             category: "payment",
@@ -91,14 +100,49 @@ export async function POST(request: NextRequest) {
           const plan = getPlanTypeFromId(entity?.plan_id) ?? "monthly";
           const endDate = computeSubscriptionEndDate(plan);
 
-          await pool.query(
+          const { rows } = await pool.query<{ id: number }>(
             `UPDATE users SET
               subscription_end_date = $1,
               subscription_status = 'active',
               updated_at = NOW()
-             WHERE razorpay_subscription_id = $2`,
+             WHERE razorpay_subscription_id = $2
+             RETURNING id`,
             [endDate.toISOString(), subscriptionId]
           );
+          // Refill the Pro credit pool for the new billing cycle (no rollover).
+          if (rows[0]?.id) {
+            await grant({
+              userId: rows[0].id,
+              type: "monthly_reset",
+              credits: PLAN_CREDITS.monthly,
+              periodEnd: endDate,
+            });
+          }
+        }
+        break;
+      }
+
+      case "payment.captured": {
+        // One-time credit top-up purchases (createCreditOrder stamps notes).
+        const entity = payload.payment?.entity;
+        const notes = entity?.notes ?? {};
+        if (notes.kind === "credit_topup") {
+          const userId = Number(notes.user_id);
+          const credits = Number(notes.credits);
+          if (Number.isInteger(userId) && userId > 0 && credits > 0) {
+            const { applied } = await grant({
+              userId,
+              type: "topup",
+              credits,
+              razorpayPaymentId: entity.id,
+              razorpayOrderId: entity.order_id,
+              amountInr: Number.isFinite(Number(entity.amount))
+                ? Number(entity.amount) / 100
+                : undefined,
+            });
+            // A top-up restores a positive balance — release any withheld outputs.
+            if (applied) await unlockOutputs(userId);
+          }
         }
         break;
       }
@@ -107,14 +151,26 @@ export async function POST(request: NextRequest) {
       case "subscription.completed": {
         const subscriptionId = payload.subscription?.entity?.id;
         if (subscriptionId) {
-          await pool.query(
+          const { rows } = await pool.query<{ id: number }>(
             `UPDATE users SET
               plan = 'free',
               subscription_status = 'inactive',
               updated_at = NOW()
-             WHERE razorpay_subscription_id = $1`,
+             WHERE razorpay_subscription_id = $1
+             RETURNING id`,
             [subscriptionId]
           );
+          // The Pro allowance ends with the subscription — zero plan_credits so a
+          // lapsed user can't keep spending the monthly pool. Purchased/lifetime
+          // credits (topup_credits) are preserved.
+          if (rows[0]?.id) {
+            await pool.query(
+              `UPDATE credit_balances
+                  SET plan_credits = 0, period_end = NOW(), updated_at = NOW()
+                WHERE user_id = $1`,
+              [rows[0].id]
+            );
+          }
         }
         break;
       }

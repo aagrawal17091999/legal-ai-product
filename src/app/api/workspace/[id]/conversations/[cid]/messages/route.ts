@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth, getRequestUser, checkQueryLimit, incrementQueryCount } from "@/lib/auth";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
+import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
+import { withMeter } from "@/lib/billing/meter";
 import pool from "@/lib/db";
 import { runDocChat, type DocChatTurn, type DocCitation } from "@/lib/docchat/answer";
 import { logError } from "@/lib/error-logger";
@@ -68,9 +70,16 @@ export async function POST(
 
   const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
 
-  const { allowed, remaining } = await checkQueryLimit(user.id);
-  if (!allowed) {
-    return NextResponse.json({ error: "limit_reached", remaining }, { status: 403 });
+  try {
+    await requireCredits(user.id);
+  } catch (e) {
+    if (e instanceof OutOfCreditsError) {
+      return NextResponse.json(
+        { error: "insufficient_credits", remaining: e.remaining },
+        { status: 402 }
+      );
+    }
+    throw e;
   }
 
   const { id: workspaceId, cid: conversationId } = await ctx.params;
@@ -152,13 +161,19 @@ export async function POST(
       let outputTokens: number | null = null;
 
       try {
-        const result = await runDocChat({
-          workspaceId,
-          userMessage,
-          history,
-          onTextDelta: (delta) => send("token", { delta }),
-          onStatus: (s) => send("status", s),
-        });
+        // Meter the whole doc-chat turn (analyze + retrieve/embed/rerank + the
+        // streamed answer + citation verify) and debit when it finalizes.
+        const { result } = await withMeter(
+          { userId: user.id, feature: "workspace_chat" },
+          () =>
+            runDocChat({
+              workspaceId,
+              userMessage,
+              history,
+              onTextDelta: (delta) => send("token", { delta }),
+              onStatus: (s) => send("status", s),
+            })
+        );
         assistantContent = result.assistantContent;
         citations = result.citations;
         model = result.model;
@@ -210,7 +225,7 @@ export async function POST(
           [conversationId]
         );
         await pool.query(`UPDATE workspaces SET updated_at = NOW() WHERE id = $1`, [workspaceId]);
-        if (status === "success") await incrementQueryCount(user.id);
+        // Credits debited by withMeter() above — no per-question counter.
       } catch (err) {
         logError({
           category: "database",

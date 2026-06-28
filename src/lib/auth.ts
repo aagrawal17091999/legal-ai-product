@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { adminAuth as getAdminAuth } from "./firebase-admin";
 import pool from "./db";
+import { grantSignupCredits } from "./billing/credits";
 import { logError } from "./error-logger";
 import type { User } from "@/types";
 
@@ -106,6 +107,20 @@ export async function getOrCreateUser(firebaseUser: {
     ]
   );
   const user = rows[0];
+  // One-time free credit allowance for genuinely new users. Idempotent (no-op if
+  // the user already has any ledger history), so it's safe to call on every
+  // upsert; never let a billing hiccup break authentication.
+  try {
+    await grantSignupCredits(user.id);
+  } catch (err) {
+    logError({
+      category: "payment",
+      message: "grantSignupCredits failed",
+      error: err,
+      severity: "warning",
+      metadata: { userId: user.id },
+    });
+  }
   userCache.set(user.firebase_uid, {
     user,
     expires: Date.now() + USER_CACHE_TTL_MS,

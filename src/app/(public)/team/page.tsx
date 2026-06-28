@@ -7,7 +7,7 @@ const team = [
   {
     name: "Team Member 2",
     role: "CTO",
-    bio: "Building the AI infrastructure that powers NyayaSearch.",
+    bio: "Building the AI infrastructure that powers Legal Brain.",
   },
   {
     name: "Team Member 3",
@@ -26,7 +26,7 @@ export default function TeamPage() {
             Our team.
           </h1>
           <p className="mt-6 text-[17px] text-charcoal-600 leading-relaxed">
-            The people behind NyayaSearch.
+            The people behind Legal Brain.
           </p>
         </div>
 

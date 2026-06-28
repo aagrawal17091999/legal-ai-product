@@ -4,16 +4,16 @@ import { useState } from "react";
 
 const faqs = [
   {
-    q: "Does NyayaSearch hallucinate or invent case citations?",
-    a: "NyayaSearch uses retrieval-augmented generation (RAG), which means every answer is grounded in actual judgment text retrieved from our database. The AI does not generate case names, citations, or holdings from its general training data. Every inline citation links to the real source judgment. If the database does not contain a relevant judgment for your query, the system will indicate that the available authority is limited rather than fabricate an answer.",
+    q: "Does Legal Brain hallucinate or invent case citations?",
+    a: "Legal Brain uses retrieval-augmented generation (RAG), which means every answer is grounded in actual judgment text retrieved from our database. The AI does not generate case names, citations, or holdings from its general training data. Every inline citation links to the real source judgment. If the database does not contain a relevant judgment for your query, the system will indicate that the available authority is limited rather than fabricate an answer.",
   },
   {
     q: "How is this different from asking ChatGPT a legal question?",
-    a: "ChatGPT and similar general-purpose AI tools have no verified legal database. They generate responses from patterns in training data, which frequently results in invented case names, fabricated holdings, and citations to judgments that do not exist. NyayaSearch searches a curated database of actual Supreme Court and High Court judgments first, then generates an answer grounded exclusively in those real documents. Every cited judgment is downloadable as a PDF.",
+    a: "ChatGPT and similar general-purpose AI tools have no verified legal database. They generate responses from patterns in training data, which frequently results in invented case names, fabricated holdings, and citations to judgments that do not exist. Legal Brain searches a curated database of actual Supreme Court and High Court judgments first, then generates an answer grounded exclusively in those real documents. Every cited judgment is downloadable as a PDF.",
   },
   {
-    q: "Which courts does NyayaSearch cover?",
-    a: "NyayaSearch currently indexes judgments from the Supreme Court of India and High Courts across Indian states. Coverage is continuously expanding. If you need judgments from a specific High Court, contact us and we can confirm current coverage for that jurisdiction.",
+    q: "Which courts does Legal Brain cover?",
+    a: "Legal Brain currently indexes judgments from the Supreme Court of India and High Courts across Indian states. Coverage is continuously expanding. If you need judgments from a specific High Court, contact us and we can confirm current coverage for that jurisdiction.",
   },
   {
     q: "Is my research data private? Do you train AI models on my queries?",
@@ -21,19 +21,27 @@ const faqs = [
   },
   {
     q: "How accurate are the answers?",
-    a: "Every factual claim in a NyayaSearch response is backed by an inline citation to a specific judgment. We encourage what we expect every responsible advocate already does: verify the cited source before relying on it. The citation links are designed to make this verification fast — one click to the relevant passage, one more to download the full PDF.",
+    a: "Every factual claim in a Legal Brain response is backed by an inline citation to a specific judgment. We encourage what we expect every responsible advocate already does: verify the cited source before relying on it. The citation links are designed to make this verification fast — one click to the relevant passage, one more to download the full PDF.",
   },
   {
     q: "How is this different from Manupatra or SCC Online?",
-    a: "Manupatra and SCC Online are comprehensive legal databases — excellent for keyword search when you know what you are looking for. NyayaSearch is different in kind: you describe a legal question in plain language and receive a synthesised, cited answer drawn from case law. Think of it as the difference between searching a library catalogue and asking a research associate to brief you on the authorities.",
+    a: "Manupatra and SCC Online are comprehensive legal databases — excellent for keyword search when you know what you are looking for. Legal Brain is different in kind: you describe a legal question in plain language and receive a synthesised, cited answer drawn from case law. Think of it as the difference between searching a library catalogue and asking a research associate to brief you on the authorities.",
   },
   {
     q: "Is this compliant with Bar Council of India guidelines?",
-    a: "NyayaSearch is a legal research tool that assists advocates in finding and reviewing case law. It does not provide legal advice, represent clients, or replace the professional judgment of a qualified advocate. Use of AI-assisted research tools is consistent with an advocate's professional duty to be thorough and well-prepared.",
+    a: "Legal Brain is a legal research tool that assists advocates in finding and reviewing case law. It does not provide legal advice, represent clients, or replace the professional judgment of a qualified advocate. Use of AI-assisted research tools is consistent with an advocate's professional duty to be thorough and well-prepared.",
   },
   {
-    q: "What happens when my free queries run out?",
-    a: "The free plan includes 3 free queries total — a one-time allotment, not a daily reset. If you need more, the Pro plan offers unlimited queries for ₹3,000 per month or ₹30,000 per year. You can upgrade instantly from your account settings.",
+    q: "What happens when my free chats run out?",
+    a: "The free plan includes 5 free chats total — a one-time allotment, not a monthly or daily reset, and it covers case-law research, document workspaces, translation, and OCR combined. If you need more, the Pro plan offers unlimited use for ₹1,500 per month or ₹15,000 per year. You can upgrade instantly from your account settings.",
+  },
+  {
+    q: "Can I use Legal Brain on my own documents, not just case law?",
+    a: "Yes. Document Workspaces let you upload your own contracts, pleadings, and case files and ask questions answered only from those documents, with citations to the exact page. You can also translate documents into any language and OCR scanned or handwritten files — all from the same account.",
+  },
+  {
+    q: "How do translation and OCR handle scanned or handwritten documents?",
+    a: "Both use vision AI that reads faded ink, handwriting, stamps, and seals while preserving structure — headings, numbered clauses, tables, party labels, and signatures. Translation outputs a formatted, court-ready Word file in your target language; OCR outputs clean text in the original language as PDF or Word. Anything the model cannot read with confidence is flagged for human review rather than guessed, so the output is a reviewable draft, not a black box.",
   },
   {
     q: "Can I cancel the Pro plan at any time?",

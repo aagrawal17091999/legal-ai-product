@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useAuth } from "@/hooks/useAuth";
 import type { ChatSession } from "@/types";
 
@@ -52,12 +53,21 @@ export default function Sidebar({
         {/* Header */}
         <div className="px-5 py-5 border-b border-ivory-200">
           <div className="flex items-center justify-between mb-5">
-            <Link href="/" className="flex items-baseline gap-1">
-              <span className="font-serif text-xl text-charcoal-900 leading-none">
-                Nyaya
-              </span>
-              <span className="text-[15px] text-charcoal-900 tracking-tight">
-                Search
+            <Link href="/" className="flex items-center gap-2">
+              <Image
+                src="/logo.png"
+                alt="Legal Brain"
+                width={242}
+                height={256}
+                className="h-7 w-auto"
+              />
+              <span className="flex items-baseline gap-1">
+                <span className="font-serif text-xl text-charcoal-900 leading-none">
+                  Legal
+                </span>
+                <span className="text-[15px] text-charcoal-900 tracking-tight">
+                  Brain
+                </span>
               </span>
             </Link>
             <button
@@ -126,6 +136,33 @@ export default function Sidebar({
         {/* Bottom menu */}
         <div className="border-t border-ivory-200">
           <div className="p-3 space-y-0.5">
+            <Link
+              href="/workspace"
+              className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
+            >
+              <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              Document Workspaces
+            </Link>
+            <Link
+              href="/translate"
+              className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
+            >
+              <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
+              </svg>
+              Translate Document
+            </Link>
+            <Link
+              href="/ocr"
+              className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
+            >
+              <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 8V6a2 2 0 012-2h2M4 16v2a2 2 0 002 2h2m8-16h2a2 2 0 012 2v2m-4 12h2a2 2 0 002-2v-2M8 12h8M8 9h5M8 15h5" />
+              </svg>
+              OCR Document
+            </Link>
             <Link
               href="/judgments"
               className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"

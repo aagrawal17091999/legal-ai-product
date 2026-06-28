@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -26,9 +27,12 @@ export default function AuthGuard({ children }: AuthGuardProps) {
         <aside className="fixed inset-y-0 left-0 z-50 w-72 bg-ivory-100 border-r border-ivory-200 flex flex-col">
           <div className="px-5 py-5 border-b border-ivory-200">
             <div className="flex items-center justify-between mb-5">
-              <div className="flex items-baseline gap-1">
-                <span className="font-serif text-xl text-charcoal-900 leading-none">Nyaya</span>
-                <span className="text-[15px] text-charcoal-900 tracking-tight">Search</span>
+              <div className="flex items-center gap-2">
+                <Image src="/logo.png" alt="Legal Brain" width={242} height={256} className="h-7 w-auto" />
+                <span className="flex items-baseline gap-1">
+                  <span className="font-serif text-xl text-charcoal-900 leading-none">Legal</span>
+                  <span className="text-[15px] text-charcoal-900 tracking-tight">Brain</span>
+                </span>
               </div>
             </div>
             <div className="w-full h-10 rounded-lg bg-ivory-200 animate-pulse" />

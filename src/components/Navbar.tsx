@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
 
@@ -11,12 +12,22 @@ export default function Navbar() {
     <nav className="border-b border-ivory-200 bg-ivory-50">
       <div className="max-w-[1200px] mx-auto px-6 sm:px-8">
         <div className="flex items-center justify-between h-16">
-          <Link href="/" className="flex items-baseline gap-1">
-            <span className="font-serif text-2xl text-charcoal-900 leading-none">
-              Nyaya
-            </span>
-            <span className="text-lg text-charcoal-900 tracking-tight">
-              Search
+          <Link href="/" className="flex items-center gap-2">
+            <Image
+              src="/logo.png"
+              alt="Legal Brain"
+              width={242}
+              height={256}
+              priority
+              className="h-8 w-auto"
+            />
+            <span className="flex items-baseline gap-1">
+              <span className="font-serif text-2xl text-charcoal-900 leading-none">
+                Legal
+              </span>
+              <span className="text-lg text-charcoal-900 tracking-tight">
+                Brain
+              </span>
             </span>
           </Link>
 

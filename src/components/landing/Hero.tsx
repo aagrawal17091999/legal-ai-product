@@ -24,9 +24,10 @@ export default function Hero() {
 
             {/* Subheadline */}
             <p className="mt-8 max-w-xl text-lg text-charcoal-400 leading-relaxed">
-              Ask any question about Indian case law. Get cited, verifiable answers
-              drawn from Supreme Court and High Court judgments — with every source
-              linked to the original PDF.
+              The AI workspace for Indian lawyers. Ask any question about Indian
+              case law and get cited, verifiable answers from Supreme Court and
+              High Court judgments — then chat with your own case files, and
+              translate or OCR scanned documents into court-ready Word and PDF.
             </p>
 
             {/* CTAs */}
@@ -46,7 +47,7 @@ export default function Hero() {
 
             {/* Trust line */}
             <p className="mt-8 text-sm text-charcoal-400">
-              Free plan includes 3 free queries. No credit card required.
+              Free plan includes 5 free chats. No credit card required.
             </p>
           </div>
 

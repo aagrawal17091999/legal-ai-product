@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE } from "@/lib/auth";
 
 // Routes that require authentication. A logged-out visitor is bounced to /login.
-const PROTECTED_PREFIXES = ["/chat", "/account", "/judgments", "/trace"];
+const PROTECTED_PREFIXES = ["/chat", "/account", "/judgments", "/trace", "/workspace", "/translate"];
 // Pages a logged-in user should never see — they're sent straight to /chat.
 const AUTH_ONLY_PAGES = ["/", "/login", "/signup"];
 

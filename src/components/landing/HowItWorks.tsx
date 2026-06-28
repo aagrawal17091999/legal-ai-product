@@ -1,21 +1,21 @@
 const steps = [
   {
     number: "01",
-    title: "Ask in plain English",
+    title: "Ask a question or bring a document",
     description:
-      "Describe your legal question the way you would explain it to a colleague. No boolean operators, no keyword syntax. NyayaSearch understands legal intent — whether you ask about maintenance under Section 125 CrPC or the applicability of res judicata in writ proceedings.",
+      "Describe a legal question in plain English — maintenance under Section 125 CrPC, res judicata in writ proceedings — or upload your own files: contracts and pleadings into a workspace, or a scan, photo, or PDF to translate or OCR. No boolean operators, no keyword syntax.",
   },
   {
     number: "02",
-    title: "Filter with precision",
+    title: "Legal Brain grounds itself in the source",
     description:
-      "Narrow your research by court, bench, judge, act cited, case category, year range, or specific parties. Combine filters to target exactly the line of authority you need — such as all Supreme Court decisions by a three-judge bench interpreting Article 21 after 2015.",
+      "For research, it searches a curated database of real Supreme Court and High Court judgments. For your documents, it reads only what you uploaded — using vision AI to handle scans, faded ink, and handwriting. It works from the actual source, not from memory.",
   },
   {
     number: "03",
-    title: "Read answers grounded in judgments",
+    title: "Get cited answers or court-ready files",
     description:
-      "Every response streams in real time with inline citations linked to the source judgment. Click any citation to open the relevant passage. Download the full judgment PDF for your records, your brief, or your filing.",
+      "Answers stream in real time with inline citations you can click to open the exact passage. Download cited judgment PDFs, or export translated and OCR'd documents as formatted Word and PDF files — with anything the model is unsure about flagged for your review.",
   },
 ];
 
@@ -27,7 +27,7 @@ export default function HowItWorks() {
         <div className="max-w-2xl">
           <span className="overline">How it works</span>
           <h2 className="mt-6 font-serif text-4xl sm:text-[44px] leading-[1.1] tracking-tight text-charcoal-900">
-            From question to cited answer in under sixty seconds.
+            From question — or document — to cited answer.
           </h2>
         </div>
 

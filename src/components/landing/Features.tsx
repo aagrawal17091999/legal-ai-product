@@ -1,33 +1,33 @@
 const features = [
   {
-    title: "Every answer cites the source",
+    title: "Case-law research, grounded in judgments",
     description:
-      "Responses include inline citations — [^1], [^2], [^3] — each linked directly to the relevant passage in the source judgment. No vague references. No invented case names. Trace every statement back to the original text.",
+      "Ask a legal question in plain English and get a synthesised answer drawn from real Supreme Court and High Court judgments. Inline citations — [^1], [^2], [^3] — link to the exact passage in the source judgment. No invented case names; trace every statement back to the original text.",
+  },
+  {
+    title: "Document Workspaces — chat with your own files",
+    description:
+      "Upload your contracts, pleadings, and case files into a private workspace and ask questions answered only from those documents. Every answer cites the source document and page, and shows the exact snippet. If the answer isn't in your files, the assistant says so instead of guessing.",
+  },
+  {
+    title: "Translate legal documents, structure intact",
+    description:
+      "Translate a PDF, DOCX, scan, or photo into any language with a single vision-native pass that preserves headings, numbered clauses, tables, party labels, and signatures. Download a formatted, court-ready Word file — faded ink and handwriting are read, and anything uncertain is flagged for human review.",
+  },
+  {
+    title: "OCR scanned & handwritten documents",
+    description:
+      "Turn scans, photos, and handwritten notes into clean, structured text in the original language — no translation. Stamps, seals, and faded type are read by vision AI, layout is preserved, and the result downloads as a tidy PDF or editable Word file with uncertain passages flagged.",
   },
   {
     title: "Pre-filters that match how you think",
     description:
-      "Filter by court, bench strength, judge name, acts and sections cited, case category, petitioner, respondent, case number, or year range. Research the way you already organise your arguments — by jurisdiction, authority, and relevance.",
+      "Filter case-law research by court, bench strength, judge name, acts and sections cited, case category, petitioner, respondent, case number, or year range — and download every cited judgment as a PDF, in the format courts accept.",
   },
   {
-    title: "Direct PDF access to full judgments",
+    title: "Streaming answers and saved history",
     description:
-      "Every cited judgment is available as a downloadable PDF. No redirects, no paywalls within the product, no broken links. The judgment you need, in the format courts accept.",
-  },
-  {
-    title: "Supreme Court and High Court coverage",
-    description:
-      "NyayaSearch indexes judgments from the Supreme Court of India and High Courts across all states. Coverage is continuously expanding, with new judgments added regularly.",
-  },
-  {
-    title: "Streaming answers in real time",
-    description:
-      "Responses begin generating immediately and stream paragraph by paragraph. No waiting for a complete response. Start reading, evaluating, and planning your next query while the answer is still forming.",
-  },
-  {
-    title: "Your research history, preserved",
-    description:
-      "Every query and response is saved to your account. Return to previous research sessions, review earlier answers, and build on work you have already done — across days, weeks, or months.",
+      "Responses stream paragraph by paragraph so you can start reading immediately. Every research session, workspace, and document job is saved to your account — return to earlier work and build on it across days, weeks, or months.",
   },
 ];
 
@@ -39,7 +39,7 @@ export default function Features() {
         <div className="max-w-2xl">
           <span className="overline">Features</span>
           <h2 className="mt-6 font-serif text-4xl sm:text-[44px] leading-[1.1] tracking-tight text-ivory-50">
-            Built for how Indian lawyers actually research.
+            One workspace for research, your documents, translation, and OCR.
           </h2>
         </div>
 

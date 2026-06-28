@@ -39,7 +39,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
           const options = {
             key: razorpayKeyId,
             subscription_id: data.subscription_id,
-            name: "NyayaSearch",
+            name: "Legal Brain",
             description: `Pro ${plan === "monthly" ? "Monthly" : "Yearly"} Plan`,
             handler: async (response: {
               razorpay_payment_id: string;
@@ -77,8 +77,9 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Upgrade to Pro">
       <p className="text-[15px] text-charcoal-600 leading-relaxed">
-        You&apos;ve used all three free queries. Upgrade to Pro for
-        unlimited, citation-backed research.
+        You&apos;ve used all five free chats. Upgrade to Pro for unlimited,
+        citation-backed research and full access to document workspaces,
+        translation, and OCR.
       </p>
 
       <div className="mt-6 space-y-3">
@@ -88,7 +89,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
           className="w-full"
           disabled={subscribing}
         >
-          {subscribing ? "Processing…" : "₹3,000 / month →"}
+          {subscribing ? "Processing…" : "₹1,500 / month →"}
         </Button>
         <Button
           variant="outline"
@@ -96,7 +97,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
           className="w-full"
           disabled={subscribing}
         >
-          ₹30,000 / year — save ₹6,000
+          ₹15,000 / year — save ₹3,000
         </Button>
       </div>
 

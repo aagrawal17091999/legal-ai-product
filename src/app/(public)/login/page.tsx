@@ -124,7 +124,7 @@ function LoginForm() {
       </form>
 
       <p className="mt-6 text-center text-[14px] text-charcoal-600">
-        New to NyayaSearch?{" "}
+        New to Legal Brain?{" "}
         <Link
           href="/signup"
           className="text-gold-600 hover:text-gold-700 font-medium"

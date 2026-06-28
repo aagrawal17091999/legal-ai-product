@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import AuthGuard from "@/components/AuthGuard";
 import Sidebar from "@/components/chat/Sidebar";
@@ -99,12 +100,21 @@ function ProtectedContent({ children }: { children: React.ReactNode }) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
-            <div className="flex items-baseline gap-1">
-              <span className="font-serif text-lg text-charcoal-900 leading-none">
-                Nyaya
-              </span>
-              <span className="text-[14px] text-charcoal-900 tracking-tight">
-                Search
+            <div className="flex items-center gap-2">
+              <Image
+                src="/logo.png"
+                alt="Legal Brain"
+                width={242}
+                height={256}
+                className="h-6 w-auto"
+              />
+              <span className="flex items-baseline gap-1">
+                <span className="font-serif text-lg text-charcoal-900 leading-none">
+                  Legal
+                </span>
+                <span className="text-[14px] text-charcoal-900 tracking-tight">
+                  Brain
+                </span>
               </span>
             </div>
           </div>

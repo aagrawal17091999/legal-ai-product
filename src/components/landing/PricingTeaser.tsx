@@ -7,41 +7,41 @@ import Button from "@/components/ui/Button";
 import { loadRazorpay } from "@/lib/loadRazorpay";
 
 const plans = {
-  monthly: { price: "3,000", period: "/month", planKey: "monthly" as const },
+  monthly: { price: "1,500", period: "/month", planKey: "monthly" as const },
   yearly: {
-    price: "30,000",
+    price: "15,000",
     period: "/year",
-    savings: "Save ₹6,000",
+    savings: "Save ₹3,000",
     planKey: "yearly" as const,
   },
 };
 
 const freeFeatures = [
-  "3 free queries (lifetime)",
+  "5 free chats total (lifetime, not per month)",
+  "Across research, workspaces, translation & OCR",
   "Streaming, cited answers",
   "Supreme Court and High Court coverage",
   "Inline citations linked to source judgments",
   "PDF downloads of cited judgments",
   "Basic search filters (court, year range)",
-  "Research history (last 30 days)",
 ];
 
 const proFeatures = [
-  "Unlimited queries",
-  "Streaming, cited answers",
-  "Supreme Court and High Court coverage",
-  "Inline citations linked to source judgments",
-  "PDF downloads of cited judgments",
+  "Unlimited chats — research, workspaces, translation & OCR",
+  "Streaming, cited answers grounded in judgments",
+  "Document Workspaces: chat with your own files, cited to page",
+  "Translate documents into any language → court-ready Word",
+  "OCR scanned & handwritten documents → clean PDF / Word",
   "All pre-filters: court, bench, judge, act, section, category, parties, year",
-  "Full research history (unlimited retention)",
-  "Priority response generation",
-  "Email support",
+  "PDF downloads of cited judgments",
+  "Full history across every tool (unlimited retention)",
+  "Priority processing and email support",
 ];
 
 const pricingFaqs = [
   {
     q: "Can I try Pro before committing?",
-    a: "The free plan gives you a genuine sense of how NyayaSearch works. Three free queries, with the same quality of cited answers as the Pro plan. The primary difference is volume: Pro removes the limit and unlocks all pre-filters.",
+    a: "The free plan gives you a genuine sense of how Legal Brain works. Five free chats total — shared across case-law research, document workspaces, translation, and OCR — with the same quality as the Pro plan. The primary difference is volume: Pro removes the limit and unlocks every tool and pre-filter.",
   },
   {
     q: "What payment methods do you accept?",
@@ -49,7 +49,7 @@ const pricingFaqs = [
   },
   {
     q: "Can I switch between monthly and annual billing?",
-    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹30,000 for the year and save ₹6,000 compared to monthly billing.",
+    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹15,000 for the year and save ₹3,000 compared to monthly billing.",
   },
   {
     q: "What happens if I cancel?",
@@ -57,7 +57,7 @@ const pricingFaqs = [
   },
   {
     q: "Do you offer team or firm pricing?",
-    a: "Not yet. NyayaSearch is currently designed for individual advocates. If you are interested in firm-wide access, contact us at hello@nyayasearch.com and we will work with you.",
+    a: "Not yet. Legal Brain is currently designed for individual advocates. If you are interested in firm-wide access, contact us at hello@nyayasearch.com and we will work with you.",
   },
   {
     q: "Is GST included in the price?",
@@ -119,7 +119,7 @@ export default function PricingTeaser() {
           const options = {
             key: razorpayKeyId,
             subscription_id: data.subscription_id,
-            name: "NyayaSearch",
+            name: "Legal Brain",
             description: `Pro ${billing === "monthly" ? "Monthly" : "Yearly"} Plan`,
             handler: async (response: {
               razorpay_payment_id: string;
@@ -165,8 +165,9 @@ export default function PricingTeaser() {
             serious research.
           </h2>
           <p className="mt-6 max-w-xl mx-auto text-[17px] text-charcoal-600 leading-relaxed">
-            Start free with five queries a day. Upgrade to Pro when your practice
-            needs unlimited, citation-backed legal research.
+            Start free with five chats total — across research, workspaces,
+            translation, and OCR. Upgrade to Pro when your practice needs
+            unlimited, citation-backed work.
           </p>
 
           {/* Billing toggle */}
@@ -191,7 +192,7 @@ export default function PricingTeaser() {
             >
               Annual
               <span className={`ml-2 text-[12px] ${billing === "yearly" ? "text-gold-400" : "text-gold-600"}`}>
-                Save ₹6,000
+                Save ₹3,000
               </span>
             </button>
           </div>

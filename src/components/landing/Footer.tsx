@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 
 export default function Footer() {
   return (
@@ -7,16 +8,26 @@ export default function Footer() {
         <div className="grid grid-cols-2 md:grid-cols-5 gap-10">
           {/* Tagline column */}
           <div className="col-span-2">
-            <Link href="/" className="flex items-baseline gap-1">
-              <span className="font-serif text-3xl text-ivory-50 leading-none">
-                Nyaya
-              </span>
-              <span className="text-xl text-ivory-50 tracking-tight">
-                Search
+            <Link href="/" className="flex items-center gap-2.5">
+              <Image
+                src="/logo.png"
+                alt="Legal Brain"
+                width={242}
+                height={256}
+                className="h-10 w-auto"
+              />
+              <span className="flex items-baseline gap-1">
+                <span className="font-serif text-3xl text-ivory-50 leading-none">
+                  Legal
+                </span>
+                <span className="text-xl text-ivory-50 tracking-tight">
+                  Brain
+                </span>
               </span>
             </Link>
             <p className="mt-5 font-serif text-xl text-ivory-50 max-w-sm leading-snug">
-              Legal research grounded in real judgments.
+              The AI workspace for Indian lawyers — research, document Q&amp;A,
+              translation, and OCR.
             </p>
           </div>
 
@@ -113,8 +124,9 @@ export default function Footer() {
 
         <hr className="mt-16 border-0 border-t border-white/10" />
         <p className="mt-6 text-[13px] text-charcoal-400 text-center">
-          © {new Date().getFullYear()} NyayaSearch. All rights reserved.
-          NyayaSearch is a legal research tool and does not provide legal advice.
+          © {new Date().getFullYear()} Legal Brain. All rights reserved.
+          Legal Brain is a legal research and document tool and does not provide
+          legal advice.
         </p>
       </div>
     </footer>

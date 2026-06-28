@@ -16,9 +16,9 @@ const dmSans = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "NyayaSearch — AI-Powered Legal Research for Indian Advocates",
+  title: "Legal Brain — AI Legal Research, Document Q&A, Translation & OCR for Indian Advocates",
   description:
-    "Ask any question about Indian case law. Get cited, verifiable answers grounded in Supreme Court and High Court judgments, with every source linked to the original PDF. Start free.",
+    "The AI workspace for Indian lawyers. Ask Indian case law and get cited, verifiable answers from Supreme Court and High Court judgments; chat with your own case files; and translate or OCR scanned documents into clean, court-ready Word and PDF output. Start free.",
 };
 
 export default function RootLayout({

@@ -140,7 +140,7 @@ export default function AccountPage() {
             const options = {
               key: razorpayKeyId,
               subscription_id: data.subscription_id,
-              name: "NyayaSearch",
+              name: "Legal Brain",
               description: `Pro ${newPlan === "monthly" ? "Monthly" : "Yearly"} Plan`,
               handler: async () => {
                 // Payment success — refresh user data
@@ -182,7 +182,7 @@ export default function AccountPage() {
           const options = {
             key: razorpayKeyId,
             subscription_id: data.subscription_id,
-            name: "NyayaSearch",
+            name: "Legal Brain",
             description: `Pro ${plan === "monthly" ? "Monthly" : "Yearly"} Plan`,
             handler: async () => {
               setShowUpgradeModal(false);
@@ -308,10 +308,10 @@ export default function AccountPage() {
               </span>
             </div>
             <div className="flex items-center justify-between py-2 border-b border-ivory-200">
-              <span className="text-[14px] text-charcoal-600">Free queries used</span>
+              <span className="text-[14px] text-charcoal-600">Free chats used</span>
               <span className="text-[14px] font-medium text-charcoal-900 font-mono">
                 {userData?.plan === "free"
-                  ? `${userData?.queries_used_total || 0} / 3`
+                  ? `${userData?.queries_used_total || 0} / 5`
                   : "Unlimited"}
               </span>
             </div>
@@ -393,11 +393,11 @@ export default function AccountPage() {
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-serif text-xl text-charcoal-900">Pro Monthly</h4>
               <span className="font-serif text-2xl text-charcoal-900">
-                ₹3,000<span className="text-[13px] font-sans text-charcoal-600">/mo</span>
+                ₹1,500<span className="text-[13px] font-sans text-charcoal-600">/mo</span>
               </span>
             </div>
             <ul className="space-y-1.5 mb-5">
-              {["Unlimited queries", "All courts & filters", "Full judgment access", "Priority support"].map((f) => (
+              {["Unlimited chats", "Workspaces, translation & OCR", "All courts & filters", "Priority support"].map((f) => (
                 <li key={f} className="flex items-center gap-2 text-[13px] text-charcoal-600">
                   <svg className="w-3.5 h-3.5 text-gold-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -426,11 +426,11 @@ export default function AccountPage() {
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-serif text-xl text-charcoal-900">Pro Annual</h4>
               <span className="font-serif text-2xl text-charcoal-900">
-                ₹30,000<span className="text-[13px] font-sans text-charcoal-600">/yr</span>
+                ₹15,000<span className="text-[13px] font-sans text-charcoal-600">/yr</span>
               </span>
             </div>
             <ul className="space-y-1.5 mb-5">
-              {["Unlimited queries", "All courts & filters", "Full judgment access", "Priority support", "Save ₹6,000 vs monthly"].map((f) => (
+              {["Unlimited chats", "Workspaces, translation & OCR", "All courts & filters", "Full judgment access", "Save ₹3,000 vs monthly"].map((f) => (
                 <li key={f} className="flex items-center gap-2 text-[13px] text-charcoal-600">
                   <svg className="w-3.5 h-3.5 text-gold-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />

@@ -29,7 +29,7 @@ const rows: [string, boolean | string, boolean | string, boolean | string][] = [
     "Varies by platform",
     "10+ filter dimensions",
   ],
-  ["Free to start", true, false, "3 free queries"],
+  ["Free to start", true, false, "5 free chats"],
 ];
 
 function Cell({ value, accent }: { value: boolean | string; accent?: boolean }) {
@@ -95,7 +95,7 @@ export default function Comparison() {
                   Manual research
                 </th>
                 <th className="text-left px-6 py-5 text-[13px] font-medium uppercase tracking-wider text-gold-600">
-                  NyayaSearch
+                  Legal Brain
                 </th>
               </tr>
             </thead>

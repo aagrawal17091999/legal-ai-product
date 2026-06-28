@@ -4,7 +4,7 @@ import pool from "./db";
 import { logError } from "./error-logger";
 import type { User } from "@/types";
 
-const FREE_QUERY_LIMIT = 3;
+const FREE_QUERY_LIMIT = 5;
 
 /** Name of the httpOnly session cookie minted by /api/auth/session. */
 export const SESSION_COOKIE = "__session";

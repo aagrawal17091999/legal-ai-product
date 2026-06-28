@@ -10,7 +10,7 @@ export default function FinalCTA() {
         </h2>
         <p className="mt-6 max-w-xl mx-auto text-[17px] text-charcoal-400 leading-relaxed">
           Join the advocates who have stopped guessing and started citing. Start
-          with three free queries, on us.
+          with five free chats, on us.
         </p>
         <div className="mt-10 flex flex-col items-center gap-4">
           <Link href="/signup">

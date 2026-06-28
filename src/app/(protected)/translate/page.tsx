@@ -1,0 +1,282 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import Link from "next/link";
+import { useAuth } from "@/hooks/useAuth";
+import Button from "@/components/ui/Button";
+import Spinner from "@/components/ui/Spinner";
+
+interface TranslationJob {
+  id: string;
+  source_filename: string;
+  target_language: string;
+  detected_language: string | null;
+  status: "processing" | "ready" | "failed";
+  segment_count: number;
+  flagged_count: number;
+  ocr_used: boolean;
+  error: string | null;
+  created_at: string;
+}
+
+const ACCEPT = ".pdf,.docx,.jpg,.jpeg,.png,.webp";
+
+export default function TranslatePage() {
+  const { getToken } = useAuth();
+  const [jobs, setJobs] = useState<TranslationJob[]>([]);
+  const [file, setFile] = useState<File | null>(null);
+  const [target, setTarget] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [downloads, setDownloads] = useState<Record<string, string>>({});
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const authHeaders = useCallback(async () => {
+    const token = await getToken();
+    return { Authorization: `Bearer ${token}` };
+  }, [getToken]);
+
+  const loadJobs = useCallback(async () => {
+    const res = await fetch("/api/translate", { headers: await authHeaders() });
+    if (res.ok) {
+      const data = await res.json();
+      setJobs(data.jobs ?? []);
+    }
+  }, [authHeaders]);
+
+  useEffect(() => {
+    loadJobs();
+  }, [loadJobs]);
+
+  // Poll any job still processing; fetch a download URL when one turns ready.
+  useEffect(() => {
+    const pending = jobs.filter((j) => j.status === "processing");
+    if (pending.length === 0) return;
+    const t = setInterval(async () => {
+      const headers = await authHeaders();
+      const updates = await Promise.all(
+        pending.map(async (j) => {
+          const res = await fetch(`/api/translate/${j.id}`, { headers });
+          if (!res.ok) return null;
+          return res.json();
+        })
+      );
+      let changed = false;
+      setJobs((prev) =>
+        prev.map((j) => {
+          const u = updates.find((x) => x?.job?.id === j.id);
+          if (u?.job && u.job.status !== j.status) {
+            changed = true;
+            if (u.downloadUrl) setDownloads((d) => ({ ...d, [j.id]: u.downloadUrl }));
+            return u.job;
+          }
+          return j;
+        })
+      );
+      if (changed) loadJobs();
+    }, 4000);
+    return () => clearInterval(t);
+  }, [jobs, authHeaders, loadJobs]);
+
+  const fetchDownload = async (jobId: string) => {
+    const res = await fetch(`/api/translate/${jobId}`, { headers: await authHeaders() });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.downloadUrl) {
+        setDownloads((d) => ({ ...d, [jobId]: data.downloadUrl }));
+        window.open(data.downloadUrl, "_blank");
+      }
+    }
+  };
+
+  const deleteJob = async (jobId: string, name: string) => {
+    if (!window.confirm(`Delete the translation of "${name}"? This can't be undone.`)) return;
+    setDeletingId(jobId);
+    try {
+      const res = await fetch(`/api/translate/${jobId}`, {
+        method: "DELETE",
+        headers: await authHeaders(),
+      });
+      if (res.ok) {
+        setJobs((prev) => prev.filter((j) => j.id !== jobId));
+        setDownloads((d) => {
+          const next = { ...d };
+          delete next[jobId];
+          return next;
+        });
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const submit = async () => {
+    if (!file || !target.trim()) {
+      setError("Choose a file and enter a target language.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("targetLanguage", target.trim());
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: await authHeaders(),
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.message || data.error || "Failed to start translation.");
+        return;
+      }
+      setFile(null);
+      if (fileRef.current) fileRef.current.value = "";
+      await loadJobs();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="max-w-3xl mx-auto px-6 py-10">
+        <h1 className="font-serif text-2xl text-charcoal-900">Translate Document</h1>
+        <p className="text-[14px] text-charcoal-500 mt-1.5 max-w-xl leading-relaxed">
+          Translate a document into any language and download a formatted Word draft.
+          Source language is detected automatically.
+        </p>
+
+        {/* Certification notice — kept by default */}
+        <div className="mt-5 rounded-lg border border-gold-400 bg-gold-100/50 px-4 py-3">
+          <p className="text-[13px] text-charcoal-700 leading-relaxed">
+            <span className="font-semibold">Draft for review.</span> AI translations are not
+            certified. The output must be reviewed and certified by a qualified human translator
+            before filing. Sections the system can&apos;t read confidently are flagged in the document
+            rather than guessed.
+          </p>
+        </div>
+
+        {/* Upload form */}
+        <div className="mt-6 rounded-xl border border-ivory-200 bg-ivory-100 p-5">
+          <div className="flex flex-col gap-4">
+            <div>
+              <label className="block text-[13px] font-medium text-charcoal-700 mb-1.5">Document</label>
+              <input
+                ref={fileRef}
+                type="file"
+                accept={ACCEPT}
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="block w-full text-[13px] text-charcoal-700 file:mr-3 file:rounded-lg file:border-0 file:bg-navy-950 file:px-4 file:py-2 file:text-ivory-50 file:text-[13px] file:font-medium hover:file:bg-navy-800"
+              />
+              <p className="text-[11px] text-charcoal-400 mt-1.5">PDF, DOCX, JPG, PNG · up to 25 MB</p>
+            </div>
+            <div>
+              <label className="block text-[13px] font-medium text-charcoal-700 mb-1.5">
+                Target language
+              </label>
+              <input
+                type="text"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                placeholder="e.g. English, Hindi, Gujarati, French…"
+                className="w-full rounded-lg border border-ivory-200 bg-ivory-50 px-4 py-2.5 text-[14px] text-charcoal-900 focus:outline-none focus:border-gold-400"
+              />
+            </div>
+            {error && <p className="text-[13px] text-burgundy-700">{error}</p>}
+            <div>
+              <Button onClick={submit} disabled={submitting}>
+                {submitting ? <Spinner size="sm" /> : "Translate"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Jobs */}
+        <div className="mt-8">
+          <h2 className="text-[12px] font-medium text-charcoal-400 uppercase tracking-wider mb-3">
+            Your translations
+          </h2>
+          {jobs.length === 0 ? (
+            <p className="text-[13px] text-charcoal-400">No translations yet.</p>
+          ) : (
+            <ul className="space-y-2.5">
+              {jobs.map((j) => (
+                <li
+                  key={j.id}
+                  className="group rounded-xl border border-ivory-200 bg-ivory-50 px-5 py-4 flex items-center justify-between gap-4"
+                >
+                  {(() => {
+                    const info = (
+                      <>
+                        <p className="text-[14px] font-medium text-charcoal-900 truncate group-hover:underline">
+                          {j.source_filename}
+                        </p>
+                        <p className="text-[12px] text-charcoal-500 mt-0.5">
+                          {j.detected_language ? `${j.detected_language} → ` : ""}
+                          {j.target_language}
+                          {j.status === "ready" && (
+                            <>
+                              {" · "}
+                              {j.segment_count} segments
+                              {j.flagged_count > 0 && (
+                                <span className="text-burgundy-700"> · {j.flagged_count} flagged</span>
+                              )}
+                              {j.ocr_used ? " · OCR" : ""}
+                            </>
+                          )}
+                        </p>
+                        {j.status === "failed" && j.error && (
+                          <p className="text-[12px] text-burgundy-700 mt-0.5">{j.error}</p>
+                        )}
+                      </>
+                    );
+                    // Ready jobs open the in-app viewer; others aren't clickable.
+                    return j.status === "ready" ? (
+                      <Link href={`/translate/${j.id}`} className="min-w-0 group block">
+                        {info}
+                      </Link>
+                    ) : (
+                      <div className="min-w-0">{info}</div>
+                    );
+                  })()}
+                  <div className="flex-shrink-0 flex items-center gap-3">
+                    {j.status === "processing" && (
+                      <span className="flex items-center gap-2 text-[12px] text-gold-700">
+                        <Spinner size="sm" /> Processing
+                      </span>
+                    )}
+                    {j.status === "ready" && (
+                      <Button size="sm" variant="outline" onClick={() => downloads[j.id] ? window.open(downloads[j.id], "_blank") : fetchDownload(j.id)}>
+                        Download .docx
+                      </Button>
+                    )}
+                    {j.status === "failed" && (
+                      <span className="text-[12px] text-burgundy-700">Failed</span>
+                    )}
+                    <button
+                      onClick={() => deleteJob(j.id, j.source_filename)}
+                      disabled={deletingId === j.id}
+                      className="text-charcoal-400 hover:text-burgundy-700 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
+                      title="Delete translation"
+                    >
+                      {deletingId === j.id ? (
+                        <Spinner size="sm" />
+                      ) : (
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      )}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

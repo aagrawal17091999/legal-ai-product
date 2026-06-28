@@ -1,0 +1,140 @@
+import { NextRequest, NextResponse, after } from "next/server";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
+import pool from "@/lib/db";
+import { uploadToR2 } from "@/lib/r2";
+import { ingestDocument } from "@/lib/docchat/ingest";
+import { detectKind } from "@/lib/extract";
+import { logError } from "@/lib/error-logger";
+
+// Ingestion (OCR + embedding) runs in after(); give it room for multi-page scans.
+export const maxDuration = 300;
+
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
+const ACCEPTED = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+]);
+
+function acceptedFile(name: string, type: string): boolean {
+  if (ACCEPTED.has((type || "").toLowerCase())) return true;
+  return /\.(pdf|docx|jpe?g|png|webp)$/i.test(name || "");
+}
+
+async function ownWorkspace(userId: number, workspaceId: string): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT 1 FROM workspaces WHERE id = $1 AND user_id = $2`,
+    [workspaceId, userId]
+  );
+  return rows.length > 0;
+}
+
+// POST /api/workspace/[id]/documents — upload one or more documents (multipart)
+export async function POST(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const decoded = await verifyAuth(request);
+  if (!decoded) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
+  const { id: workspaceId } = await ctx.params;
+  if (!(await ownWorkspace(user.id, workspaceId))) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
+  }
+
+  const files = [...form.getAll("files"), ...form.getAll("file")].filter(
+    (f): f is File => f instanceof File
+  );
+  if (files.length === 0) {
+    return NextResponse.json({ error: "No files provided" }, { status: 400 });
+  }
+
+  const created: Array<{ id: string; filename: string; status: string }> = [];
+  const documentIds: string[] = [];
+
+  try {
+    for (const file of files) {
+      if (!acceptedFile(file.name, file.type)) {
+        return NextResponse.json(
+          { error: `Unsupported file type: ${file.name}. Accepted: PDF, DOCX, JPG, PNG.` },
+          { status: 400 }
+        );
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        return NextResponse.json(
+          { error: `${file.name} exceeds the 25 MB limit.` },
+          { status: 400 }
+        );
+      }
+
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const mime =
+        file.type ||
+        (detectKind("", file.name) === "pdf" ? "application/pdf" : "application/octet-stream");
+      const safeName = file.name.replace(/[^\w.\-]+/g, "_").slice(-120);
+      const key = `workspaces/${workspaceId}/${globalThis.crypto.randomUUID()}-${safeName}`;
+
+      await uploadToR2(key, buffer, mime);
+
+      const { rows } = await pool.query(
+        `INSERT INTO workspace_documents (workspace_id, user_id, filename, mime, r2_key, status)
+         VALUES ($1, $2, $3, $4, $5, 'pending')
+         RETURNING id, filename, status`,
+        [workspaceId, user.id, file.name, mime, key]
+      );
+      created.push(rows[0]);
+      documentIds.push(rows[0].id);
+    }
+
+    await pool.query(`UPDATE workspaces SET updated_at = NOW() WHERE id = $1`, [workspaceId]);
+
+    // Process (extract → chunk → embed) off the response. Sequential to bound
+    // memory/concurrency on the OCR + embedding calls.
+    after(async () => {
+      for (const docId of documentIds) {
+        await ingestDocument(docId);
+      }
+    });
+
+    return NextResponse.json({ documents: created });
+  } catch (err) {
+    logError({
+      category: "fetching",
+      message: err instanceof Error ? err.message : String(err),
+      error: err,
+      severity: "error",
+      userId: user.id,
+      endpoint: "/api/workspace/[id]/documents",
+      method: "POST",
+      metadata: { workspaceId },
+    });
+    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+  }
+}
+
+// GET /api/workspace/[id]/documents — list documents + status (for polling)
+export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const decoded = await verifyAuth(request);
+  if (!decoded) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
+  const { id: workspaceId } = await ctx.params;
+  if (!(await ownWorkspace(user.id, workspaceId))) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const { rows } = await pool.query(
+    `SELECT id, filename, mime, status, page_count, ocr_used, char_count, chunk_count, error, created_at
+       FROM workspace_documents WHERE workspace_id = $1 ORDER BY created_at ASC`,
+    [workspaceId]
+  );
+  return NextResponse.json({ documents: rows });
+}

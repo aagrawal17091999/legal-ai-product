@@ -58,7 +58,7 @@ test("leaves a normal answer untouched", () => {
 });
 
 test("keeps the '> NOTE:' grounding banner (it's a real opener)", () => {
-  const input = "> NOTE: NyayaSearch has no directly relevant case on this — general guidance follows.\n\n" + BODY;
+  const input = "> NOTE: Legal Brain has no directly relevant case on this — general guidance follows.\n\n" + BODY;
   assert.equal(stripLeadingMeta(input), input);
 });
 

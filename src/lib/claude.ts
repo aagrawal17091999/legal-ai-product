@@ -9,6 +9,16 @@ import Anthropic from "@anthropic-ai/sdk";
  */
 
 function getClient(): Anthropic {
+  return getAnthropicClient();
+}
+
+/**
+ * Shared Anthropic client factory. Exported so the new document-workspace and
+ * translation features (vision OCR, scoped chat, translation) construct the
+ * client the same way the existing chat does, instead of each re-reading the
+ * env key.
+ */
+export function getAnthropicClient(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error(

@@ -33,6 +33,15 @@ const DEFAULT_MODEL =
   "claude-sonnet-4-6";
 const MAX_TOKENS = 16000;
 
+/** Output cap for a vision call, exported for Batch-API request construction. */
+export const VISION_MAX_TOKENS = MAX_TOKENS;
+
+/** Resolve the concrete model id for a pass (Batch-API requests need a real id,
+ *  not the `undefined` "use default" the translation config passes). */
+export function resolveVisionModel(modelOverride?: string | null): string {
+  return modelOverride?.trim() || DEFAULT_MODEL;
+}
+
 // NOTE: structured outputs (output_config.format) is intentionally NOT used for
 // the block model. The full typed block schema is rejected by the API ("compiled
 // grammar too large"), and any loose-enough schema lets the model emit `runs` as

@@ -5,7 +5,11 @@ import {
   fetchSubscription,
   getPlanTypeFromId,
   markSubscriptionActive,
+  subscriptionEndDate,
+  subscriptionCycleKey,
 } from "@/lib/razorpay";
+import { grant } from "@/lib/billing/credits";
+import { PLAN_CREDITS } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
 
 /**
@@ -84,6 +88,7 @@ export async function POST(request: NextRequest) {
     )) as {
       status?: string;
       plan_id?: string;
+      current_end?: number | null;
       notes?: Record<string, string | number>;
     };
 
@@ -131,10 +136,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const currentEnd = subscription.current_end;
     const { endDate } = await markSubscriptionActive({
       userId: user.id,
       subscriptionId: razorpay_subscription_id,
       plan,
+      endDate: subscriptionEndDate(plan, currentEnd),
+    });
+
+    // Grant this cycle's Pro allowance synchronously so credits appear without
+    // waiting for the async webhook. Shares the per-cycle idempotency key with
+    // the activated/charged webhooks, so the cycle is granted exactly once no
+    // matter which path runs first.
+    await grant({
+      userId: user.id,
+      type: "monthly_reset",
+      credits: PLAN_CREDITS.monthly,
+      periodEnd: endDate,
+      idempotencyKey: subscriptionCycleKey(razorpay_subscription_id, currentEnd),
     });
 
     return NextResponse.json({

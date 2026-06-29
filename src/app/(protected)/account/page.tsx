@@ -38,6 +38,9 @@ export default function AccountPage() {
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [upgrading, setUpgrading] = useState<"monthly" | "yearly" | null>(null);
 
+  // Billing/load errors surfaced to the user instead of being swallowed.
+  const [billingError, setBillingError] = useState<string | null>(null);
+
   useEffect(() => {
     fetchUser();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -46,13 +49,19 @@ export default function AccountPage() {
   async function fetchUser() {
     const token = await getToken();
     if (!token) return;
-    const res = await fetch("/api/user", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setUserData(data);
-      setNewName(data.display_name || "");
+    try {
+      const res = await fetch("/api/user", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUserData(data);
+        setNewName(data.display_name || "");
+      } else {
+        setBillingError("Couldn't load your account. Please refresh and try again.");
+      }
+    } catch {
+      setBillingError("Couldn't reach the server. Check your connection and try again.");
     }
   }
 
@@ -100,6 +109,7 @@ export default function AccountPage() {
 
   async function handleCancelSubscription() {
     setCancelling(true);
+    setBillingError(null);
     try {
       const token = await getToken();
       const res = await fetch("/api/payments/cancel-subscription", {
@@ -110,9 +120,12 @@ export default function AccountPage() {
       if (res.ok) {
         setShowCancelConfirm(false);
         await fetchUser();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setBillingError(err.error || "Couldn't cancel your subscription. Please try again.");
       }
     } catch {
-      // Error handled silently
+      setBillingError("Couldn't reach the server. Check your connection and try again.");
     } finally {
       setCancelling(false);
     }
@@ -120,6 +133,7 @@ export default function AccountPage() {
 
   async function handleChangePlan(newPlan: "monthly" | "yearly") {
     setChangingPlan(true);
+    setBillingError(null);
     try {
       const token = await getToken();
       const res = await fetch("/api/payments/change-plan", {
@@ -131,30 +145,58 @@ export default function AccountPage() {
         body: JSON.stringify({ plan: newPlan }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        // Open Razorpay checkout for the new subscription
-        if (data.subscription_id && typeof window !== "undefined") {
-          const razorpayKeyId = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
-          if (razorpayKeyId) {
-            const options = {
-              key: razorpayKeyId,
-              subscription_id: data.subscription_id,
-              name: "Legal Brain",
-              description: `Pro ${newPlan === "monthly" ? "Monthly" : "Yearly"} Plan`,
-              handler: async () => {
-                // Payment success — refresh user data
-                await fetchUser();
-              },
-            };
-            await loadRazorpay();
-            const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
-            rzp.open();
-          }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setBillingError(err.error || "Couldn't change your plan. Please try again.");
+        return;
+      }
+
+      const data = await res.json();
+      // Open Razorpay checkout for the new subscription
+      if (data.subscription_id && typeof window !== "undefined") {
+        const razorpayKeyId = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
+        if (!razorpayKeyId) {
+          setBillingError("Payments aren't configured right now. Please try again later.");
+          return;
         }
+        const options = {
+          key: razorpayKeyId,
+          subscription_id: data.subscription_id,
+          name: "Legal Brain",
+          description: `Pro ${newPlan === "monthly" ? "Monthly" : "Yearly"} Plan`,
+          // Mirror UpgradeModal: verify the payment with the server before we
+          // trust it and refresh — never refresh on the unverified handler alone.
+          handler: async (response: {
+            razorpay_payment_id: string;
+            razorpay_subscription_id: string;
+            razorpay_signature: string;
+          }) => {
+            try {
+              const verifyToken = await getToken();
+              const verifyRes = await fetch("/api/payments/verify-subscription", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${verifyToken}`,
+                },
+                body: JSON.stringify(response),
+              });
+              if (!verifyRes.ok) {
+                setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+              }
+            } catch {
+              setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+            } finally {
+              await fetchUser();
+            }
+          },
+        };
+        await loadRazorpay();
+        const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
+        rzp.open();
       }
     } catch {
-      // Error handled silently
+      setBillingError("Something went wrong starting checkout. Please try again.");
     } finally {
       setChangingPlan(false);
     }
@@ -162,6 +204,7 @@ export default function AccountPage() {
 
   async function handleUpgrade(plan: "monthly" | "yearly") {
     setUpgrading(plan);
+    setBillingError(null);
     try {
       const token = await getToken();
       const res = await fetch("/api/payments/create-subscription", {
@@ -173,29 +216,58 @@ export default function AccountPage() {
         body: JSON.stringify({ plan }),
       });
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setBillingError(err.error || "Couldn't start your upgrade. Please try again.");
+        return;
+      }
 
       const data = await res.json();
       if (data.subscription_id && typeof window !== "undefined") {
         const razorpayKeyId = process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
-        if (razorpayKeyId) {
-          const options = {
-            key: razorpayKeyId,
-            subscription_id: data.subscription_id,
-            name: "Legal Brain",
-            description: `Pro ${plan === "monthly" ? "Monthly" : "Yearly"} Plan`,
-            handler: async () => {
-              setShowUpgradeModal(false);
-              await fetchUser();
-            },
-          };
-          await loadRazorpay();
-          const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
-          rzp.open();
+        if (!razorpayKeyId) {
+          setBillingError("Payments aren't configured right now. Please try again later.");
+          return;
         }
+        const options = {
+          key: razorpayKeyId,
+          subscription_id: data.subscription_id,
+          name: "Legal Brain",
+          description: `Pro ${plan === "monthly" ? "Monthly" : "Yearly"} Plan`,
+          // Mirror UpgradeModal: verify the payment server-side before refreshing.
+          handler: async (response: {
+            razorpay_payment_id: string;
+            razorpay_subscription_id: string;
+            razorpay_signature: string;
+          }) => {
+            try {
+              const verifyToken = await getToken();
+              const verifyRes = await fetch("/api/payments/verify-subscription", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${verifyToken}`,
+                },
+                body: JSON.stringify(response),
+              });
+              if (!verifyRes.ok) {
+                setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+              } else {
+                setShowUpgradeModal(false);
+              }
+            } catch {
+              setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+            } finally {
+              await fetchUser();
+            }
+          },
+        };
+        await loadRazorpay();
+        const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
+        rzp.open();
       }
     } catch {
-      // Error handled silently
+      setBillingError("Something went wrong starting checkout. Please try again.");
     } finally {
       setUpgrading(null);
     }
@@ -331,6 +403,12 @@ export default function AccountPage() {
               </p>
             )}
           </div>
+
+          {billingError && (
+            <p className="mt-4 text-[13px] text-burgundy-700 bg-burgundy-100 rounded-lg px-4 py-3 leading-relaxed">
+              {billingError}
+            </p>
+          )}
 
           <div className="mt-6 space-y-3">
             {userData?.plan === "free" ? (

@@ -77,6 +77,18 @@ export interface AgentRunOptions {
   /** Fires when the loop enters a non-streaming gate (re-search / verification)
    *  so the UI can show a status while the user waits for the verified answer. */
   onStatus?: (status: { phase: "researching" | "verifying" }) => void;
+  /** Aborts the run when the client disconnects or hits Stop. Passed to every
+   *  Anthropic stream so in-flight generation is cancelled, and checked between
+   *  steps so no further model/tool work (or billing) happens after a cancel. */
+  abortSignal?: AbortSignal;
+}
+
+/** Thrown when the client cancels mid-run; the route maps it to an unbilled abort. */
+export class AgentAbortedError extends Error {
+  constructor() {
+    super("aborted");
+    this.name = "AgentAbortedError";
+  }
 }
 
 export interface AgentRunResult {
@@ -185,14 +197,20 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // text, run the reflect (#1) and grounding (#5) gates, and stream only the
   // accepted, verified answer at the end (draft → verify → stream).
   for (let step = 0; step < MAX_AGENT_STEPS; step++) {
+    // Bail out (unbilled) if the client disconnected or hit Stop between steps,
+    // so we don't keep spending on tool rounds / generation for an abandoned turn.
+    if (opts.abortSignal?.aborted) throw new AgentAbortedError();
     stepsUsed = step + 1;
-    const stream = client.messages.stream({
-      model: CHAT_MODEL,
-      max_tokens: MAX_TOKENS_PER_STEP,
-      system: cachedSystemPrompt,
-      tools: TOOL_DEFINITIONS,
-      messages: applyCacheBreakpoints(messages),
-    });
+    const stream = client.messages.stream(
+      {
+        model: CHAT_MODEL,
+        max_tokens: MAX_TOKENS_PER_STEP,
+        system: cachedSystemPrompt,
+        tools: TOOL_DEFINITIONS,
+        messages: applyCacheBreakpoints(messages),
+      },
+      { signal: opts.abortSignal }
+    );
     stream.on("error", (err: unknown) => {
       logError({
         category: "fetching",
@@ -322,14 +340,17 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         "You have gathered enough context. Provide your final answer now using ONLY the cases already loaded above. Do not call any more tools. Output ONLY the substantive answer — no preamble, acknowledgement, or commentary about your process.",
     });
 
-    const finalStream = client.messages.stream({
-      model: CHAT_MODEL,
-      max_tokens: MAX_TOKENS_PER_STEP,
-      system: cachedSystemPrompt,
-      tool_choice: { type: "none" },
-      tools: TOOL_DEFINITIONS,
-      messages: applyCacheBreakpoints(messages),
-    });
+    const finalStream = client.messages.stream(
+      {
+        model: CHAT_MODEL,
+        max_tokens: MAX_TOKENS_PER_STEP,
+        system: cachedSystemPrompt,
+        tool_choice: { type: "none" },
+        tools: TOOL_DEFINITIONS,
+        messages: applyCacheBreakpoints(messages),
+      },
+      { signal: opts.abortSignal }
+    );
     finalStream.on("error", (err: unknown) => {
       logError({
         category: "fetching",
@@ -362,8 +383,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     assistantContent += buildGroundingFooter(lastGrade.unsupported, registry.list());
   }
 
-  // Stream the accepted, verified answer to the client now.
-  if (assistantContent) opts.onTextDelta(assistantContent);
+  // Stream the accepted, verified answer to the client now. We deliberately
+  // verify-then-stream (the grounding gate must run before the user sees any
+  // claim), so the text is already complete here — but emit it in small chunks
+  // rather than one blob so the UI paints progressively instead of appearing to
+  // hang and then dumping the whole answer at once.
+  if (assistantContent) emitChunked(assistantContent, opts.onTextDelta);
 
   const faithfulness = lastGrade
     ? {
@@ -524,6 +549,31 @@ export function stripLeadingMeta(text: string): string {
   if (i === 0) return text;
   const rest = paras.slice(i).join("\n\n").trimStart();
   return rest.length > 150 ? rest : text;
+}
+
+/**
+ * Emit a completed answer as a sequence of small deltas so the client renders it
+ * progressively instead of in one jarring repaint. Splits on word boundaries
+ * into ~modest pieces; the route still sends an authoritative `done` payload, so
+ * exact chunk boundaries don't matter for correctness.
+ */
+function emitChunked(text: string, onTextDelta: (delta: string) => void): void {
+  const CHUNK = 240; // chars; ~a sentence or two per frame
+  if (text.length <= CHUNK) {
+    onTextDelta(text);
+    return;
+  }
+  let i = 0;
+  while (i < text.length) {
+    let end = Math.min(i + CHUNK, text.length);
+    if (end < text.length) {
+      // Prefer to break at the next whitespace so we don't split words/markers.
+      const ws = text.indexOf(" ", end);
+      if (ws !== -1 && ws - end < 60) end = ws + 1;
+    }
+    onTextDelta(text.slice(i, end));
+    i = end;
+  }
 }
 
 /** Concatenate the text blocks of a model message. */

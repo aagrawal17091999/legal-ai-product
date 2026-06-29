@@ -124,17 +124,26 @@ export async function grant(opts: {
   razorpayPaymentId?: string;
   razorpayOrderId?: string;
   amountInr?: number;
+  /** Deterministic dedup key for non-payment grants (e.g. a per-cycle monthly
+   *  reset). Stored in the razorpay_payment_id column, which carries a partial
+   *  unique index, so repeated/out-of-order webhook deliveries for the same
+   *  billing cycle apply the grant exactly once. */
+  idempotencyKey?: string;
 }): Promise<{ applied: boolean }> {
   const { userId, type, credits } = opts;
+  // The razorpay_payment_id column doubles as the idempotency reference for
+  // non-payment grants. A real payment id always wins if both are somehow set.
+  const dedupKey = opts.razorpayPaymentId ?? opts.idempotencyKey;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // Idempotency guard for purchases: a captured payment credits at most once.
-    if (opts.razorpayPaymentId) {
+    // Idempotency guard: a captured payment — or a keyed grant such as a monthly
+    // reset — applies at most once.
+    if (dedupKey) {
       const dup = await client.query(
         `SELECT 1 FROM credit_transactions WHERE razorpay_payment_id = $1`,
-        [opts.razorpayPaymentId]
+        [dedupKey]
       );
       if (dup.rows.length > 0) {
         await client.query("ROLLBACK");
@@ -172,7 +181,7 @@ export async function grant(opts: {
         userId,
         type,
         credits,
-        opts.razorpayPaymentId ?? null,
+        dedupKey ?? null,
         opts.razorpayOrderId ?? null,
         opts.amountInr ?? null,
       ]
@@ -191,6 +200,23 @@ export async function grant(opts: {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Credit a user back for work that was charged but ultimately not delivered
+ * (e.g. a multi-section job that metered successful sections, then failed as a
+ * whole). Adds to topup_credits and records a `refund` ledger row. No-op for a
+ * non-positive amount. Callers must invoke this at most once per failed unit
+ * (terminal job transitions are CAS-guarded, so this is safe in practice).
+ */
+export async function refund(
+  userId: number,
+  credits: number,
+  amountInr?: number
+): Promise<{ applied: boolean }> {
+  const rounded = Math.round(credits);
+  if (rounded <= 0) return { applied: false };
+  return grant({ userId, type: "refund", credits: rounded, amountInr });
 }
 
 /** One-time free allowance for a brand-new user (no-op if already granted). */

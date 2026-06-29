@@ -3,7 +3,9 @@ import {
   verifyWebhookSignature,
   getPlanTypeFromId,
   markSubscriptionActive,
-  computeSubscriptionEndDate,
+  subscriptionEndDate,
+  subscriptionCycleKey,
+  fetchOrder,
 } from "@/lib/razorpay";
 import pool from "@/lib/db";
 import { grant, unlockOutputs } from "@/lib/billing/credits";
@@ -69,13 +71,18 @@ export async function POST(request: NextRequest) {
             });
             break;
           }
-          const { endDate } = await markSubscriptionActive({ userId, subscriptionId, plan });
-          // Grant this cycle's Pro credit allowance (resets plan_credits, no rollover).
+          const currentEnd = entity?.current_end as number | null | undefined;
+          const endDate = subscriptionEndDate(plan, currentEnd);
+          await markSubscriptionActive({ userId, subscriptionId, plan, endDate });
+          // Grant this cycle's Pro credit allowance (resets plan_credits, no
+          // rollover). Idempotent per billing cycle: the charged webhook and a
+          // retried activated event won't re-grant or wipe mid-cycle usage.
           await grant({
             userId,
             type: "monthly_reset",
             credits: PLAN_CREDITS.monthly,
             periodEnd: endDate,
+            idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
           });
         } else {
           logError({
@@ -94,11 +101,12 @@ export async function POST(request: NextRequest) {
         const entity = payload.subscription?.entity;
         const subscriptionId = entity?.id;
         if (subscriptionId) {
-          // Advance the end date by the actual billing interval. Deriving it
-          // from the plan_id keeps yearly subscriptions from being marked as
-          // expiring a month after each annual charge.
+          // Use Razorpay's authoritative current_end for the cycle boundary so
+          // our period stays in lockstep with billing instead of drifting from
+          // server-receipt time.
           const plan = getPlanTypeFromId(entity?.plan_id) ?? "monthly";
-          const endDate = computeSubscriptionEndDate(plan);
+          const currentEnd = entity?.current_end as number | null | undefined;
+          const endDate = subscriptionEndDate(plan, currentEnd);
 
           const { rows } = await pool.query<{ id: number }>(
             `UPDATE users SET
@@ -110,12 +118,15 @@ export async function POST(request: NextRequest) {
             [endDate.toISOString(), subscriptionId]
           );
           // Refill the Pro credit pool for the new billing cycle (no rollover).
+          // Idempotent per cycle so duplicate/retried charged deliveries can't
+          // re-grant credits or reset a paying user's mid-cycle usage to full.
           if (rows[0]?.id) {
             await grant({
               userId: rows[0].id,
               type: "monthly_reset",
               credits: PLAN_CREDITS.monthly,
               periodEnd: endDate,
+              idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
             });
           }
         }
@@ -123,9 +134,21 @@ export async function POST(request: NextRequest) {
       }
 
       case "payment.captured": {
-        // One-time credit top-up purchases (createCreditOrder stamps notes).
+        // One-time credit top-up purchases (createCreditOrder stamps notes on
+        // the ORDER). Razorpay does not always copy order notes onto the payment
+        // entity, so fall back to the order's notes when the payment's are bare
+        // — otherwise a top-up whose Checkout callback never ran would silently
+        // never be credited.
         const entity = payload.payment?.entity;
-        const notes = entity?.notes ?? {};
+        let notes = entity?.notes ?? {};
+        if (notes.kind !== "credit_topup" && entity?.order_id) {
+          try {
+            const order = await fetchOrder(entity.order_id);
+            if (order?.notes) notes = order.notes;
+          } catch {
+            // Order fetch failed — fall through with the payment notes we have.
+          }
+        }
         if (notes.kind === "credit_topup") {
           const userId = Number(notes.user_id);
           const credits = Number(notes.credits);
@@ -149,8 +172,16 @@ export async function POST(request: NextRequest) {
 
       case "subscription.cancelled":
       case "subscription.completed": {
-        const subscriptionId = payload.subscription?.entity?.id;
-        if (subscriptionId) {
+        const cancelEntity = payload.subscription?.entity;
+        const subscriptionId = cancelEntity?.id;
+        // Guard against a stale/out-of-order delivery downgrading a user whose
+        // subscription has since renewed: only act when the entity is in a
+        // genuinely terminal state. A cycle-end cancellation fires this event
+        // only once the subscription has actually ended.
+        const terminal = ["cancelled", "completed", "expired"].includes(
+          String(cancelEntity?.status)
+        );
+        if (subscriptionId && terminal) {
           const { rows } = await pool.query<{ id: number }>(
             `UPDATE users SET
               plan = 'free',

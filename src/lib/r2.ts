@@ -88,7 +88,10 @@ export async function getR2Object(key: string): Promise<Buffer> {
   const res = await client.send(
     new GetObjectCommand({ Bucket: bucketName(), Key: key })
   );
-  const bytes = await res.Body!.transformToByteArray();
+  // A missing object comes back with an empty Body; surface a clear error rather
+  // than the cryptic "Cannot read properties of undefined" the `!` would throw.
+  if (!res.Body) throw new Error("File not found in storage");
+  const bytes = await res.Body.transformToByteArray();
   return Buffer.from(bytes);
 }
 

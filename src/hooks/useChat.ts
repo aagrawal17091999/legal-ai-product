@@ -263,8 +263,10 @@ export function useChat() {
       setLimitReached(false);
       setError(null);
 
-      const tempUserId = `temp-user-${Date.now()}`;
-      const tempAssistantId = `temp-assistant-${Date.now()}`;
+      // Use UUIDs (not Date.now()) so two messages created in the same tick
+      // can't collide on the same temp/local id.
+      const tempUserId = `temp-user-${crypto.randomUUID()}`;
+      const tempAssistantId = `temp-assistant-${crypto.randomUUID()}`;
 
       const tempUserMsg: ChatMessage = {
         id: tempUserId,
@@ -405,7 +407,7 @@ export function useChat() {
                       content: d.content ?? m.content,
                     }
                   : m.id === tempUserId
-                  ? { ...m, id: `user-${Date.now()}` }
+                  ? { ...m, id: `user-${crypto.randomUUID()}` }
                   : m
               );
               // Persist the completed turn so reopening this chat paints instantly.
@@ -475,9 +477,9 @@ export function useChat() {
               .filter((m) => !(m.id === tempAssistantId && m.content === ""))
               .map((m) =>
                 m.id === tempAssistantId
-                  ? { ...m, status: "success", id: `assistant-${Date.now()}` }
+                  ? { ...m, status: "success", id: `assistant-${crypto.randomUUID()}` }
                   : m.id === tempUserId
-                  ? { ...m, id: `user-${Date.now()}` }
+                  ? { ...m, id: `user-${crypto.randomUUID()}` }
                   : m
               )
           );
@@ -505,7 +507,7 @@ export function useChat() {
                     "Sorry, I encountered an error generating a response. Please try again.",
                 }
               : m.id === tempUserId
-              ? { ...m, id: `user-${Date.now()}` }
+              ? { ...m, id: `user-${crypto.randomUUID()}` }
               : m
           )
         );

@@ -6,6 +6,7 @@ import { uploadToR2 } from "@/lib/r2";
 import { expireStaleTranslations } from "@/lib/translate/expire";
 import { planBatches } from "@/lib/vision/structured";
 import { enqueueBatches } from "@/lib/jobs/batches";
+import { shouldUseBatchApi } from "@/lib/jobs/batch-api";
 import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
 
@@ -97,15 +98,26 @@ export async function POST(request: NextRequest) {
     const job = rows[0];
 
     // Enqueue one batch row per planned page range; the cron worker drains them.
-    await enqueueBatches(job.id, "translate", plan.batches);
+    // Large documents go to the Anthropic Batch API (cheaper, async); smaller
+    // ones stay on the fast synchronous path. See jobs/batch-api.ts.
+    await enqueueBatches(
+      job.id,
+      "translate",
+      plan.batches,
+      shouldUseBatchApi(plan) ? "batch" : "sync"
+    );
     // Seed the Firestore mirror so the client can subscribe immediately.
     await mirrorJobStatus("translate", job.id, { ownerUid: decoded.uid, status: "processing" });
 
     // Credits are debited per batch in the worker as the vision passes run.
     return NextResponse.json({ job });
   } catch (err) {
-    // An over-cap document throws from planBatches with a user-facing message.
-    if (err instanceof Error && /supports up to/.test(err.message)) {
+    // planBatches throws user-facing validation messages (over page cap,
+    // password-protected, or no pages) — surface them as a 400, not a 500.
+    if (
+      err instanceof Error &&
+      /supports up to|password-protected|no pages/.test(err.message)
+    ) {
       return NextResponse.json({ error: err.message }, { status: 400 });
     }
     logError({

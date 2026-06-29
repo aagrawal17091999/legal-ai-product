@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test \"src/lib/rag/__tests__/*.test.ts\"",
+    "test": "node --experimental-strip-types --import ./scripts/ts-test-register.mjs --test \"src/lib/rag/__tests__/*.test.ts\"",
     "eval:retrieval": "node scripts/eval_retrieval.mjs"
   },
   "dependencies": {

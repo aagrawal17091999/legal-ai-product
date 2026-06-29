@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
-import { withMeter } from "@/lib/billing/meter";
+import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
 import pool from "@/lib/db";
 import { runDocChat, type DocChatTurn, type DocCitation } from "@/lib/docchat/answer";
 import { logError } from "@/lib/error-logger";
@@ -165,14 +165,22 @@ export async function POST(
         // streamed answer + citation verify) and debit when it finalizes.
         const { result } = await withMeter(
           { userId: user.id, feature: "workspace_chat" },
-          () =>
-            runDocChat({
+          async () => {
+            const r = await runDocChat({
               workspaceId,
               userMessage,
               history,
               onTextDelta: (delta) => send("token", { delta }),
               onStatus: (s) => send("status", s),
-            })
+            });
+            // Don't bill a turn that produced no usable answer (empty stream /
+            // aborted mid-flight) — the user got nothing back. withMeter already
+            // auto-skips the charge when runDocChat throws.
+            if (!r.assistantContent || !r.assistantContent.trim()) {
+              markMeterUnbillable();
+            }
+            return r;
+          }
         );
         assistantContent = result.assistantContent;
         citations = result.citations;

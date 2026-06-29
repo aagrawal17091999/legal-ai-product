@@ -10,6 +10,14 @@ import { logError } from "@/lib/error-logger";
 export const maxDuration = 300;
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
+// Per-workspace ingestion quota. Caps storage + embedding cost per workspace and
+// stops a single workspace from monopolising the queue.
+const MAX_DOCS_PER_WORKSPACE = 50;
+// NOTE: workspace_documents has no stored byte-size column (only char_count,
+// which is post-extraction text length, not upload bytes), so a *total*-bytes
+// cap can't be enforced from the DB. We enforce it against the bytes of THIS
+// upload batch instead; the per-file MAX_FILE_BYTES already bounds each file.
+const MAX_BYTES_PER_WORKSPACE = 500 * 1024 * 1024; // 500 MB
 const ACCEPTED = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -55,6 +63,31 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
   );
   if (files.length === 0) {
     return NextResponse.json({ error: "No files provided" }, { status: 400 });
+  }
+
+  // Per-workspace ingestion quota. Reject the whole batch up front if accepting
+  // it would push the workspace past its document-count cap, or if the batch's
+  // own size exceeds the per-workspace byte budget (see MAX_BYTES_PER_WORKSPACE
+  // note — no stored byte column to sum against).
+  const { rows: countRows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM workspace_documents WHERE workspace_id = $1`,
+    [workspaceId]
+  );
+  const existingDocs = countRows[0].n;
+  if (existingDocs + files.length > MAX_DOCS_PER_WORKSPACE) {
+    return NextResponse.json(
+      {
+        error: `This workspace can hold at most ${MAX_DOCS_PER_WORKSPACE} documents (it has ${existingDocs}). Delete some before uploading ${files.length} more.`,
+      },
+      { status: 400 }
+    );
+  }
+  const batchBytes = files.reduce((sum, f) => sum + f.size, 0);
+  if (batchBytes > MAX_BYTES_PER_WORKSPACE) {
+    return NextResponse.json(
+      { error: `This upload exceeds the ${Math.round(MAX_BYTES_PER_WORKSPACE / (1024 * 1024))} MB per-workspace limit.` },
+      { status: 400 }
+    );
   }
 
   const created: Array<{ id: string; filename: string; status: string }> = [];

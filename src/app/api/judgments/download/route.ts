@@ -22,8 +22,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid source or id parameter" }, { status: 400 });
   }
 
-  const respond = (url: string) =>
-    redirect ? NextResponse.redirect(url, 307) : NextResponse.json({ url });
+  // High-Court pdf_url/pdf_link are stored corpus values that legitimately point
+  // at external court websites (not our R2), so we can't allowlist a single host.
+  // The open-redirect surface that matters is a malformed/hostile scheme
+  // (javascript:, data:, protocol-relative) bouncing an authed user somewhere
+  // unexpected. Permit a redirect ONLY to an absolute http(s) URL with a real
+  // host; everything else returns the URL as JSON instead of 307-ing to it.
+  // (SC mints its own signed https R2 URL, so it always passes.)
+  const isSafeRedirectUrl = (url: string): boolean => {
+    try {
+      const u = new URL(url);
+      return (u.protocol === "https:" || u.protocol === "http:") && u.host.length > 0;
+    } catch {
+      return false;
+    }
+  };
+  const respond = (url: string) => {
+    if (!redirect) return NextResponse.json({ url });
+    if (!isSafeRedirectUrl(url)) {
+      // Fall back to JSON rather than 307-ing to an unsafe/malformed target.
+      return NextResponse.json({ url });
+    }
+    return NextResponse.redirect(url, 307);
+  };
 
   try {
     if (source === "supreme_court_cases") {

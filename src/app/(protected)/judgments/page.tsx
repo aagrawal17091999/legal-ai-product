@@ -22,6 +22,7 @@ export default function JudgmentsPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [optionsError, setOptionsError] = useState<string | null>(null);
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [diagnostics, setDiagnostics] = useState<FilterDiagnostic[] | null>(null);
   const previewAbortRef = useRef<AbortController | null>(null);
@@ -29,9 +30,16 @@ export default function JudgmentsPage() {
   // Load filter options
   useEffect(() => {
     fetch("/api/filters/options")
-      .then((res) => res.json())
-      .then(setOptions)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        setOptions(data);
+        setOptionsError(null);
+      })
       .catch((err) => {
+        setOptionsError("Couldn't load filter options. Some filters may be unavailable — try refreshing.");
         reportError("Failed to load filter options", { component: "JudgmentsPage" }, err);
       });
   }, []);
@@ -138,6 +146,7 @@ export default function JudgmentsPage() {
   const handleDownload = async (result: JudgmentSearchResult) => {
     const downloadKey = `${result.source_table}_${result.id}`;
     setDownloadingId(downloadKey);
+    setError(null);
 
     try {
       const headers = await authHeaders();
@@ -147,15 +156,15 @@ export default function JudgmentsPage() {
       );
 
       if (!res.ok) {
-        const data = await res.json();
-        alert(data.error || "PDF not available");
+        const data = await res.json().catch(() => ({}));
+        setError(data.error || "PDF not available");
         return;
       }
 
       const { url } = await res.json();
       window.open(url, "_blank");
     } catch (err) {
-      alert("Failed to download PDF. Please try again.");
+      setError("Failed to download PDF. Please try again.");
       reportError("PDF download failed", { component: "JudgmentsPage", caseId: result.id }, err);
     } finally {
       setDownloadingId(null);
@@ -192,6 +201,9 @@ export default function JudgmentsPage() {
 
         {/* Filters */}
         <div className="bg-ivory-100 border border-ivory-200 rounded-xl p-8 mb-6">
+          {optionsError && (
+            <p className="mb-4 text-[14px] text-burgundy-700">{optionsError}</p>
+          )}
           <FilterFormFields options={options} {...filterState} />
 
           <div className="flex items-center gap-3 pt-6">

@@ -96,6 +96,9 @@ export class CaseRegistry {
       citation: c.extraction.extracted_citation ?? c.meta.citation,
       pdf_url: c.pdf_url,
       pdf_path: c.pdf_path,
+      // The canonical [^n] index for this case, so the UI resolves citations by
+      // index rather than fragile array position.
+      index: c.index,
       // Paragraphs visible in this case's excerpt — the ones the model is
       // allowed to pinpoint — so the UI can offer paragraph-level entry points.
       paragraphs: c.chunk_paragraphs ?? [],

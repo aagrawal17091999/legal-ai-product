@@ -20,6 +20,21 @@ interface OcrJob {
 }
 
 const ACCEPT = ".pdf,.docx,.jpg,.jpeg,.png,.webp";
+// Mirror the server limit (25 MB) and accepted extensions so we fail fast
+// client-side instead of uploading a file the server will reject.
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const ALLOWED_EXT = ["pdf", "docx", "jpg", "jpeg", "png", "webp"];
+
+function validateFile(file: File): string | null {
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (!ALLOWED_EXT.includes(ext)) {
+    return "Unsupported file type. Use PDF, DOCX, JPG, PNG, or WEBP.";
+  }
+  if (file.size > MAX_FILE_BYTES) {
+    return "File exceeds the 25 MB limit.";
+  }
+  return null;
+}
 
 export default function OcrPage() {
   const { getToken } = useAuth();
@@ -36,10 +51,16 @@ export default function OcrPage() {
   }, [getToken]);
 
   const loadJobs = useCallback(async () => {
-    const res = await fetch("/api/ocr", { headers: await authHeaders() });
-    if (res.ok) {
-      const data = await res.json();
-      setJobs(data.jobs ?? []);
+    try {
+      const res = await fetch("/api/ocr", { headers: await authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setJobs(data.jobs ?? []);
+      } else {
+        setError("Couldn't load your documents. Please refresh and try again.");
+      }
+    } catch {
+      setError("Couldn't reach the server. Check your connection and try again.");
     }
   }, [authHeaders]);
 
@@ -56,13 +77,27 @@ export default function OcrPage() {
     loadJobs
   );
 
-  // Fetch a fresh signed URL and open it (URLs are short-lived, so fetch on click).
+  // Fetch a fresh signed URL and open it (URLs are short-lived, so fetch on
+  // click). Open the blank tab synchronously on click — before the await — so
+  // popup blockers don't kill it, then point it at the resolved URL.
   const download = async (jobId: string, kind: "pdf" | "docx") => {
-    const res = await fetch(`/api/ocr/${jobId}`, { headers: await authHeaders() });
-    if (res.ok) {
-      const data = await res.json();
-      const url = kind === "pdf" ? data.pdfUrl : data.docxUrl;
-      if (url) window.open(url, "_blank");
+    setError(null);
+    const w = window.open("", "_blank");
+    try {
+      const res = await fetch(`/api/ocr/${jobId}`, { headers: await authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        const url = kind === "pdf" ? data.pdfUrl : data.docxUrl;
+        if (url) {
+          if (w) w.location.href = url;
+          return;
+        }
+      }
+      if (w) w.close();
+      setError("Couldn't get the download. Please try again.");
+    } catch {
+      if (w) w.close();
+      setError("Couldn't reach the server. Check your connection and try again.");
     }
   };
 
@@ -83,6 +118,11 @@ export default function OcrPage() {
   const submit = async () => {
     if (!file) {
       setError("Choose a file to run OCR on.");
+      return;
+    }
+    const invalid = validateFile(file);
+    if (invalid) {
+      setError(invalid);
       return;
     }
     setSubmitting(true);

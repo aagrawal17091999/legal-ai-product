@@ -109,14 +109,20 @@ export default function Footer() {
                 </a>
               </li>
               <li>
-                <span className="text-sm text-charcoal-400">
+                <Link
+                  href="/privacy"
+                  className="text-sm text-ivory-50/80 hover:text-gold-500 transition-colors"
+                >
                   Privacy Policy
-                </span>
+                </Link>
               </li>
               <li>
-                <span className="text-sm text-charcoal-400">
+                <Link
+                  href="/terms"
+                  className="text-sm text-ivory-50/80 hover:text-gold-500 transition-colors"
+                >
                   Terms of Service
-                </span>
+                </Link>
               </li>
             </ul>
           </div>

@@ -13,17 +13,21 @@ import {
   sweepStaleJobs,
   queueDepth,
   jobTable,
+  getJobSource,
+  revertExpiredBatchUnits,
   STALE_JOB_MESSAGE,
   type BatchRow,
   type JobKind,
+  type JobSource,
 } from "@/lib/jobs/batches";
+import { submitPlannedBatchJobs, pollInFlightBatchApi } from "@/lib/jobs/batch-api";
 import { ocrBatchConfig } from "@/lib/ocr/ocr";
 import { translateBatchConfig } from "@/lib/translate/translate";
 import { assembleOcrJob } from "@/lib/ocr/process";
 import { assembleTranslationJob } from "@/lib/translate/process";
 import { mirrorJobStatus } from "@/lib/firebase-admin";
-import { withMeter } from "@/lib/billing/meter";
-import { getRemaining } from "@/lib/billing/credits";
+import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
+import { getRemaining, refund } from "@/lib/billing/credits";
 import { logError } from "@/lib/error-logger";
 
 /**
@@ -65,27 +69,6 @@ const MAX_LANES = Math.max(1, Number(process.env.BATCH_MAX_LANES) || 1);
 // at MAX_LANES. Keeps idle ticks from spawning peers that would find no work.
 const PENDING_PER_LANE = Number(process.env.BATCH_PENDING_PER_LANE) || 25;
 
-interface JobSource {
-  user_id: number;
-  source_r2_key: string;
-  source_mime: string;
-  source_filename: string;
-  target_language: string | null;
-}
-
-/** Fetch the parent job's source info needed to run its batches. */
-async function getJobSource(kind: JobKind, jobId: string): Promise<JobSource | null> {
-  const cols =
-    kind === "translate"
-      ? "user_id, source_r2_key, source_mime, source_filename, target_language"
-      : "user_id, source_r2_key, source_mime, source_filename, NULL AS target_language";
-  const { rows } = await pool.query<JobSource>(
-    `SELECT ${cols} FROM ${jobTable(kind)} WHERE id = $1`,
-    [jobId]
-  );
-  return rows[0] ?? null;
-}
-
 /**
  * After a job is assembled, withhold its output if metering this user's batches
  * pushed their wallet negative (they ran while low on credits). The output stays
@@ -124,8 +107,8 @@ async function processOne(
       feature: batch.job_kind === "ocr" ? "ocr" : "translate",
       refId: batch.job_id,
     },
-    () =>
-      runBatch(
+    async () => {
+      const r = await runBatch(
         buffer,
         source.source_mime,
         source.source_filename,
@@ -134,13 +117,42 @@ async function processOne(
         cfg.feature,
         cfg.model,
         cfg.schema
-      )
+      );
+      // A failed attempt may still have consumed some tokens before the call
+      // errored/parsed empty. Don't bill the user for it — only a successful
+      // batch is charged (and the retry that finally succeeds is charged once).
+      if (!r) markMeterUnbillable();
+      return r;
+    }
   );
   if (result) {
     await completeBatch(batch.id, result);
   } else {
     await recordBatchFailure(batch.id, batch.attempts, "Vision call failed for this batch.");
   }
+}
+
+/**
+ * When a job fails as a whole, credit back whatever its already-completed batches
+ * were charged (a partial-failure document otherwise leaves the user paying for
+ * pages they never receive). Sums the enforced charges recorded against this job
+ * and issues one refund. Runs at most once per job (failJob is CAS-guarded).
+ */
+async function refundFailedJob(kind: JobKind, jobId: string): Promise<void> {
+  const { rows } = await pool.query<{ user_id: number }>(
+    `SELECT user_id FROM ${jobTable(kind)} WHERE id = $1`,
+    [jobId]
+  );
+  const userId = rows[0]?.user_id;
+  if (!userId) return;
+  const { rows: sums } = await pool.query<{ c: number }>(
+    `SELECT COALESCE(SUM(credits_charged), 0)::int AS c
+       FROM usage_events
+      WHERE ref_id = $1 AND user_id = $2 AND enforced = TRUE`,
+    [jobId, userId]
+  );
+  const credits = sums[0]?.c ?? 0;
+  if (credits > 0) await refund(userId, credits);
 }
 
 export async function GET(request: NextRequest) {
@@ -166,6 +178,9 @@ export async function GET(request: NextRequest) {
     // Watchdog (dispatcher only, client-independent): fail jobs wedged past the
     // timeout and push the terminal status so the UI stops spinning.
     let swept = 0;
+    let batchSubmitted = 0;
+    let batchDone = 0;
+    let batchFailed = 0;
     if (!isPeer) {
       for (const kind of ["ocr", "translate"] as const) {
         const stale = await sweepStaleJobs(kind);
@@ -192,6 +207,40 @@ export async function GET(request: NextRequest) {
             });
           }
         }
+      }
+
+      // Batch-API delivery (dispatcher only): submit planned large jobs to the
+      // Anthropic Message Batch API, then pull results for any batch that ended.
+      // Both write the same job_batches.result_json the sync path uses, so the
+      // reconcile pass below settles batch jobs unchanged. Runs before the drain
+      // so a freshly-completed batch unit's debit is recorded ahead of assembly's
+      // output-lock check. Self-contained failures fall back to the sync queue.
+      try {
+        // Dead-man's switch: revert units stuck `submitted` past the max batch
+        // window back to the sync path, so a lost Anthropic batch can't leave a
+        // job spinning forever (these units are exempt from the stale sweep).
+        const expired = await revertExpiredBatchUnits();
+        if (expired.length > 0) {
+          logError({
+            category: "extraction",
+            message: `Reverted ${expired.length} stuck Batch-API job(s) to sync after max age`,
+            severity: "warning",
+            endpoint: "/api/cron/process-batches",
+            metadata: { jobIds: expired },
+          });
+        }
+        batchSubmitted = await submitPlannedBatchJobs();
+        const polled = await pollInFlightBatchApi();
+        batchDone = polled.done;
+        batchFailed = polled.failed;
+      } catch (err) {
+        logError({
+          category: "extraction",
+          message: `Batch-API step failed: ${err instanceof Error ? err.message : String(err)}`,
+          error: err,
+          severity: "error",
+          endpoint: "/api/cron/process-batches",
+        });
       }
     }
 
@@ -254,6 +303,8 @@ export async function GET(request: NextRequest) {
         if (state.failed > 0) {
           if (await failJob(kind, jobId, failMsg)) {
             await mirrorJobStatus(kind, jobId, { status: "failed", error: failMsg });
+            // Refund any successfully-processed sections the user was charged for.
+            await refundFailedJob(kind, jobId);
             failed++;
           }
           continue;
@@ -290,6 +341,9 @@ export async function GET(request: NextRequest) {
       assembled,
       failed,
       swept,
+      batchSubmitted,
+      batchDone,
+      batchFailed,
       pending,
       oldestAgeMs,
     });

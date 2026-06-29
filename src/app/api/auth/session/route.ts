@@ -3,6 +3,16 @@ import { adminAuth } from "@/lib/firebase-admin";
 import { getOrCreateUser, SESSION_COOKIE } from "@/lib/auth";
 import { logError } from "@/lib/error-logger";
 
+function clearCookie(res: NextResponse) {
+  res.cookies.set(SESSION_COOKIE, "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+}
+
 // Firebase session cookies can live up to 14 days. The browser cookie and the
 // Firebase session share the same lifetime.
 const EXPIRES_IN_MS = 14 * 24 * 60 * 60 * 1000;
@@ -57,15 +67,34 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** DELETE /api/auth/session — clears the session cookie on sign-out. */
-export async function DELETE() {
+/**
+ * DELETE /api/auth/session — sign-out. Clears the cookie AND revokes the user's
+ * Firebase refresh tokens so the session cookie can no longer be re-validated
+ * server-side (paired with verifySessionCookie(..., true) in verifyAuth). Without
+ * the revoke, a copied cookie would survive logout for the full 14-day lifetime.
+ */
+export async function DELETE(request: NextRequest) {
   const res = NextResponse.json({ status: "ok" });
-  res.cookies.set(SESSION_COOKIE, "", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: 0,
-  });
+  clearCookie(res);
+
+  const sessionCookie = request.cookies.get(SESSION_COOKIE)?.value;
+  if (sessionCookie) {
+    try {
+      // Don't checkRevoked here — we're about to revoke; we just need the uid.
+      const decoded = await adminAuth().verifySessionCookie(sessionCookie);
+      await adminAuth().revokeRefreshTokens(decoded.uid);
+    } catch (err) {
+      // Already-expired/invalid cookie: nothing to revoke. Still clear + 200 so
+      // the client always completes sign-out.
+      logError({
+        category: "auth",
+        message: "Sign-out token revoke skipped",
+        error: err,
+        severity: "warning",
+        endpoint: "/api/auth/session",
+        method: "DELETE",
+      });
+    }
+  }
   return res;
 }

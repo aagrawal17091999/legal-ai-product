@@ -36,11 +36,11 @@ export default function ChatInput({ onSend, onStop, isLoading, disabled }: ChatI
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (isLoading) {
-        handleStop();
-      } else {
-        handleSubmit();
-      }
+      // While generating, ignore Enter entirely — don't send and don't stop, so
+      // a user can't accidentally kill generation by hitting Enter. Stopping is
+      // an explicit click on the Stop button.
+      if (isLoading) return;
+      handleSubmit();
     }
   };
 

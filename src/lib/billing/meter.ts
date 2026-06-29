@@ -36,6 +36,15 @@ interface MeterCtx {
   userId: number;
   feature: Feature;
   refId?: string;
+  /** True for Batch-API-delivered work. Charges still use full (sync) rates —
+   *  the 2x rule: cost_inr/credits are 2x the actual half-price batch cost, so
+   *  we keep the discount as margin. The flag lets analytics recover real COGS
+   *  (= cost_inr / 2). See migration 024. */
+  batchApi?: boolean;
+  /** When false, the usage is still recorded (for COGS analytics) but the wallet
+   *  is NOT debited — used when the metered action failed or was aborted so the
+   *  user isn't charged for work they never received. Defaults to true. */
+  billable: boolean;
   lines: Line[];
 }
 
@@ -63,6 +72,18 @@ export function addVoyageUsage(model: string, totalTokens: number | undefined | 
 export function setMeterRef(refId: string): void {
   const ctx = als.getStore();
   if (ctx) ctx.refId = refId;
+}
+
+/**
+ * Mark the active metered action as unbillable. The usage is still recorded for
+ * COGS analytics, but the wallet is not debited. Call this from a route's
+ * error/abort handler when the agent threw, returned an empty/error answer, or
+ * the client disconnected — so the user is never charged for a turn they didn't
+ * receive. No-op if there is no active meter. Idempotent.
+ */
+export function markMeterUnbillable(): void {
+  const ctx = als.getStore();
+  if (ctx) ctx.billable = false;
 }
 
 export interface MeterResult {
@@ -97,31 +118,58 @@ function summarize(lines: Line[]) {
  * debit went negative). Metering failures never break the user request.
  */
 export async function withMeter<T>(
-  opts: { userId: number; feature: Feature; refId?: string },
+  opts: { userId: number; feature: Feature; refId?: string; batchApi?: boolean },
   fn: () => Promise<T>
 ): Promise<{ result: T; meter: MeterResult }> {
-  const ctx: MeterCtx = { ...opts, lines: [] };
-  const result = await als.run(ctx, fn);
+  const ctx: MeterCtx = { ...opts, billable: true, lines: [] };
 
+  let result: T;
+  try {
+    result = await als.run(ctx, fn);
+  } catch (err) {
+    // The action threw: record the usage for COGS analytics but never debit —
+    // the user got nothing back. Then re-throw so the caller's flow is unchanged.
+    await finalizeMeter(ctx, false);
+    throw err;
+  }
+
+  const meter = await finalizeMeter(ctx, ctx.billable);
+  return { result, meter };
+}
+
+/** Summarize usage, write a usage_events row, and debit the wallet when billable
+ *  + enforced. Metering failures are logged but never break the user request. */
+async function finalizeMeter(ctx: MeterCtx, billable: boolean): Promise<MeterResult> {
   let meter: MeterResult = { costInr: 0, credits: 0, debit: null };
   try {
     const { costInr, breakdown } = summarize(ctx.lines);
     const credits = inrToCredits(costInr);
     const enforced = isEnforced();
+    const charged = billable && enforced && credits > 0;
 
     let debitResult: DebitResult | null = null;
-    if (enforced && credits > 0) {
+    if (charged) {
       debitResult = await debit(ctx.userId, credits);
     }
 
     await pool.query(
       `INSERT INTO usage_events
-         (user_id, feature, ref_id, model_breakdown, cost_inr, credits_charged, enforced)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [ctx.userId, ctx.feature, ctx.refId ?? null, JSON.stringify(breakdown), costInr, credits, enforced]
+         (user_id, feature, ref_id, model_breakdown, cost_inr, credits_charged, enforced, batch_api)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        ctx.userId,
+        ctx.feature,
+        ctx.refId ?? null,
+        JSON.stringify(breakdown),
+        costInr,
+        // Record what was actually charged: 0 when the action was unbillable.
+        charged ? credits : 0,
+        enforced,
+        ctx.batchApi ?? false,
+      ]
     );
 
-    meter = { costInr, credits, debit: debitResult };
+    meter = { costInr, credits: charged ? credits : 0, debit: debitResult };
   } catch (err) {
     logError({
       category: "payment",
@@ -131,6 +179,5 @@ export async function withMeter<T>(
       metadata: { userId: ctx.userId, feature: ctx.feature, refId: ctx.refId },
     });
   }
-
-  return { result, meter };
+  return meter;
 }

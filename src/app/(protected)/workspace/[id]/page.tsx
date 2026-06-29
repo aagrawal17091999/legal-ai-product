@@ -59,10 +59,15 @@ export default function WorkspaceDetailPage({
   const [status, setStatus] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [pollTimedOut, setPollTimedOut] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [panelCitation, setPanelCitation] = useState<DocCitation | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // When polling for processing docs first started — used by the watchdog so we
+  // don't poll forever if a doc is stuck pending/processing on the backend.
+  const pollStartRef = useRef<number | null>(null);
 
   const authHeaders = useCallback(async () => {
     const token = await getToken();
@@ -151,13 +156,32 @@ export default function WorkspaceDetailPage({
     else setMessages([]);
   }, [activeConvId, loadMessages]);
 
-  // Poll while any document is still processing.
+  // Poll while any document is still processing — but give up after ~10 minutes
+  // so a doc stuck pending/processing on the backend doesn't poll indefinitely.
+  const POLL_TIMEOUT_MS = 10 * 60 * 1000;
   useEffect(() => {
     const anyPending = documents.some((d) => d.status === "pending" || d.status === "processing");
-    if (!anyPending) return;
-    const t = setInterval(refreshDocs, 3000);
+    if (!anyPending) {
+      // All settled — reset the watchdog so a future upload polls fresh.
+      pollStartRef.current = null;
+      setPollTimedOut(false);
+      return;
+    }
+    if (pollStartRef.current === null) pollStartRef.current = Date.now();
+    if (Date.now() - pollStartRef.current >= POLL_TIMEOUT_MS) {
+      setPollTimedOut(true);
+      return; // stop polling
+    }
+    const t = setInterval(() => {
+      if (pollStartRef.current !== null && Date.now() - pollStartRef.current >= POLL_TIMEOUT_MS) {
+        clearInterval(t);
+        setPollTimedOut(true);
+        return;
+      }
+      refreshDocs();
+    }, 3000);
     return () => clearInterval(t);
-  }, [documents, refreshDocs]);
+  }, [documents, refreshDocs, POLL_TIMEOUT_MS]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -166,6 +190,7 @@ export default function WorkspaceDetailPage({
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploading(true);
+    setUploadError(null);
     try {
       const form = new FormData();
       for (const f of Array.from(files)) form.append("files", f);
@@ -174,7 +199,14 @@ export default function WorkspaceDetailPage({
         headers: await authHeaders(),
         body: form,
       });
-      if (res.ok) await refreshDocs();
+      if (res.ok) {
+        await refreshDocs();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setUploadError(data.message || data.error || "Upload failed. Please try again.");
+      }
+    } catch {
+      setUploadError("Couldn't reach the server. Check your connection and try again.");
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -464,6 +496,14 @@ export default function WorkspaceDetailPage({
             {uploading ? <Spinner size="sm" /> : "Upload documents"}
           </button>
           <p className="text-[11px] text-charcoal-400 mt-2 text-center">PDF, DOCX, JPG, PNG · up to 25 MB</p>
+          {uploadError && (
+            <p className="text-[12px] text-burgundy-700 mt-2 text-center">{uploadError}</p>
+          )}
+          {pollTimedOut && (
+            <p className="text-[12px] text-charcoal-500 mt-2 text-center leading-relaxed">
+              Still processing — this is taking longer than expected. Check back later or refresh.
+            </p>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-3">

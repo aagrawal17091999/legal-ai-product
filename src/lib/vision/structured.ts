@@ -126,11 +126,24 @@ export async function planBatches(
     let total: number;
     try {
       const src = await PDFDocument.load(buffer, { ignoreEncryption: true });
+      // A password-protected PDF parses (we ignore encryption to read structure)
+      // but its page content can't be rendered/extracted — reject it up front with
+      // a clear message instead of billing a doomed vision call that fails later.
+      if (src.isEncrypted) {
+        throw new Error(
+          "This PDF is password-protected. Please remove the password and try again."
+        );
+      }
       total = src.getPageCount();
-    } catch {
+    } catch (err) {
+      // Re-throw our own validation errors (encryption) so the upload route 400s.
+      if (err instanceof Error && /password-protected/.test(err.message)) throw err;
       // pdf-lib couldn't parse it — fall back to a single whole-document batch
       // (matches the old single-block fallback for unparseable PDFs).
       return { kind: "pdf", totalPages: 1, batches: [{ index: 0, pageStart: null, pageEnd: null }] };
+    }
+    if (total === 0) {
+      throw new Error("This PDF has no pages. Please upload a valid document.");
     }
     if (total > MAX_TOTAL_PAGES) {
       throw new Error(
@@ -166,8 +179,10 @@ async function extractPdfRange(buffer: Buffer, pageStart: number, pageEnd: numbe
   return Buffer.from(await sub.save());
 }
 
-/** Build the message content for one batch from the raw source buffer. */
-async function buildBatchContent(
+/** Build the message content for one batch from the raw source buffer. Exported
+ *  so the Batch-API submitter can construct the same request body the worker
+ *  sends synchronously. */
+export async function buildBatchContent(
   buffer: Buffer,
   mime: string,
   filename: string,
@@ -219,6 +234,16 @@ function parseJsonObject(raw: string): ParsedBatch {
   } catch {
     return null;
   }
+}
+
+/** Parse a Batch-API result message into a ParsedBatch — the same text→JSON step
+ *  callBatch does for synchronous responses, so both paths produce identical rows. */
+export function parseVisionMessage(message: Anthropic.Message): ParsedBatch {
+  const txt = message.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  return parseJsonObject(txt);
 }
 
 // Run one vision/text call. Never throws — failures return null so the caller

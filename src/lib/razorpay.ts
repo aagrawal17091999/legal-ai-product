@@ -42,7 +42,11 @@ export async function createSubscription(
   // customer we pre-created. notes is server-set and tamper-proof.
   const subscription = await client.subscriptions.create({
     plan_id: planId,
-    total_count: plan === "monthly" ? 12 : 1,
+    // Razorpay requires a finite total_count. A small count (12 / 1) made every
+    // subscription auto-`complete` after a year and silently downgrade the user
+    // to free. Use a very large count so the subscription renews until the user
+    // (or we) explicitly cancel it. SUBSCRIPTION_TOTAL_COUNT ≈ 100 years.
+    total_count: SUBSCRIPTION_TOTAL_COUNT[plan],
     quantity: 1,
     customer_notify: 1,
     notes: {
@@ -53,6 +57,33 @@ export async function createSubscription(
   } as Parameters<typeof client.subscriptions.create>[0]);
 
   return subscription;
+}
+
+/** Effectively-unbounded billing-cycle counts so subscriptions don't auto-expire. */
+const SUBSCRIPTION_TOTAL_COUNT = { monthly: 1200, yearly: 100 } as const;
+
+/**
+ * Switch an existing subscription to a different plan in place, instead of
+ * cancel-then-recreate (which stranded a paying user with no active sub if they
+ * abandoned the new checkout). `schedule_change_at: "now"` swaps immediately
+ * with proration; "cycle_end" defers to the next renewal. Returns the updated
+ * subscription. The existing subscription_id is preserved, so no webhook
+ * cutover is needed.
+ */
+export async function updateSubscriptionPlan(
+  subscriptionId: string,
+  plan: "monthly" | "yearly",
+  scheduleChangeAt: "now" | "cycle_end" = "now"
+) {
+  const client = getClient();
+  const planId = PLAN_IDS[plan];
+  if (!planId) throw new Error(`Razorpay plan ID for "${plan}" is not configured`);
+  return client.subscriptions.update(subscriptionId, {
+    plan_id: planId,
+    total_count: SUBSCRIPTION_TOTAL_COUNT[plan],
+    schedule_change_at: scheduleChangeAt,
+    customer_notify: 1,
+  });
 }
 
 export async function createCustomer(email: string, name: string) {
@@ -114,9 +145,18 @@ export function verifyPaymentSignature(opts: {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-export async function cancelSubscription(subscriptionId: string) {
+/**
+ * Cancel a subscription. Defaults to cancel-at-cycle-end so a user who cancels
+ * mid-cycle keeps the access they already paid for until period end (immediate
+ * cancellation forfeited the remaining paid days). Pass cancelAtCycleEnd=false
+ * to cancel immediately.
+ */
+export async function cancelSubscription(
+  subscriptionId: string,
+  cancelAtCycleEnd = true
+) {
   const client = getClient();
-  return await client.subscriptions.cancel(subscriptionId);
+  return await client.subscriptions.cancel(subscriptionId, cancelAtCycleEnd);
 }
 
 export async function fetchSubscription(subscriptionId: string) {
@@ -149,6 +189,37 @@ export function computeSubscriptionEndDate(plan: "monthly" | "yearly"): Date {
 }
 
 /**
+ * Prefer Razorpay's authoritative `current_end` (Unix seconds) for the period
+ * boundary; only fall back to a wall-clock estimate when the webhook entity
+ * omits it. Using the real cycle end keeps our period in lockstep with billing
+ * instead of drifting from server-receipt time.
+ */
+export function subscriptionEndDate(
+  plan: "monthly" | "yearly",
+  currentEnd?: number | null
+): Date {
+  if (typeof currentEnd === "number" && currentEnd > 0) {
+    return new Date(currentEnd * 1000);
+  }
+  return computeSubscriptionEndDate(plan);
+}
+
+/**
+ * Deterministic idempotency key for a subscription's per-cycle credit reset.
+ * Stored in credit_transactions.razorpay_payment_id (partial unique index), so
+ * the activated webhook, the charged webhook, and the synchronous verify route
+ * all dedupe to a single monthly_reset per billing cycle regardless of delivery
+ * order or retries. Keyed on the cycle's current_end so each new cycle gets a
+ * fresh grant.
+ */
+export function subscriptionCycleKey(
+  subscriptionId: string,
+  currentEnd?: number | null
+): string {
+  return `subreset:${subscriptionId}:${currentEnd ?? "init"}`;
+}
+
+/**
  * Single source of truth for flipping a user's row to an active paid plan.
  * Called from both the webhook handler and the client-verify route, so it
  * must be idempotent — running it twice with the same args is a no-op.
@@ -161,8 +232,11 @@ export async function markSubscriptionActive(opts: {
   userId: number;
   subscriptionId: string;
   plan: "monthly" | "yearly";
+  /** Authoritative period end (from Razorpay current_end). Falls back to a
+   *  wall-clock estimate when not supplied. */
+  endDate?: Date;
 }): Promise<{ endDate: Date; updated: boolean }> {
-  const endDate = computeSubscriptionEndDate(opts.plan);
+  const endDate = opts.endDate ?? computeSubscriptionEndDate(opts.plan);
   const result = await pool.query(
     `UPDATE users SET
        plan = $1,
@@ -190,8 +264,10 @@ export function verifyWebhookSignature(
     .update(body)
     .digest("hex");
 
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
-  );
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expectedSignature);
+  // timingSafeEqual throws on length mismatch — guard first so a malformed
+  // signature header returns false instead of throwing an uncaught 500 (which
+  // would make Razorpay retry the webhook forever).
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }

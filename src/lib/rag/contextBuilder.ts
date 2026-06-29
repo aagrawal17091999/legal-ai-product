@@ -267,6 +267,7 @@ export function toCitedCases(cases: AssembledCase[]): CitedCase[] {
     citation: c.extraction.extracted_citation ?? c.meta.citation,
     pdf_url: c.pdf_url,
     pdf_path: c.pdf_path,
+    index: c.index,
   }));
 }
 
@@ -352,6 +353,19 @@ function emptyExtraction(): ExtractionMeta {
  * preserved readably; non-adjacent chunks get an ellipsis separator so the
  * LLM can see the gap.
  */
+/**
+ * Neutralize retrieved text that could hijack the prompt. Judgments quote
+ * letters/contracts ("you must…") and could contain a forged `--- Case [n] ---`
+ * header; left intact, such a line could masquerade as a real citation anchor
+ * after the marker-rewrite pass. We defang the case-header pattern (the only
+ * structural marker the model treats as authoritative) so injected text can only
+ * ever read as data, never as a citation boundary. Paired with the system-prompt
+ * instruction that all excerpt text is untrusted source material.
+ */
+function sanitizeExcerptText(text: string): string {
+  return text.replace(/-{2,}\s*Case\s*\[/gi, "— case [");
+}
+
 function mergeChunks(chunks: RetrievedChunk[], charBudget: number): string {
   if (chunks.length === 0) return "";
   const parts: string[] = [];
@@ -361,7 +375,8 @@ function mergeChunks(chunks: RetrievedChunk[], charBudget: number): string {
   for (const ch of chunks) {
     if (used >= charBudget) break;
     const remaining = charBudget - used;
-    const text = ch.chunk_text.length > remaining ? ch.chunk_text.slice(0, remaining) : ch.chunk_text;
+    const raw = sanitizeExcerptText(ch.chunk_text);
+    const text = raw.length > remaining ? raw.slice(0, remaining) : raw;
     if (prevIdx !== null && ch.chunk_index !== prevIdx + 1) {
       parts.push("\n[...]\n");
       used += 6;

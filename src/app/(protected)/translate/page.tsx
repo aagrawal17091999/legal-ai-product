@@ -21,6 +21,21 @@ interface TranslationJob {
 }
 
 const ACCEPT = ".pdf,.docx,.jpg,.jpeg,.png,.webp";
+// Mirror the server limit (25 MB) and accepted extensions so we fail fast
+// client-side instead of uploading a file the server will reject.
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const ALLOWED_EXT = ["pdf", "docx", "jpg", "jpeg", "png", "webp"];
+
+function validateFile(file: File): string | null {
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (!ALLOWED_EXT.includes(ext)) {
+    return "Unsupported file type. Use PDF, DOCX, JPG, PNG, or WEBP.";
+  }
+  if (file.size > MAX_FILE_BYTES) {
+    return "File exceeds the 25 MB limit.";
+  }
+  return null;
+}
 
 export default function TranslatePage() {
   const { getToken } = useAuth();
@@ -39,10 +54,16 @@ export default function TranslatePage() {
   }, [getToken]);
 
   const loadJobs = useCallback(async () => {
-    const res = await fetch("/api/translate", { headers: await authHeaders() });
-    if (res.ok) {
-      const data = await res.json();
-      setJobs(data.jobs ?? []);
+    try {
+      const res = await fetch("/api/translate", { headers: await authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setJobs(data.jobs ?? []);
+      } else {
+        setError("Couldn't load your translations. Please refresh and try again.");
+      }
+    } catch {
+      setError("Couldn't reach the server. Check your connection and try again.");
     }
   }, [authHeaders]);
 
@@ -59,14 +80,26 @@ export default function TranslatePage() {
     loadJobs
   );
 
+  // Open the blank tab synchronously on click — before the await — so popup
+  // blockers don't kill it, then point it at the resolved URL.
   const fetchDownload = async (jobId: string) => {
-    const res = await fetch(`/api/translate/${jobId}`, { headers: await authHeaders() });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.downloadUrl) {
-        setDownloads((d) => ({ ...d, [jobId]: data.downloadUrl }));
-        window.open(data.downloadUrl, "_blank");
+    setError(null);
+    const w = window.open("", "_blank");
+    try {
+      const res = await fetch(`/api/translate/${jobId}`, { headers: await authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.downloadUrl) {
+          setDownloads((d) => ({ ...d, [jobId]: data.downloadUrl }));
+          if (w) w.location.href = data.downloadUrl;
+          return;
+        }
       }
+      if (w) w.close();
+      setError("Couldn't get the download. Please try again.");
+    } catch {
+      if (w) w.close();
+      setError("Couldn't reach the server. Check your connection and try again.");
     }
   };
 
@@ -94,6 +127,11 @@ export default function TranslatePage() {
   const submit = async () => {
     if (!file || !target.trim()) {
       setError("Choose a file and enter a target language.");
+      return;
+    }
+    const invalid = validateFile(file);
+    if (invalid) {
+      setError(invalid);
       return;
     }
     setSubmitting(true);

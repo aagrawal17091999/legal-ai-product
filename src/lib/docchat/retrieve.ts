@@ -144,6 +144,9 @@ export async function getAllWorkspaceChunks(workspaceId: string): Promise<DocChu
        FROM document_chunks dc
        JOIN workspace_documents d ON d.id = dc.document_id
       WHERE dc.workspace_id = $1
+        -- Only ready documents: a doc mid-ingestion may have a partial chunk
+        -- set, which would leak half a document into answers as if complete.
+        AND d.status = 'ready'
       ORDER BY dc.document_id, dc.chunk_index`,
     [workspaceId]
   );
@@ -167,6 +170,8 @@ async function vectorLane(
        JOIN workspace_documents d ON d.id = dc.document_id
       WHERE dc.workspace_id = $1
         AND dc.embedding IS NOT NULL
+        -- Don't surface chunks from a doc still mid-ingestion / failed.
+        AND d.status = 'ready'
       ORDER BY dc.embedding <=> $2::vector
       LIMIT ${limit}`,
     [workspaceId, vec]
@@ -188,6 +193,8 @@ async function ftsLane(
        JOIN workspace_documents d ON d.id = dc.document_id
       WHERE dc.workspace_id = $1
         AND to_tsvector('english', dc.chunk_text) @@ plainto_tsquery('english', $2)
+        -- Don't surface chunks from a doc still mid-ingestion / failed.
+        AND d.status = 'ready'
       ORDER BY rank DESC
       LIMIT ${limit}`,
     [workspaceId, query]

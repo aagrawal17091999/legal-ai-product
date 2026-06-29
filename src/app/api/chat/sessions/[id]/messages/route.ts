@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
-import { withMeter } from "@/lib/billing/meter";
+import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
 import pool from "@/lib/db";
 import { hydrateSessionStore } from "@/lib/rag/sessionStore";
-import { runAgent, buildAgentAuditSteps } from "@/lib/rag/agent";
+import { runAgent, buildAgentAuditSteps, AgentAbortedError } from "@/lib/rag/agent";
 import { persistPipelineAudit } from "@/lib/rag/trace";
 import { generateChatTitle } from "@/lib/claude";
 import { validateCitations, type CitationMismatch } from "@/lib/rag/citationValidator";
@@ -70,6 +70,33 @@ export async function POST(
   }
   const sessionFilters: SearchFilters = sessionRows[0].filters || {};
 
+  // Serialize turns within a single session. Two messages fired concurrently
+  // (double-click, two tabs) would otherwise both read the same history, both
+  // insert a user row, and interleave — corrupting message order and possibly
+  // double-titling/double-charging. A session-scoped advisory lock (held on a
+  // dedicated connection for the life of the turn) makes the second caller wait
+  // its turn instead. The lock auto-releases if the function is killed.
+  const lockClient = await pool.connect();
+  let lockHeld = false;
+  try {
+    const { rows: lockRows } = await lockClient.query<{ locked: boolean }>(
+      `SELECT pg_try_advisory_lock(hashtext($1)) AS locked`,
+      [`chat_session:${sessionId}`]
+    );
+    lockHeld = lockRows[0]?.locked === true;
+  } catch {
+    /* lock probe failed — fall through and release below */
+  }
+  if (!lockHeld) {
+    lockClient.release();
+    return NextResponse.json(
+      { error: "A message is already being processed in this conversation. Please wait." },
+      { status: 409 }
+    );
+  }
+  // From here on, lockClient must be released (which drops the advisory lock) on
+  // every exit path — done in the stream's finalization below.
+
   const { rows: historyRows } = await pool.query(
     `SELECT id, role, content, cited_cases, search_query, created_at
        FROM chat_messages
@@ -122,6 +149,8 @@ export async function POST(
         streamClosed = true;
       });
 
+      // Guarantee the session advisory lock is released on every exit path.
+      try {
       const tStart = Date.now();
       const agentStartedAt = new Date(tStart).toISOString();
       let assistantContent = "";
@@ -158,12 +187,13 @@ export async function POST(
         // completes. The streamed Sonnet steps report usage via addClaudeUsage.
         ({ result: agentResult } = await withMeter(
           { userId: user.id, feature: "chat" },
-          () =>
-            runAgent({
+          async () => {
+            const r = await runAgent({
               userMessage,
               history: conversationHistory,
               sessionStore: sessionStoreForTurn!,
               sessionFilters,
+              abortSignal: request.signal,
               onTextDelta: (delta) => send("token", { delta }),
               onToolEvent: (event) => {
                 send("tool", {
@@ -182,7 +212,14 @@ export async function POST(
                 send("cases", cases);
               },
               onStatus: (s) => send("status", s),
-            })
+            });
+            // Don't bill a turn that produced no usable answer (the degraded
+            // "did not produce a response" path) — the user got nothing.
+            if (!r.assistantContent || !r.assistantContent.trim()) {
+              markMeterUnbillable();
+            }
+            return r;
+          }
         ));
 
         assistantContent = agentResult.assistantContent;
@@ -255,6 +292,14 @@ export async function POST(
           });
         }
       } catch (err) {
+        // A client-cancelled turn (Stop / disconnect) is not an error: the meter
+        // was already marked unbillable inside withMeter when runAgent threw, so
+        // the user isn't charged. Persist it quietly without a scary log/banner.
+        if (err instanceof AgentAbortedError || request.signal.aborted) {
+          status = "error";
+          errorMsg = "cancelled";
+          assistantContent = assistantContent || "(cancelled)";
+        } else {
         status = "error";
         errorMsg = err instanceof Error ? err.message : String(err);
         assistantContent =
@@ -270,6 +315,7 @@ export async function POST(
           metadata: { sessionId },
         });
         send("error", { message: errorMsg });
+        }
       }
 
       const responseTimeMs = Date.now() - tStart;
@@ -420,6 +466,15 @@ export async function POST(
           controller.close();
         } catch {
           /* already closed */
+        }
+      }
+      } finally {
+        // Drop the session advisory lock (releasing the connection ends it) so
+        // the next queued message in this session can proceed.
+        try {
+          lockClient.release();
+        } catch {
+          /* already released */
         }
       }
     },

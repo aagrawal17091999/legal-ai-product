@@ -98,9 +98,15 @@ export default function TracePage({
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
+          // The trace endpoint is staff-only and returns 404 to everyone else
+          // (it deliberately doesn't advertise the surface exists). Show a clean
+          // "not found" rather than echoing internal error text or a broken page.
           if (!cancelled) {
-            setError(body.error || `HTTP ${res.status}`);
+            setError(
+              res.status === 404 || res.status === 401 || res.status === 403
+                ? "This page isn't available."
+                : "Couldn't load this trace. Please try again."
+            );
             setLoading(false);
           }
           return;

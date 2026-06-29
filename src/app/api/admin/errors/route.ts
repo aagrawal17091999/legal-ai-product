@@ -1,14 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth } from "@/lib/auth";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import type { ErrorLog } from "@/types";
 
-// GET /api/admin/errors — Query error logs with filters
-export async function GET(request: NextRequest) {
+/**
+ * Resolve the caller and require staff. Returns the same 404 used by the trace
+ * route for non-staff so we don't even confirm the admin surface exists. Any
+ * authenticated-but-non-staff user (i.e. every normal customer) is rejected.
+ */
+async function requireStaff(request: NextRequest) {
   const decoded = await verifyAuth(request);
   if (!decoded) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
+  const user = await getRequestUser(decoded);
+  if (!user.is_staff) {
+    return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
+  }
+  return { user };
+}
+
+// GET /api/admin/errors — Query error logs with filters
+export async function GET(request: NextRequest) {
+  const gate = await requireStaff(request);
+  if (gate.error) return gate.error;
 
   const { searchParams } = request.nextUrl;
   const category = searchParams.get("category");
@@ -69,10 +84,8 @@ export async function GET(request: NextRequest) {
 
 // PATCH /api/admin/errors — Mark errors as resolved
 export async function PATCH(request: NextRequest) {
-  const decoded = await verifyAuth(request);
-  if (!decoded) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const gate = await requireStaff(request);
+  if (gate.error) return gate.error;
 
   const body = await request.json();
   const ids: number[] = body.ids;

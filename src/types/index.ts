@@ -130,6 +130,14 @@ export interface CitedCase {
   pdf_url: string | null;
   pdf_path: string | null;
   /**
+   * The 1-based citation index this case was assigned (the `n` in `[^n]`). The
+   * UI resolves a clicked citation by THIS field rather than by array position,
+   * so reordering/deduping the array can't silently point a citation at the
+   * wrong case. Optional for backward compatibility with rows persisted before
+   * this field existed (the UI falls back to positional lookup then).
+   */
+  index?: number;
+  /**
    * Paragraph numbers addressable in the excerpt shown for this case (the ones
    * the model was allowed to pinpoint). Lets the "Referenced Cases" footer offer
    * paragraph-level entry points. Optional for backward compatibility with rows

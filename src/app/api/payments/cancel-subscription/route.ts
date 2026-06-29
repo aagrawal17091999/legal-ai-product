@@ -23,15 +23,23 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    await cancelSubscription(user.razorpay_subscription_id);
+    // Cancel at cycle end (the default) — the user keeps the access and credits
+    // they already paid for until the period expires. Razorpay fires
+    // subscription.cancelled at cycle end, and only then does the webhook zero
+    // plan_credits. We do NOT zero credits here.
+    await cancelSubscription(user.razorpay_subscription_id, true);
 
-    // Update immediately for UI responsiveness (webhook will also update)
+    // Reflect the pending cancellation for the UI; access remains until period
+    // end (subscription_end_date). The webhook flips plan→free at cycle end.
     await pool.query(
       `UPDATE users SET subscription_status = 'cancelled', updated_at = NOW() WHERE id = $1`,
       [user.id]
     );
 
-    return NextResponse.json({ status: "cancelled" });
+    return NextResponse.json({
+      status: "cancelled",
+      access_until: user.subscription_end_date ?? null,
+    });
   } catch (err) {
     logError({
       category: "payment",

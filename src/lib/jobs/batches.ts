@@ -52,6 +52,13 @@ export const BATCH_LEASE_MS = 6 * 60 * 1000;
  */
 export const STALE_JOB_TIMEOUT_MS = 30 * 60 * 1000;
 
+/**
+ * Hard ceiling for a unit sitting `submitted` on the Anthropic Batch API. The
+ * batch window is "usually < 1h, max 24h"; past this we assume the batch is lost
+ * and revert the unit to the synchronous path so the job can never hang forever.
+ */
+export const BATCH_API_MAX_AGE_MS = 25 * 60 * 60 * 1000;
+
 export const STALE_JOB_MESSAGE =
   "This document took too long to process — it may be very large or the service " +
   "was under heavy load. Please try again.";
@@ -406,12 +413,44 @@ export async function getProviderBatchUnits(
   return rows;
 }
 
-/** Store a Batch-API result and mark the unit done (guarded to the submitted state). */
-export async function completeSubmittedBatch(id: string, result: ParsedBatch): Promise<void> {
-  await pool.query(
+/**
+ * Store a Batch-API result and mark the unit done (guarded to the submitted
+ * state). Returns true only if THIS call flipped the row from submitted → done.
+ * Concurrent worker invocations overlap (the cron drains for ~210s but fires
+ * every 60s), so two pollers can stream the same ended batch's results; the
+ * guard makes exactly one of them win. Callers meter only on a true return so a
+ * unit is billed exactly once.
+ */
+export async function completeSubmittedBatch(id: string, result: ParsedBatch): Promise<boolean> {
+  const res = await pool.query(
     `UPDATE job_batches
         SET status = 'done', result_json = $2, error = NULL, updated_at = NOW()
       WHERE id = $1 AND status = 'submitted'`,
     [id, JSON.stringify(result)]
   );
+  return (res.rowCount ?? 0) > 0;
+}
+
+/**
+ * Dead-man's switch for the Batch API. A unit left `submitted` longer than
+ * maxAgeMs means its Anthropic batch never reached `ended` (lost batch, or a
+ * backlog beyond the poll LIMIT so it was never polled) — and such units are
+ * EXEMPT from the stale-job watchdog, so without this the parent job would spin
+ * forever. Revert them to the synchronous path so the job still completes (or
+ * fails cleanly). Returns the affected job ids so the caller can settle/sweep.
+ */
+export async function revertExpiredBatchUnits(
+  maxAgeMs: number = BATCH_API_MAX_AGE_MS
+): Promise<string[]> {
+  const { rows } = await pool.query<{ job_id: string }>(
+    `UPDATE job_batches
+        SET status = 'pending', delivery = 'sync', provider_batch_id = NULL,
+            error = 'Batch API did not complete in time; processing normally.',
+            updated_at = NOW()
+      WHERE status = 'submitted'
+        AND updated_at < NOW() - ($1 * INTERVAL '1 millisecond')
+      RETURNING job_id`,
+    [maxAgeMs]
+  );
+  return [...new Set(rows.map((r) => r.job_id))];
 }

@@ -19,10 +19,13 @@ export async function verifyAuth(
   const sessionCookie = request.cookies.get(SESSION_COOKIE)?.value;
   if (sessionCookie) {
     try {
-      const decoded = await getAdminAuth().verifySessionCookie(sessionCookie);
+      // checkRevoked: true makes Firebase reject cookies whose refresh tokens
+      // were revoked (sign-out, password reset) or whose user was disabled —
+      // without it a captured cookie stays valid for the full 14-day lifetime.
+      const decoded = await getAdminAuth().verifySessionCookie(sessionCookie, true);
       return { uid: decoded.uid, email: decoded.email || "" };
     } catch {
-      // Expired/invalid cookie — fall through to the bearer header.
+      // Expired/invalid/revoked cookie — fall through to the bearer header.
     }
   }
 
@@ -33,7 +36,7 @@ export async function verifyAuth(
 
   const token = authHeader.slice(7);
   try {
-    const decoded = await getAdminAuth().verifyIdToken(token);
+    const decoded = await getAdminAuth().verifyIdToken(token, true);
     return { uid: decoded.uid, email: decoded.email || "" };
   } catch (err) {
     logError({

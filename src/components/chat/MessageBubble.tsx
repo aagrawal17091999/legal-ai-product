@@ -35,7 +35,12 @@ function MessageBubble({
     if (!match) return false;
     const idx = parseInt(match[1], 10);
     const paragraph = match[2] ?? null;
-    const ref = message.cited_cases?.[idx - 1];
+    // Resolve by the case's explicit citation index when present (robust to any
+    // reordering/deduping of the array); fall back to positional lookup for
+    // messages persisted before cited_cases carried an index.
+    const ref =
+      message.cited_cases?.find((c) => c.index === idx) ??
+      message.cited_cases?.[idx - 1];
     if (!ref) return false;
     onCitationClick?.({ case: ref, paragraph });
     return true;

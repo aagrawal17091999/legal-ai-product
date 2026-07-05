@@ -12,7 +12,7 @@ isolated environments.
 | pm2 process | `nyayasearch` | `nyayasearch-staging` |
 | Database | `legalai_prod` | `legalai_dev` |
 | Env file | `.env.production.local` | `.env.staging.local` |
-| nginx host | `app.<domain>` | `staging.<domain>` |
+| nginx host | `getlegalbrain.com` (+ `www`) | `staging.getlegalbrain.com` |
 
 Both databases live in the **same Postgres cluster**. Application data (users,
 chats, payments, workspaces, audit/trace) is **isolated per environment** — never
@@ -74,7 +74,7 @@ systemctl list-timers | grep nyayasearch     # confirm next run
 ## Health checks
 
 `GET /api/health` — unauthenticated, checks DB connectivity, 200 up / 503 down.
-Point an external monitor (UptimeRobot/BetterStack) at `https://app.<domain>/api/health`.
+Point an external monitor (UptimeRobot/BetterStack) at `https://getlegalbrain.com/api/health`.
 
 ## Scalability for ~1000 users — verdict
 
@@ -130,7 +130,7 @@ can't double-credit), terminal-state guards on cancellation, order-notes fallbac
 for top-ups. No code changes needed. Remaining is **operational**:
 - [ ] Swap `RAZORPAY_KEY_ID/SECRET` to **live** mode.
 - [ ] Recreate plans in live mode; update `RAZORPAY_PLAN_MONTHLY/YEARLY` (live plan IDs differ).
-- [ ] Register the live webhook URL → `https://app.<domain>/api/payments/webhook`,
+- [ ] Register the live webhook URL → `https://getlegalbrain.com/api/payments/webhook`,
       subscribe to: `subscription.activated`, `subscription.charged`,
       `subscription.cancelled`, `subscription.completed`, `payment.captured`.
 - [ ] Set `RAZORPAY_WEBHOOK_SECRET` to the live webhook's secret.

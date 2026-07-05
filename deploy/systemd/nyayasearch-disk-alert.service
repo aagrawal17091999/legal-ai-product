@@ -1,0 +1,13 @@
+# Disk-space watchdog. Install with its .timer.
+#   sudo cp deploy/systemd/nyayasearch-disk-alert.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now nyayasearch-disk-alert.timer
+[Unit]
+Description=NyayaSearch disk-space watchdog
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+Environment=DISK_ALERT_PCT=80
+ExecStart=/bin/bash scripts/disk-alert.sh

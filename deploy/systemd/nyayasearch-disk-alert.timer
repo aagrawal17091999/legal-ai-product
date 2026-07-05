@@ -1,0 +1,10 @@
+# Checks disk every 15 minutes.
+[Unit]
+Description=NyayaSearch disk-space watchdog (every 15m)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

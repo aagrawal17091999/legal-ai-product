@@ -1,0 +1,12 @@
+# Runs the app-data backup nightly at 02:30 (before the 03:00 retention job, so
+# the backup captures data prior to pruning). Persistent=true re-fires a run
+# missed while the box was down.
+[Unit]
+Description=Nightly NyayaSearch application-data backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

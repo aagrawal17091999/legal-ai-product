@@ -1,0 +1,22 @@
+# Fires the RAG-retention cleanup endpoint. Installed alongside the .timer.
+# Replaces the inert vercel.json cron (Vercel's scheduler doesn't run on Hetzner).
+#
+# Install (as root):
+#   cp deploy/systemd/nyayasearch-rag-retention.* /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now nyayasearch-rag-retention.timer
+#   systemctl list-timers | grep nyayasearch      # verify next run
+#
+# Adjust WorkingDirectory / User / ENV_FILE if your prod checkout differs.
+[Unit]
+Description=NyayaSearch RAG audit retention cleanup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+Environment=CRON_TARGET_BASE=http://127.0.0.1:3000
+ExecStart=/bin/bash scripts/cron-tick.sh /api/cron/rag-retention

@@ -7,15 +7,19 @@ set -euo pipefail
 # 009_embeddings_v2.sql and wiped all embeddings. Never again: an already-applied
 # migration is skipped, and 009 is itself guarded to be non-destructive on re-run.
 
-# Load DATABASE_URL from .env.local if it exists
-if [ -f .env.local ]; then
-  DATABASE_URL=$(grep '^DATABASE_URL=' .env.local | cut -d '=' -f 2-)
+# Load DATABASE_URL from the environment's dotenv file unless it is already
+# exported. ENV_FILE selects the environment (defaults to .env.local so local
+# usage is unchanged); deploy.sh sets ENV_FILE=.env.production.local /
+# .env.staging.local so the right database is migrated.
+ENV_FILE="${ENV_FILE:-.env.local}"
+if [ -z "${DATABASE_URL:-}" ] && [ -f "$ENV_FILE" ]; then
+  DATABASE_URL=$(grep '^DATABASE_URL=' "$ENV_FILE" | head -1 | cut -d '=' -f 2-)
   export DATABASE_URL
 fi
 
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "ERROR: DATABASE_URL is not set." >&2
-  echo "Set it in .env.local or export it before running this script." >&2
+  echo "Set it in ${ENV_FILE} or export it before running this script." >&2
   exit 1
 fi
 

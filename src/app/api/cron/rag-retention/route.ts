@@ -11,12 +11,14 @@ import { logError } from "@/lib/error-logger";
  * turns older than 30 days is rarely useful (bug reports come in within
  * days, not months), so we reclaim the storage.
  *
- * Schedule: vercel.json runs this at 03:00 UTC daily.
+ * Schedule: a systemd timer on the Hetzner box fires this at 03:00 daily
+ * (deploy/systemd/nyayasearch-rag-retention.*, via scripts/cron-tick.sh). The
+ * vercel.json cron entry is INERT here — there is no Vercel cron runner on a
+ * self-hosted box — so the timer is the real scheduler.
  *
  * Auth: reads CRON_SECRET from env and compares to the Authorization header.
- * Vercel's cron runner auto-attaches it when the env var is set on the
- * project. In dev you can hit the endpoint manually:
- *   curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/rag-retention
+ * cron-tick.sh attaches the same Bearer token. To run it by hand:
+ *   ENV_FILE=.env.production.local scripts/cron-tick.sh /api/cron/rag-retention
  *
  * What it cleans:
  *   - rag_pipeline_steps older than 30 days → hard delete
@@ -28,6 +30,13 @@ import { logError } from "@/lib/error-logger";
  */
 
 const RETENTION_DAYS = 30;
+
+// Hard ceiling for error_logs. Unresolved criticals are kept longer than the
+// standard window because they may still be actionable — but NOT forever: a
+// noisy source (e.g. a batch ingestion run emitting thousands of critical
+// 'fetching' errors) would otherwise grow the table without bound. Anything
+// past this is reaped regardless of severity/resolution.
+const ERROR_LOG_CRITICAL_DAYS = 90;
 
 // Ingestion runs in after() off the upload response; a killed/timed-out instance
 // (deploy, OOM, function timeout) leaves a doc 'pending'/'processing' forever,
@@ -86,12 +95,25 @@ export async function GET(request: NextRequest) {
       [DOC_INGEST_TIMEOUT_MS]
     );
 
+    // Prune the ops error log. It carries no user-facing data and already grows
+    // fast (tens of MB at a handful of users), so at 1000 users it would balloon
+    // and bloat every backup. Keep unresolved criticals indefinitely (those are
+    // still actionable); reap everything else past retention.
+    const errorLogRes = await pool.query(
+      `DELETE FROM error_logs
+        WHERE created_at < NOW() - ($2::int || ' days')::interval
+           OR (created_at < NOW() - ($1::int || ' days')::interval
+               AND NOT (severity = 'critical' AND resolved = false))`,
+      [RETENTION_DAYS, ERROR_LOG_CRITICAL_DAYS]
+    );
+
     return NextResponse.json({
       status: "ok",
       retention_days: RETENTION_DAYS,
       deleted: {
         rag_pipeline_steps: stepsRes.rowCount ?? 0,
         trace_access_log: accessRes.rowCount ?? 0,
+        error_logs: errorLogRes.rowCount ?? 0,
       },
       nulled: {
         chat_messages_rag_trace: traceRes.rowCount ?? 0,

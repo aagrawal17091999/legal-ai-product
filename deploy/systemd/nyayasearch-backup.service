@@ -1,0 +1,20 @@
+# Nightly application-data backup to R2. Install with its .timer (see below).
+#   sudo cp deploy/systemd/nyayasearch-backup.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nyayasearch-backup.timer
+#   systemctl list-timers | grep nyayasearch-backup
+#
+# BACKUP_ENC_PASSPHRASE must be readable — keep it in .env.production.local
+# (the script reads it from there) or set it here via an EnvironmentFile that is
+# chmod 600 and NOT in the git checkout.
+[Unit]
+Description=NyayaSearch nightly application-data backup to R2
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+ExecStart=/bin/bash scripts/backup-app-data.sh --upload

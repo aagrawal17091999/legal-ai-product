@@ -30,9 +30,13 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# env files — ignore every real dotenv (incl. .env.production.local,
+# .env.staging.local) but keep committable *.example templates.
+.env
 .env.local
 .env.production
+.env*.local
+!.env*.example
 
 # vercel
 .vercel

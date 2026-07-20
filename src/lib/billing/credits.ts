@@ -57,6 +57,19 @@ export async function getRemaining(userId: number): Promise<number> {
 }
 
 /**
+ * True for accounts flagged as unlimited (migration 025). Such users are never
+ * gated by requireCredits() and never debited by the meter, regardless of their
+ * balance or BILLING_ENFORCE. A missing user row reads as not-unlimited.
+ */
+export async function isUnlimited(userId: number): Promise<boolean> {
+  const { rows } = await pool.query(
+    `SELECT unlimited_credits FROM users WHERE id = $1`,
+    [userId]
+  );
+  return rows.length > 0 && rows[0].unlimited_credits === true;
+}
+
+/**
  * Gate at the start of a billable action. Allows the request through as long as
  * the wallet has ANY positive balance (the in-flight action is permitted to
  * overshoot into the negative once); blocks entirely once remaining <= 0.
@@ -67,6 +80,7 @@ export async function getRemaining(userId: number): Promise<number> {
  */
 export async function requireCredits(userId: number): Promise<void> {
   if (process.env.BILLING_ENFORCE !== "on") return;
+  if (await isUnlimited(userId)) return;
   const remaining = await getRemaining(userId);
   if (remaining <= 0) throw new OutOfCreditsError(remaining);
 }

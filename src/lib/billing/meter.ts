@@ -21,7 +21,7 @@ import {
   inrToCredits,
   type ClaudeUsage,
 } from "./cost";
-import { debit, type DebitResult } from "./credits";
+import { debit, isUnlimited, type DebitResult } from "./credits";
 
 export type Feature = "chat" | "workspace_chat" | "translate" | "ocr" | "ingest";
 
@@ -145,7 +145,11 @@ async function finalizeMeter(ctx: MeterCtx, billable: boolean): Promise<MeterRes
     const { costInr, breakdown } = summarize(ctx.lines);
     const credits = inrToCredits(costInr);
     const enforced = isEnforced();
-    const charged = billable && enforced && credits > 0;
+    // Unlimited accounts (migration 025) are never debited — but we still record
+    // the usage_events row below so COGS analytics stay accurate. Only pay the
+    // extra lookup when we would otherwise have charged.
+    let charged = billable && enforced && credits > 0;
+    if (charged && (await isUnlimited(ctx.userId))) charged = false;
 
     let debitResult: DebitResult | null = null;
     if (charged) {

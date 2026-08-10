@@ -18,7 +18,11 @@ import { logError } from "@/lib/error-logger";
 import {
   claudeCostInr,
   voyageCostInr,
+  sarvamCostInr,
+  sarvamTranslateCostInr,
   inrToCredits,
+  SARVAM_MODEL_KEY,
+  SARVAM_TRANSLATE_MODEL_KEY,
   type ClaudeUsage,
 } from "./cost";
 import { debit, isUnlimited, type DebitResult } from "./credits";
@@ -26,10 +30,12 @@ import { debit, isUnlimited, type DebitResult } from "./credits";
 export type Feature = "chat" | "workspace_chat" | "translate" | "ocr" | "ingest";
 
 interface Line {
-  provider: "claude" | "voyage";
+  provider: "claude" | "voyage" | "sarvam" | "sarvam_translate";
   model: string;
   usage: ClaudeUsage; // claude
   tokens: number; // voyage
+  pages: number; // sarvam doc-ai — priced per page
+  chars: number; // sarvam translate — priced per character
 }
 
 interface MeterCtx {
@@ -58,14 +64,59 @@ export function isEnforced(): boolean {
 export function addClaudeUsage(model: string, usage: ClaudeUsage | undefined | null): void {
   const ctx = als.getStore();
   if (!ctx || !usage) return;
-  ctx.lines.push({ provider: "claude", model, usage, tokens: 0 });
+  ctx.lines.push({ provider: "claude", model, usage, tokens: 0, pages: 0, chars: 0 });
 }
 
 /** Record one Voyage embed/rerank call's token usage against the active meter. */
 export function addVoyageUsage(model: string, totalTokens: number | undefined | null): void {
   const ctx = als.getStore();
   if (!ctx || !totalTokens) return;
-  ctx.lines.push({ provider: "voyage", model, usage: {}, tokens: totalTokens });
+  ctx.lines.push({ provider: "voyage", model, usage: {}, tokens: totalTokens, pages: 0, chars: 0 });
+}
+
+/** Record a Sarvam Doc AI read against the active meter. Priced per page, so a
+ *  job's total COGS is this plus any translation chars plus the Claude tokens
+ *  spent structuring — all landing on one usage_events row via the shared refId. */
+export function addSarvamUsage(pages: number | undefined | null): void {
+  const ctx = als.getStore();
+  if (!ctx || !pages) return;
+  ctx.lines.push({
+    provider: "sarvam",
+    model: SARVAM_MODEL_KEY,
+    usage: {},
+    tokens: 0,
+    pages,
+    chars: 0,
+  });
+}
+
+/** Record a Sarvam /translate call against the active meter, in source characters. */
+export function addSarvamTranslateUsage(chars: number | undefined | null): void {
+  const ctx = als.getStore();
+  if (!ctx || !chars) return;
+  ctx.lines.push({
+    provider: "sarvam_translate",
+    model: SARVAM_TRANSLATE_MODEL_KEY,
+    usage: {},
+    tokens: 0,
+    pages: 0,
+    chars,
+  });
+}
+
+/**
+ * Cost in INR accumulated so far by the active meter (0 when there is none).
+ *
+ * Lets an agent loop read its own spend between steps and wind down before it
+ * blows a budget, instead of discovering the cost after the turn is billed.
+ * This is the enforcement point for a per-question credit ceiling: tuning step
+ * counts and context sizes shapes the average, but only a live budget check
+ * bounds the tail.
+ */
+export function currentCostInr(): number {
+  const ctx = als.getStore();
+  if (!ctx) return 0;
+  return summarize(ctx.lines).costInr;
 }
 
 /** Allow a deeper layer to set the ref id (e.g. once the message row exists). */
@@ -94,15 +145,40 @@ export interface MeterResult {
 
 function summarize(lines: Line[]) {
   let costInr = 0;
-  const breakdown: Record<string, { in: number; out: number; cacheR: number; cacheW: number; tok: number }> = {};
+  const breakdown: Record<
+    string,
+    {
+      in: number;
+      out: number;
+      cacheR: number;
+      cacheW: number;
+      tok: number;
+      pages: number;
+      chars: number;
+    }
+  > = {};
   for (const l of lines) {
-    const b = (breakdown[l.model] ??= { in: 0, out: 0, cacheR: 0, cacheW: 0, tok: 0 });
+    const b = (breakdown[l.model] ??= {
+      in: 0,
+      out: 0,
+      cacheR: 0,
+      cacheW: 0,
+      tok: 0,
+      pages: 0,
+      chars: 0,
+    });
     if (l.provider === "claude") {
       costInr += claudeCostInr(l.model, l.usage);
       b.in += l.usage.input_tokens ?? 0;
       b.out += l.usage.output_tokens ?? 0;
       b.cacheR += l.usage.cache_read_input_tokens ?? 0;
       b.cacheW += l.usage.cache_creation_input_tokens ?? 0;
+    } else if (l.provider === "sarvam") {
+      costInr += sarvamCostInr(l.pages);
+      b.pages += l.pages;
+    } else if (l.provider === "sarvam_translate") {
+      costInr += sarvamTranslateCostInr(l.chars);
+      b.chars += l.chars;
     } else {
       costInr += voyageCostInr(l.model, l.tokens);
       b.tok += l.tokens;

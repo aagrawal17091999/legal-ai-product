@@ -6,6 +6,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
+import SearchableSelect from "@/components/ui/SearchableSelect";
+import { LANGUAGE_NAMES } from "@/lib/sarvam/languages";
 
 interface TranslationJob {
   id: string;
@@ -126,7 +128,11 @@ export default function TranslatePage() {
 
   const submit = async () => {
     if (!file || !target.trim()) {
-      setError("Choose a file and enter a target language.");
+      setError("Choose a file and pick a target language.");
+      return;
+    }
+    if (!LANGUAGE_NAMES.includes(target.trim())) {
+      setError("Pick a target language from the list.");
       return;
     }
     const invalid = validateFile(file);
@@ -163,8 +169,8 @@ export default function TranslatePage() {
       <div className="max-w-3xl mx-auto px-6 py-10">
         <h1 className="font-serif text-2xl text-charcoal-900">Translate Document</h1>
         <p className="text-[14px] text-charcoal-500 mt-1.5 max-w-xl leading-relaxed">
-          Translate a document into any language and download a formatted Word draft.
-          Source language is detected automatically.
+          Translate a document into any of 23 Indian languages and download a formatted Word
+          draft. Source language is detected automatically.
         </p>
 
         {/* Certification notice — kept by default */}
@@ -195,12 +201,11 @@ export default function TranslatePage() {
               <label className="block text-[13px] font-medium text-charcoal-700 mb-1.5">
                 Target language
               </label>
-              <input
-                type="text"
+              <SearchableSelect
+                options={LANGUAGE_NAMES}
                 value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                placeholder="e.g. English, Hindi, Gujarati, French…"
-                className="w-full rounded-lg border border-ivory-200 bg-ivory-50 px-4 py-2.5 text-[14px] text-charcoal-900 focus:outline-none focus:border-gold-400"
+                onChange={setTarget}
+                placeholder="Search languages…"
               />
             </div>
             {error && <p className="text-[13px] text-burgundy-700">{error}</p>}

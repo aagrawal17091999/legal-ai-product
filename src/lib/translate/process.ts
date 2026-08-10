@@ -15,6 +15,7 @@ import { assembleTranslationResult } from "./translate";
 import { renderBlocksDocx } from "./docx";
 import { getJobBatches } from "../jobs/batches";
 import { sourceKind } from "../vision/structured";
+import { languageName } from "../sarvam/languages";
 import { mirrorJobStatus } from "../firebase-admin";
 import { logError } from "../error-logger";
 
@@ -38,6 +39,13 @@ export async function assembleTranslationJob(jobId: string): Promise<void> {
       kind,
       job.target_language
     );
+
+    // When Sarvam translated the text, Claude only ever saw the TARGET-language
+    // prose and cannot tell what the source was — so Sarvam's own /text-lid
+    // result is authoritative. Fall back to whatever Claude reported (the path
+    // where Claude did the translating and did see the source).
+    const detectedCode = batches.find((b) => b.source_language)?.source_language;
+    if (detectedCode) translation.detectedLanguage = languageName(detectedCode);
 
     // Guard against shipping a blank "success": if the translator could not
     // render any segment with confidence (every segment flagged, or nothing was

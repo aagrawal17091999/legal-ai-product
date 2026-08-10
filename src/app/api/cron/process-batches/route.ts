@@ -15,12 +15,20 @@ import {
   jobTable,
   getJobSource,
   revertExpiredBatchUnits,
+  revertStuckSarvamUnits,
+  revertExhaustedXlateUnits,
   STALE_JOB_MESSAGE,
   type BatchRow,
   type JobKind,
   type JobSource,
 } from "@/lib/jobs/batches";
 import { submitPlannedBatchJobs, pollInFlightBatchApi } from "@/lib/jobs/batch-api";
+import {
+  submitSarvamOcrBatches,
+  pollSarvamOcrBatches,
+  runSarvamTranslations,
+} from "@/lib/jobs/sarvam-ocr";
+import { isSarvamEnabled } from "@/lib/sarvam/client";
 import { ocrBatchConfig } from "@/lib/ocr/ocr";
 import { translateBatchConfig } from "@/lib/translate/translate";
 import { assembleOcrJob } from "@/lib/ocr/process";
@@ -95,10 +103,19 @@ async function processOne(
   source: JobSource,
   buffer: Buffer
 ): Promise<void> {
+  // How far Sarvam got decides three things at once: which text Claude is handed,
+  // which prompt framing it gets, and which model tier runs it.
+  //   translated_text → Sarvam read AND translated; Claude only structures (Haiku)
+  //   ocr_text        → Sarvam read; Claude translates + structures     (Haiku)
+  //   neither         → Claude reads the pixels too                     (Sonnet)
+  const translatedText = batch.translated_text?.trim() || null;
+  const ocrText = batch.ocr_text?.trim() || null;
+  const claudeText = translatedText ?? ocrText;
+  const mode = translatedText ? "pretranslated" : ocrText ? "text" : "vision";
   const cfg =
     batch.job_kind === "ocr"
-      ? ocrBatchConfig()
-      : translateBatchConfig(source.target_language ?? "");
+      ? ocrBatchConfig(mode !== "vision")
+      : translateBatchConfig(source.target_language ?? "", mode);
   // Meter this batch's vision call against the job owner's wallet. One
   // usage_events row per batch; debits accumulate across the job's batches.
   const { result } = await withMeter(
@@ -116,7 +133,8 @@ async function processOne(
         cfg.prompt,
         cfg.feature,
         cfg.model,
-        cfg.schema
+        cfg.schema,
+        claudeText
       );
       // A failed attempt may still have consumed some tokens before the call
       // errored/parsed empty. Don't bill the user for it — only a successful
@@ -181,6 +199,11 @@ export async function GET(request: NextRequest) {
     let batchSubmitted = 0;
     let batchDone = 0;
     let batchFailed = 0;
+    let sarvamSubmitted = 0;
+    let sarvamDone = 0;
+    let sarvamFellBack = 0;
+    let xlateDone = 0;
+    let xlateFellBack = 0;
     if (!isPeer) {
       for (const kind of ["ocr", "translate"] as const) {
         const stale = await sweepStaleJobs(kind);
@@ -206,6 +229,54 @@ export async function GET(request: NextRequest) {
               /* a dropped spawn is non-fatal — the next cron tick re-evaluates. */
             });
           }
+        }
+      }
+
+      // Sarvam Doc AI read step (dispatcher only, so the account-wide 10 req/min
+      // cap isn't multiplied by the peer lanes). Submits units for reading and
+      // collects finished reads into job_batches.ocr_text; the drain below then
+      // sends that TEXT to Claude instead of the source pixels. Every failure
+      // mode inside falls the unit back to the Claude vision path, so this whole
+      // block is best-effort by construction and can't fail a user's job.
+      if (isSarvamEnabled()) {
+        try {
+          const stuck = await revertStuckSarvamUnits();
+          if (stuck.length > 0) {
+            logError({
+              category: "extraction",
+              message: `Reverted ${stuck.length} stalled Sarvam read(s) to Claude vision`,
+              severity: "warning",
+              endpoint: "/api/cron/process-batches",
+              metadata: { jobIds: stuck },
+            });
+          }
+          const exhausted = await revertExhaustedXlateUnits();
+          if (exhausted.length > 0) {
+            logError({
+              category: "extraction",
+              message: `Reverted ${exhausted.length} job(s) to Claude translation after Sarvam retries ran out`,
+              severity: "warning",
+              endpoint: "/api/cron/process-batches",
+              metadata: { jobIds: exhausted },
+            });
+          }
+          sarvamSubmitted = await submitSarvamOcrBatches();
+          const polled = await pollSarvamOcrBatches();
+          sarvamDone = polled.done;
+          sarvamFellBack = polled.fellBack;
+          // Translate whatever the read stage has produced. Runs after the poll
+          // so text read on THIS tick can be translated on the same tick.
+          const xlated = await runSarvamTranslations();
+          xlateDone = xlated.done;
+          xlateFellBack = xlated.fellBack;
+        } catch (err) {
+          logError({
+            category: "extraction",
+            message: `Sarvam OCR step failed: ${err instanceof Error ? err.message : String(err)}`,
+            error: err,
+            severity: "error",
+            endpoint: "/api/cron/process-batches",
+          });
         }
       }
 
@@ -344,6 +415,11 @@ export async function GET(request: NextRequest) {
       batchSubmitted,
       batchDone,
       batchFailed,
+      sarvamSubmitted,
+      sarvamDone,
+      sarvamFellBack,
+      xlateDone,
+      xlateFellBack,
       pending,
       oldestAgeMs,
     });

@@ -72,6 +72,35 @@ export function claudeCostInr(model: string, u: ClaudeUsage): number {
   );
 }
 
+/**
+ * Sarvam Doc AI is priced per PAGE, not per token — ₹0.50/page off their public
+ * price list, already in rupees so no FX applies. Env-overridable so a rate
+ * change doesn't need a deploy.
+ */
+export const SARVAM_INR_PER_PAGE = Number(process.env.BILLING_SARVAM_INR_PER_PAGE) || 0.5;
+
+/**
+ * Sarvam /translate (sarvam-translate:v1) is priced per CHARACTER — ₹20 per
+ * 10,000 characters off their public price list. At ~2,300 chars/page that is
+ * ~₹4.6/page, which makes translation, not reading, the dominant Sarvam cost.
+ */
+export const SARVAM_INR_PER_10K_CHARS =
+  Number(process.env.BILLING_SARVAM_INR_PER_10K_CHARS) || 20;
+
+/** The model-breakdown keys Sarvam usage is recorded under in usage_events. */
+export const SARVAM_MODEL_KEY = "sarvam-doc-ai";
+export const SARVAM_TRANSLATE_MODEL_KEY = "sarvam-translate";
+
+/** Cost in INR of reading `pages` pages with Sarvam Doc AI. */
+export function sarvamCostInr(pages: number): number {
+  return SARVAM_INR_PER_PAGE * Math.max(0, pages ?? 0);
+}
+
+/** Cost in INR of translating `chars` characters with Sarvam /translate. */
+export function sarvamTranslateCostInr(chars: number): number {
+  return (SARVAM_INR_PER_10K_CHARS / 10_000) * Math.max(0, chars ?? 0);
+}
+
 /** Cost in INR of a Voyage embed/rerank call from its reported total tokens. */
 export function voyageCostInr(model: string, totalTokens: number): number {
   const key = rateKeyFor(model);

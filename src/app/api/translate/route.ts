@@ -7,6 +7,8 @@ import { expireStaleTranslations } from "@/lib/translate/expire";
 import { planBatches } from "@/lib/vision/structured";
 import { enqueueBatches } from "@/lib/jobs/batches";
 import { shouldUseBatchApi } from "@/lib/jobs/batch-api";
+import { isSarvamEnabled, sarvamCanRead } from "@/lib/sarvam/client";
+import { isSupportedLanguage, LANGUAGE_NAMES } from "@/lib/sarvam/languages";
 import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
 
@@ -66,6 +68,16 @@ export async function POST(request: NextRequest) {
   if (!targetLanguage) {
     return NextResponse.json({ error: "Target language is required" }, { status: 400 });
   }
+  // The picker only offers supported languages, so this catches direct API calls
+  // and stale clients rather than normal use.
+  if (!isSupportedLanguage(targetLanguage)) {
+    return NextResponse.json(
+      {
+        error: `"${targetLanguage}" is not a supported target language. Supported: ${LANGUAGE_NAMES.join(", ")}.`,
+      },
+      { status: 400 }
+    );
+  }
   if (!acceptedFile(file.name, file.type)) {
     return NextResponse.json(
       { error: "Unsupported file type. Accepted: PDF, DOCX, JPG, PNG." },
@@ -98,13 +110,18 @@ export async function POST(request: NextRequest) {
     const job = rows[0];
 
     // Enqueue one batch row per planned page range; the cron worker drains them.
-    // Large documents go to the Anthropic Batch API (cheaper, async); smaller
-    // ones stay on the fast synchronous path. See jobs/batch-api.ts.
+    // PDF/image units are read by Sarvam Doc AI first (jobs/sarvam-ocr.ts) so
+    // Claude only has to translate + structure the extracted text. A DOCX has no
+    // pixels, and Sarvam can't read every format we accept (WebP), so those go
+    // straight to Claude. Large documents then go to the Anthropic Batch API
+    // (cheaper, async); smaller ones stay on the fast synchronous path. See
+    // jobs/batch-api.ts.
     await enqueueBatches(
       job.id,
       "translate",
       plan.batches,
-      shouldUseBatchApi(plan) ? "batch" : "sync"
+      shouldUseBatchApi(plan) ? "batch" : "sync",
+      isSarvamEnabled() && plan.kind !== "text" && sarvamCanRead(mime, file.name)
     );
     // Seed the Firestore mirror so the client can subscribe immediately.
     await mirrorJobStatus("translate", job.id, { ownerUid: decoded.uid, status: "processing" });

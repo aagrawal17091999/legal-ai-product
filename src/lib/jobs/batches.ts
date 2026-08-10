@@ -22,9 +22,12 @@ export type Delivery = "sync" | "batch";
  * Statuses meaning a unit is not yet terminally settled — `done`/`failed` are
  * terminal, everything else is outstanding. Includes the Batch-API lifecycle
  * (planned/submitting/submitted) so a job mid-flight on the Anthropic Batch API
- * is neither prematurely assembled nor failed by the completion check.
+ * is neither prematurely assembled nor failed by the completion check, and the
+ * Sarvam OCR-read lifecycle (ocr_pending/ocr_submitted) for the same reason.
  */
-const OUTSTANDING_SQL = "('pending', 'processing', 'planned', 'submitting', 'submitted')";
+const OUTSTANDING_SQL =
+  "('ocr_pending', 'ocr_submitted', 'xlate_pending', 'xlate_processing', " +
+  "'pending', 'processing', 'planned', 'submitting', 'submitted')";
 
 /**
  * The Batch-API-only in-flight statuses. A job with units in any of these is
@@ -70,12 +73,35 @@ export interface BatchRow {
   batch_index: number;
   page_start: number | null;
   page_end: number | null;
-  status: "pending" | "processing" | "planned" | "submitting" | "submitted" | "done" | "failed";
+  status:
+    | "ocr_pending"
+    | "ocr_submitted"
+    | "xlate_pending"
+    | "xlate_processing"
+    | "pending"
+    | "processing"
+    | "planned"
+    | "submitting"
+    | "submitted"
+    | "done"
+    | "failed";
   delivery: Delivery;
   provider_batch_id: string | null;
   attempts: number;
   result_json: ParsedBatch;
   error: string | null;
+  /** Markdown Sarvam extracted for this page range; null = send pixels to Claude. */
+  ocr_text: string | null;
+  sarvam_job_id: string | null;
+  sarvam_pages: number | null;
+  /** Reading attempts spent on Sarvam — separate from `attempts` (Claude's budget). */
+  sarvam_attempts: number;
+  /** Target-language text from Sarvam /translate; null = Claude translates too. */
+  translated_text: string | null;
+  /** Source language detected by Sarvam (BCP-47) — authoritative once the text
+   *  handed to Claude is already translated. */
+  source_language: string | null;
+  xlate_attempts: number;
 }
 
 /** Source info needed to (re)build a job's vision requests, used by the worker
@@ -107,19 +133,29 @@ export function jobTable(kind: JobKind): string {
 }
 
 /**
- * Insert one row per planned batch. `delivery` decides the starting status and
- * therefore which worker picks the unit up: `sync` units start `pending` (the
- * synchronous vision worker claims them); `batch` units start `planned` (the
- * Batch-API submitter claims them, see jobs/batch-api.ts).
+ * Insert one row per planned batch. The starting status decides which worker
+ * picks the unit up:
+ *   - `ocr_pending`  → the Sarvam submitter reads the pages first (jobs/sarvam-ocr.ts).
+ *                      When Sarvam returns, the unit moves on to `pending`/`planned`.
+ *   - `pending`      → the synchronous Claude worker claims it (delivery `sync`).
+ *   - `planned`      → the Anthropic Batch-API submitter claims it (delivery `batch`).
+ *
+ * `delivery` is recorded either way, so a unit that goes through Sarvam first
+ * still lands on the right Claude path afterwards.
+ *
+ * @param viaSarvam route this job's units through Sarvam Doc AI for the read
+ *   step. Only true for PDF/image sources with the integration switched on — a
+ *   DOCX has no pixels to read, and with Sarvam off every unit starts as before.
  */
 export async function enqueueBatches(
   jobId: string,
   jobKind: JobKind,
   items: BatchPlanItem[],
-  delivery: Delivery = "sync"
+  delivery: Delivery = "sync",
+  viaSarvam = false
 ): Promise<void> {
   if (items.length === 0) return;
-  const status = delivery === "batch" ? "planned" : "pending";
+  const status = viaSarvam ? "ocr_pending" : delivery === "batch" ? "planned" : "pending";
   const values: string[] = [];
   const params: unknown[] = [];
   items.forEach((b, i) => {
@@ -295,8 +331,10 @@ export async function failJob(kind: JobKind, jobId: string, message: string): Pr
  */
 export async function queueDepth(): Promise<{ pending: number; oldestCreatedAt: Date | null }> {
   const { rows } = await pool.query<{ pending: number; oldest: Date | null }>(
+    // Counts units waiting on the Sarvam read too — they are backlog just the
+    // same, and at 10 Sarvam req/min they are the likelier place for it to build.
     `SELECT COUNT(*)::int AS pending, MIN(created_at) AS oldest
-       FROM job_batches WHERE status = 'pending'`
+       FROM job_batches WHERE status IN ('pending', 'ocr_pending')`
   );
   return { pending: rows[0]?.pending ?? 0, oldestCreatedAt: rows[0]?.oldest ?? null };
 }
@@ -326,6 +364,307 @@ export async function sweepStaleJobs(
     [STALE_JOB_MESSAGE, timeoutMs]
   );
   return rows.map((r) => r.id);
+}
+
+// ── Sarvam Doc AI read step (jobs/sarvam-ocr.ts) ─────────────────────────────
+// PDF/image units are read by Sarvam before Claude structures the text. Units
+// flow ocr_pending → ocr_submitted → pending|planned, with every failure mode
+// falling back to `pending` with ocr_text NULL — i.e. the original Claude vision
+// path — so Sarvam is never a single point of failure for a user's job.
+
+/**
+ * How long a unit may sit `ocr_submitted` before we give up on Sarvam and read
+ * it with Claude vision instead. Doc AI jobs are minutes at worst, so this is
+ * generous; it exists so a lost Sarvam job can't wedge the parent job until the
+ * 30-minute stale sweep kills it outright.
+ */
+export const SARVAM_MAX_INFLIGHT_MS =
+  Number(process.env.SARVAM_MAX_INFLIGHT_MS) || 10 * 60 * 1000;
+
+/**
+ * How many times a unit may be sent to Sarvam before we give up and let Claude
+ * read it. Counted separately from `attempts` (the Claude retry budget) so a
+ * throttled read never leaves a unit with no retries left for the Claude phase.
+ */
+export const MAX_SARVAM_ATTEMPTS = Number(process.env.SARVAM_MAX_ATTEMPTS) || 3;
+
+/**
+ * Claim units to submit to Sarvam, respecting its 10 requests/minute cap.
+ *
+ * The cap is ACCOUNT-WIDE and identical on every plan tier, so it must hold
+ * across overlapping cron invocations and fan-out lanes — a per-invocation
+ * constant would not do it (the worker's 210s budget means 3-4 invocations run
+ * concurrently). Instead the limit is clamped by a sliding-window count of
+ * everything submitted in the last 60s, computed inside the same statement that
+ * claims the rows. The window counts by `sarvam_submitted_at` regardless of
+ * current status: a unit whose result already came back still spent a request.
+ */
+export async function claimSarvamSubmissions(
+  limit: number,
+  perMinute: number
+): Promise<BatchRow[]> {
+  const { rows } = await pool.query<BatchRow>(
+    `WITH budget AS (
+       SELECT GREATEST(
+                0,
+                LEAST(
+                  $1::int,
+                  $2::int - (SELECT COUNT(*) FROM job_batches
+                              WHERE sarvam_submitted_at > NOW() - INTERVAL '60 seconds')
+                )
+              ) AS n
+     ),
+     c AS (
+       SELECT id FROM job_batches
+        WHERE status = 'ocr_pending' AND sarvam_attempts < $3
+        ORDER BY created_at, batch_index
+        LIMIT (SELECT n FROM budget)
+        FOR UPDATE SKIP LOCKED
+     )
+     UPDATE job_batches b
+        SET status = 'ocr_submitted', sarvam_submitted_at = NOW(),
+            sarvam_attempts = b.sarvam_attempts + 1,
+            locked_at = NOW(), updated_at = NOW()
+       FROM c WHERE b.id = c.id
+     RETURNING b.*`,
+    [limit, perMinute, MAX_SARVAM_ATTEMPTS]
+  );
+  return rows;
+}
+
+/** Stamp the Sarvam job id on a unit we just submitted. */
+export async function markSarvamSubmitted(id: string, sarvamJobId: string): Promise<void> {
+  await pool.query(
+    `UPDATE job_batches SET sarvam_job_id = $2, updated_at = NOW() WHERE id = $1`,
+    [id, sarvamJobId]
+  );
+}
+
+/** Units awaiting a Sarvam result, oldest first. */
+export async function findSarvamInFlight(limit = 25): Promise<BatchRow[]> {
+  const { rows } = await pool.query<BatchRow>(
+    `SELECT * FROM job_batches
+      WHERE status = 'ocr_submitted' AND sarvam_job_id IS NOT NULL
+      ORDER BY sarvam_submitted_at
+      LIMIT $1`,
+    [limit]
+  );
+  return rows;
+}
+
+/**
+ * Store Sarvam's extracted text and advance the unit to its next stage:
+ *   - a TRANSLATION unit goes to `xlate_pending` so Sarvam can translate the text;
+ *   - an OCR unit has nothing to translate, so it goes straight to the Claude
+ *     structuring phase — `planned` on the Anthropic Batch API path, else `pending`.
+ *
+ * Guarded on `ocr_submitted` so two overlapping pollers can't both advance (and
+ * both meter) the same unit; returns true only for the winner.
+ */
+export async function completeSarvamOcr(
+  id: string,
+  text: string,
+  pages: number
+): Promise<boolean> {
+  const res = await pool.query(
+    `UPDATE job_batches
+        SET status = CASE
+                       WHEN job_kind = 'translate' THEN 'xlate_pending'
+                       WHEN delivery = 'batch' THEN 'planned'
+                       ELSE 'pending'
+                     END,
+            ocr_text = $2, sarvam_pages = $3, error = NULL, updated_at = NOW()
+      WHERE id = $1 AND status = 'ocr_submitted'`,
+    [id, text, pages]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+// ── Sarvam translation stage (jobs/sarvam-ocr.ts) ────────────────────────────
+// Translation units are translated by Sarvam /translate before Claude structures
+// them, so Claude neither reads nor translates — only parses prose into blocks.
+
+/** How many times a unit may be sent to Sarvam /translate before Claude does it. */
+export const MAX_XLATE_ATTEMPTS = Number(process.env.SARVAM_XLATE_MAX_ATTEMPTS) || 3;
+
+/**
+ * Claim units for translation, leasing them like the Claude drain does.
+ *
+ * Runnable = `xlate_pending`, or `xlate_processing` whose lease expired (the
+ * worker holding it died). Throughput is bounded by the caller's `limit` rather
+ * than a sliding window: one unit is ~15-20 /translate calls, and the endpoint
+ * allows 60/min, so a few units per tick is the ceiling. See sarvam-ocr.ts.
+ */
+export async function claimXlateBatches(limit: number): Promise<BatchRow[]> {
+  const { rows } = await pool.query<BatchRow>(
+    `WITH c AS (
+       SELECT id FROM job_batches
+        WHERE (status = 'xlate_pending' AND xlate_attempts < $2)
+           OR (status = 'xlate_processing' AND locked_at < NOW() - ($3 * INTERVAL '1 millisecond'))
+        ORDER BY created_at, batch_index
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED
+     )
+     UPDATE job_batches b
+        SET status = 'xlate_processing', locked_at = NOW(),
+            xlate_attempts = b.xlate_attempts + 1, updated_at = NOW()
+       FROM c WHERE b.id = c.id
+     RETURNING b.*`,
+    [limit, MAX_XLATE_ATTEMPTS, BATCH_LEASE_MS]
+  );
+  return rows;
+}
+
+/**
+ * Store the translated text plus the detected source language, and hand the unit
+ * to the Claude structuring phase. Guarded on `xlate_processing` so a reclaimed
+ * lease can't double-advance the unit.
+ */
+export async function completeXlate(
+  id: string,
+  translatedText: string,
+  sourceLanguage: string | null
+): Promise<boolean> {
+  const res = await pool.query(
+    `UPDATE job_batches
+        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+            translated_text = $2, source_language = $3, error = NULL, updated_at = NOW()
+      WHERE id = $1 AND status = 'xlate_processing'`,
+    [id, translatedText, sourceLanguage]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+/**
+ * Give up on translating this unit with Sarvam and let Claude translate it while
+ * structuring — the behaviour before this stage existed. Used when the source
+ * language can't be detected (/text-lid covers fewer languages than /translate),
+ * when Sarvam errors, or when attempts run out. The unit KEEPS its ocr_text, so
+ * Claude still works from Sarvam's read rather than re-reading the pixels.
+ */
+export async function fallbackToClaudeTranslation(
+  ids: string[],
+  reason: string
+): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(
+    `UPDATE job_batches
+        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+            translated_text = NULL, error = $2, updated_at = NOW()
+      WHERE id = ANY($1::uuid[])`,
+    [ids, reason]
+  );
+}
+
+/**
+ * Return a unit to the translation queue for a later tick — used when Sarvam
+ * throttles us mid-unit. `xlate_attempts` (incremented at claim time) is kept, so
+ * a persistently-throttling translate endpoint eventually exhausts the unit and
+ * revertExhaustedXlateUnits() hands it to Claude instead of looping forever.
+ */
+export async function requeueXlateUnits(ids: string[], reason: string): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(
+    `UPDATE job_batches
+        SET status = 'xlate_pending', error = $2, updated_at = NOW()
+      WHERE id = ANY($1::uuid[]) AND status = 'xlate_processing'`,
+    [ids, reason]
+  );
+}
+
+/**
+ * Backstop for the translation stage: a unit that exhausted its translate
+ * attempts is handed to Claude rather than left cycling in the queue until the
+ * 30-minute stale sweep fails the whole job. Returns affected job ids.
+ */
+export async function revertExhaustedXlateUnits(): Promise<string[]> {
+  const { rows } = await pool.query<{ job_id: string }>(
+    `UPDATE job_batches
+        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+            translated_text = NULL,
+            error = 'Translation service unavailable; translating normally.',
+            updated_at = NOW()
+      WHERE status = 'xlate_pending' AND xlate_attempts >= $1
+      RETURNING job_id`,
+    [MAX_XLATE_ATTEMPTS]
+  );
+  return [...new Set(rows.map((r) => r.job_id))];
+}
+
+/**
+ * Fall back to reading with Claude vision: clear any Sarvam state and put the
+ * unit on the normal path with no extracted text, so buildBatchContent sends the
+ * source pixels. This is the safety valve for every Sarvam failure — job failed
+ * or rejected, no credits, rate limited, empty output, or stalled in flight.
+ * `attempts` is deliberately untouched: a Sarvam problem is not the unit's fault
+ * and must not consume its Claude retries.
+ */
+export async function fallbackToVision(ids: string[], reason: string): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(
+    `UPDATE job_batches
+        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+            ocr_text = NULL, sarvam_job_id = NULL, sarvam_submitted_at = NULL,
+            error = $2, updated_at = NOW()
+      WHERE id = ANY($1::uuid[])`,
+    [ids, reason]
+  );
+}
+
+/**
+ * Return a claimed unit to the Sarvam queue without consuming its fallback.
+ * Used when Sarvam rate-limits us — we simply over-estimated our share of the
+ * 10/min budget (another process may use the same account), which is not a
+ * reason to pay for the more expensive Claude read.
+ *
+ * `sarvam_submitted_at` is deliberately KEPT: a throttled request still hit the
+ * account, so it must stay counted in the rate-limit window or the next tick
+ * would over-claim again. `sarvam_attempts` (already incremented at claim time)
+ * is likewise kept, so a permanently-throttling Sarvam eventually exhausts the
+ * unit's attempts and revertStuckSarvamUnits() hands it to Claude.
+ */
+export async function requeueSarvamUnits(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await pool.query(
+    `UPDATE job_batches
+        SET status = 'ocr_pending', sarvam_job_id = NULL, updated_at = NOW()
+      WHERE id = ANY($1::uuid[]) AND status = 'ocr_submitted'`,
+    [ids]
+  );
+}
+
+/**
+ * Dead-man's switch for the Sarvam phase, mirroring revertExpiredBatchUnits().
+ * Rescues the two ways a unit can get stranded before Claude ever sees it, both
+ * by handing it to the Claude vision path:
+ *
+ *   1. stuck `ocr_submitted` past the max age — its Sarvam job never reached a
+ *      terminal status (lost job, or a backlog beyond the poll LIMIT so it was
+ *      never polled);
+ *   2. back in `ocr_pending` with its Sarvam attempts exhausted — Sarvam keeps
+ *      throttling or erroring, and without this the unit would cycle between
+ *      queue and throttle until the 30-minute stale sweep failed the whole job.
+ *
+ * Returns affected job ids.
+ */
+export async function revertStuckSarvamUnits(
+  maxAgeMs: number = SARVAM_MAX_INFLIGHT_MS
+): Promise<string[]> {
+  const { rows } = await pool.query<{ job_id: string }>(
+    `UPDATE job_batches
+        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+            ocr_text = NULL, sarvam_job_id = NULL, sarvam_submitted_at = NULL,
+            error = 'Document reader unavailable; processing normally.',
+            updated_at = NOW()
+      WHERE (
+              status = 'ocr_submitted'
+              AND sarvam_submitted_at < NOW() - ($1 * INTERVAL '1 millisecond')
+            )
+         OR (status = 'ocr_pending' AND sarvam_attempts >= $2)
+      RETURNING job_id`,
+    [maxAgeMs, MAX_SARVAM_ATTEMPTS]
+  );
+  return [...new Set(rows.map((r) => r.job_id))];
 }
 
 // ── Batch-API delivery (jobs/batch-api.ts) ───────────────────────────────────

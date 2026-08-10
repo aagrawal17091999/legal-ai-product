@@ -1,15 +1,24 @@
 /**
- * Shared vision-native structured pass.
+ * Shared structured pass for the translation (Feature 2) and OCR features.
  *
- * Both the translation feature (Feature 2) and OCR feature send the SOURCE
- * document straight to a vision model and get back a typed block model (see
+ * Both turn a source document into a typed block model (see
  * src/lib/translate/model.ts) — headings, numbered paragraphs, cause-title
  * key/value blocks, tables, party labels and signatures, with each run carrying
  * italic/bold and a `flagged` marker for spans the model couldn't read.
  *
+ * There are two ways the source reaches Claude:
+ *   - TEXT (preferred): Sarvam Doc AI has already read the page pixels and given
+ *     us Markdown (see src/lib/sarvam/client.ts), so Claude gets `ocrText` and
+ *     only has to structure/translate it. Cheaper, and Sarvam reads Indian-script
+ *     court scans better than a general vision model.
+ *   - VISION (fallback): no Sarvam text — the raw PDF/image goes to Claude, which
+ *     reads AND structures in one pass. This is the original path, kept intact so
+ *     a Sarvam outage or an empty Sarvam wallet degrades instead of failing.
+ * A DOCX source has always used the text path (mammoth extracts it locally).
+ *
  * The ONLY thing that differs between the two features is the prompt (translate
  * vs. transcribe) and how the caller wraps the result. Everything else — PDF
- * splitting/batching, the bounded-concurrency vision calls with retries, robust
+ * splitting/batching, the bounded-concurrency model calls with retries, robust
  * JSON parsing, block coercion and running-header de-dup — lives here so the two
  * pipelines share one battle-tested path.
  */
@@ -18,6 +27,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { PDFDocument } from "pdf-lib";
 import mammoth from "mammoth";
 import { getAnthropicClient } from "../claude";
+import { SARVAM_MAX_PAGES_PER_JOB } from "../sarvam/client";
 import { logError } from "../error-logger";
 import { type Block, type Run } from "../translate/model";
 
@@ -31,7 +41,10 @@ const DEFAULT_MODEL =
   process.env.TRANSLATE_MODEL?.trim() ||
   process.env.CHAT_MODEL?.trim() ||
   "claude-sonnet-4-6";
-const MAX_TOKENS = 16000;
+// Output cap for one call. Sized for a full batch of dense legal pages rendered
+// as block JSON — at PAGES_PER_BATCH = 10 the old 16k ceiling could truncate a
+// batch mid-document. Well under Sonnet 4.6's 64k output limit.
+const MAX_TOKENS = 32000;
 
 /** Output cap for a vision call, exported for Batch-API request construction. */
 export const VISION_MAX_TOKENS = MAX_TOKENS;
@@ -49,10 +62,12 @@ export function resolveVisionModel(modelOverride?: string | null): string {
 // rely on the detailed prompt + robust JSON parsing + coerceBlock() instead. The
 // generic `schema` param below is kept for callers that have a small, safe schema.
 
-// Pages per vision call. Kept small so each request stays well under Claude's
-// document-block size limit on heavy scans AND so the structured-JSON output
-// fits inside MAX_TOKENS. Short filings/orders run in a single call.
-const PAGES_PER_BATCH = 6;
+// Pages per batch unit. Pinned to Sarvam Doc AI's per-job page cap so one unit
+// costs exactly one Sarvam request — and Doc AI is capped at 10 requests/minute
+// account-wide on EVERY plan tier, making requests, not pages, the scarce
+// resource. Also stays under Claude's document-block size limit on the vision
+// fallback path. Short filings/orders still run in a single call.
+const PAGES_PER_BATCH = SARVAM_MAX_PAGES_PER_JOB;
 // Hard ceiling so a giant upload can't blow past the 300s function limit.
 const MAX_TOTAL_PAGES = 150;
 // Concurrent vision calls — cuts wall-clock without tripping rate limits.
@@ -168,8 +183,10 @@ export async function planBatches(
   return { kind: "image", totalPages: 1, batches: [{ index: 0, pageStart: null, pageEnd: null }] };
 }
 
-/** Extract an inclusive 0-based page range from a PDF buffer into a new sub-PDF. */
-async function extractPdfRange(buffer: Buffer, pageStart: number, pageEnd: number): Promise<Buffer> {
+/** Extract an inclusive 0-based page range from a PDF buffer into a new sub-PDF.
+ *  Exported so the Sarvam submitter can send the same page slice this module
+ *  would have sent to Claude. */
+export async function extractPdfRange(buffer: Buffer, pageStart: number, pageEnd: number): Promise<Buffer> {
   const src = await PDFDocument.load(buffer, { ignoreEncryption: true });
   const sub = await PDFDocument.create();
   const indices: number[] = [];
@@ -179,16 +196,24 @@ async function extractPdfRange(buffer: Buffer, pageStart: number, pageEnd: numbe
   return Buffer.from(await sub.save());
 }
 
-/** Build the message content for one batch from the raw source buffer. Exported
- *  so the Batch-API submitter can construct the same request body the worker
- *  sends synchronously. */
+/**
+ * Build the message content for one batch. Exported so the Batch-API submitter
+ * can construct the same request body the worker sends synchronously.
+ *
+ * `ocrText` is the Markdown Sarvam already extracted for this page range. When
+ * present it short-circuits every source-specific path: Claude receives text and
+ * never sees the pixels. When absent we fall back to sending the PDF/image
+ * itself — the original vision behaviour.
+ */
 export async function buildBatchContent(
   buffer: Buffer,
   mime: string,
   filename: string,
   batch: BatchPlanItem,
-  prompt: string
+  prompt: string,
+  ocrText?: string | null
 ): Promise<Array<Record<string, unknown>>> {
+  if (ocrText && ocrText.trim()) return textContent(ocrText.trim(), prompt);
   if (isDocx(mime, filename)) {
     const { value } = await mammoth.extractRawText({ buffer });
     return textContent((value || "").trim(), prompt);
@@ -369,9 +394,12 @@ export interface StructuredVisionResult {
 }
 
 /**
- * Run the vision call for ONE batch and return its parsed JSON (never throws —
+ * Run the Claude call for ONE batch and return its parsed JSON (never throws —
  * a failed call returns null so the caller can mark the batch failed/retry). The
  * durable-queue worker calls this once per batch, each in its own invocation.
+ *
+ * Pass `ocrText` to structure text Sarvam already extracted; omit it to fall
+ * back to sending the source pixels.
  */
 export async function runBatch(
   buffer: Buffer,
@@ -381,11 +409,12 @@ export async function runBatch(
   prompt: string,
   feature: string,
   modelOverride?: string,
-  schema: Record<string, unknown> | null = null
+  schema: Record<string, unknown> | null = null,
+  ocrText?: string | null
 ): Promise<ParsedBatch> {
   const client = getAnthropicClient();
   const model = modelOverride?.trim() || DEFAULT_MODEL;
-  const content = await buildBatchContent(buffer, mime, filename, batch, prompt);
+  const content = await buildBatchContent(buffer, mime, filename, batch, prompt, ocrText);
   return callBatch(client, content, batch.index, feature, model, schema);
 }
 

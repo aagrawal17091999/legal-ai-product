@@ -29,7 +29,7 @@ import {
   type BatchPlan,
 } from "../vision/structured";
 import { ocrBatchConfig } from "../ocr/ocr";
-import { translateBatchConfig } from "../translate/translate";
+import { translateBatchConfig, type TranslateMode } from "../translate/translate";
 import {
   findPlannedJobs,
   claimJobForSubmission,
@@ -59,8 +59,10 @@ export function shouldUseBatchApi(plan: BatchPlan): boolean {
   );
 }
 
-function batchConfig(kind: JobKind, src: JobSource) {
-  return kind === "ocr" ? ocrBatchConfig() : translateBatchConfig(src.target_language ?? "");
+function batchConfig(kind: JobKind, src: JobSource, mode: TranslateMode) {
+  return kind === "ocr"
+    ? ocrBatchConfig(mode !== "vision")
+    : translateBatchConfig(src.target_language ?? "", mode);
 }
 
 /**
@@ -87,22 +89,32 @@ export async function submitPlannedBatchJobs(jobsPerKind = 5): Promise<number> {
           continue;
         }
         const buffer = await getR2Object(src.source_r2_key);
-        const cfg = batchConfig(kind, src);
-        const model = resolveVisionModel(cfg.model);
-
         const requests = await Promise.all(
           units.map(async (u) => {
+            // Units can reach here having got different distances through the
+            // Sarvam stages — read+translated, read only, or neither (fell back
+            // to vision). All three can appear in one job, so the text, prompt
+            // and model are chosen per unit rather than once per batch.
+            const translated = u.translated_text?.trim() || null;
+            const ocrText = u.ocr_text?.trim() || null;
+            const mode: TranslateMode = translated
+              ? "pretranslated"
+              : ocrText
+                ? "text"
+                : "vision";
+            const cfg = batchConfig(kind, src, mode);
             const content = await buildBatchContent(
               buffer,
               src.source_mime,
               src.source_filename,
               { index: u.batch_index, pageStart: u.page_start, pageEnd: u.page_end },
-              cfg.prompt
+              cfg.prompt,
+              translated ?? ocrText
             );
             return {
               custom_id: u.id,
               params: {
-                model,
+                model: resolveVisionModel(cfg.model),
                 max_tokens: VISION_MAX_TOKENS,
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 messages: [{ role: "user", content: content as any }],

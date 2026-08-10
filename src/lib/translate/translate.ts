@@ -29,12 +29,43 @@ import {
   flattenToSegments,
 } from "./model";
 
-function buildPrompt(targetLanguage: string): string {
-  return `You are a meticulous legal translator and document-structure parser for Indian legal documents.
+/**
+ * How much work Claude still has to do for this unit, which depends on how far
+ * Sarvam got. Getting the framing right matters: telling a model to "read faded
+ * ink" when it was handed plain text invites hallucinated corrections, and
+ * telling it to "translate" text that is already translated invites a damaging
+ * second pass over legal wording.
+ */
+export type TranslateMode =
+  /** Nothing pre-processed: Claude reads the pixels, translates and structures. */
+  | "vision"
+  /** Sarvam read the pages: Claude translates the extracted text and structures it. */
+  | "text"
+  /** Sarvam read AND translated: Claude only structures the translated prose. */
+  | "pretranslated";
 
-You are given a legal/official document. In ONE pass:
+function buildPrompt(targetLanguage: string, mode: TranslateMode): string {
+  const role =
+    mode === "pretranslated"
+      ? `You are a meticulous document-structure parser for Indian legal documents.`
+      : `You are a meticulous legal translator and document-structure parser for Indian legal documents.`;
+
+  const intro =
+    mode === "pretranslated"
+      ? `You are given the text of a legal/official document that has ALREADY been translated into ${targetLanguage} by a machine translation system. The text was OCR'd from a scan first, so it may contain both OCR errors and translation artefacts. Lines of the form "--- page N ---" mark page boundaries; they are NOT document content.
+1. Do NOT re-translate, rewrite, improve, summarise or correct the wording. Reproduce the text as given — it is the translation of record.
+2. Your ONLY job is to reproduce the document's STRUCTURE as typed blocks, assigning each span of the existing text to the right block type.`
+      : mode === "text"
+        ? `You are given the raw text of a legal/official document as produced by an OCR engine reading a scan or photo. It may contain OCR errors: garbled words, split or merged characters, mangled table layout, and fragments in the wrong order. Lines of the form "--- page N ---" mark page boundaries; they are NOT document content.
+1. Work only from the text given. Use surrounding legal context to recognise what a garbled span was meant to be, but NEVER invent content that isn't there.
+2. Translate everything faithfully into ${targetLanguage}, preserving legal meaning, and reproduce the document's STRUCTURE as typed blocks.`
+        : `You are given a legal/official document. In ONE pass:
 1. Read every word — including faded typewriter ink, handwriting, stamps, seals, and marginalia. Use surrounding legal context to resolve degraded characters; never invent content.
-2. Translate everything faithfully into ${targetLanguage}, preserving legal meaning, and reproduce the document's STRUCTURE as typed blocks.
+2. Translate everything faithfully into ${targetLanguage}, preserving legal meaning, and reproduce the document's STRUCTURE as typed blocks.`;
+
+  return `${role}
+
+${intro}
 
 Output ONLY a JSON object (no prose, no code fences) of this exact shape:
 {"detected_language": "<source language name>", "blocks": [ <block>, ... ]}
@@ -47,15 +78,25 @@ Each <block> is exactly one of:
 - {"type":"partyLabel","runs":[<run>]}                          // party designations like "--- Applicant-Accused", "--- Non-Applicant", "Versus"
 - {"type":"signature","runs":[<run>]}                           // signatory block (judge name + designation)
 
-Each <run> is {"text":"<translated text>","italic":<bool>,"bold":<bool>,"flagged":<bool>,"note":<string|null>}.
+Each <run> is {"text":"<${mode === "pretranslated" ? "text exactly as given" : "translated text"}>","italic":<bool>,"bold":<bool>,"flagged":<bool>,"note":<string|null>}.
 
 Rules:
 - Set "italic":true on case citations / case names (e.g. Prabir Purkayastha Vs State (NCT of Delhi)).
-- Reproduce ALL numbers, dates, FIR/case numbers, statute section numbers, phone numbers, IMEI/IDs and proper names EXACTLY. Transliterate names; if unsure of a spelling, set "flagged":true.
+- Reproduce ALL numbers, dates, FIR/case numbers, statute section numbers, phone numbers, IMEI/IDs and proper names EXACTLY${mode === "pretranslated" ? "." : ". Transliterate names; if unsure of a spelling, set \"flagged\":true."}
 - Keep each paragraph's original number in "number" (e.g. "1.", "2."). Use null when a paragraph has no number.
-- If any span is illegible, ambiguous, cut off, or in a script you cannot confidently read, set "flagged":true on that run and explain in "note". Give your best-effort text but NEVER guess at unreadable content — a flagged gap is far safer than a confident wrong translation.
-- Emit the content ONCE in natural reading order. Do NOT repeat running page-headers/footers that appear on every page.
-- Do not summarise, add commentary, or omit anything.`;
+- ${
+    mode === "pretranslated"
+      ? `If any span is garbled, nonsensical, truncated, or reads like a broken machine translation, set "flagged":true on that run and explain in "note". Do NOT repair it — copy it through as given and flag it. A flagged span the reviewer can check is far safer than a silent rewrite of legal wording.`
+      : mode === "text"
+        ? `If any span is garbled, nonsensical, truncated, or otherwise looks like an OCR failure, set "flagged":true on that run and explain in "note". Give your best-effort translation but NEVER smooth over a corrupted span into plausible-looking prose — a flagged gap is far safer than a confident wrong translation.`
+        : `If any span is illegible, ambiguous, cut off, or in a script you cannot confidently read, set "flagged":true on that run and explain in "note". Give your best-effort text but NEVER guess at unreadable content — a flagged gap is far safer than a confident wrong translation.`
+  }
+- Emit the content ONCE in natural reading order. Do NOT repeat running page-headers/footers that appear on every page${mode === "vision" ? "" : ", and never emit the \"--- page N ---\" markers themselves"}.
+- Do not summarise, add commentary, or omit anything.${
+    mode === "pretranslated"
+      ? `\n- "detected_language" is not something you can tell from this text; output "Unknown" for it.`
+      : ""
+  }`;
 }
 
 export async function translateDocumentStructured(
@@ -68,7 +109,7 @@ export async function translateDocumentStructured(
     buffer,
     mime,
     filename,
-    () => buildPrompt(targetLanguage),
+    () => buildPrompt(targetLanguage, "vision"),
     "translate"
   );
 
@@ -84,15 +125,40 @@ export async function translateDocumentStructured(
   };
 }
 
-/** Per-batch vision config for the durable-queue worker (translate: default
- *  model, no schema — the stronger model + detailed prompt suffice). */
-export function translateBatchConfig(targetLanguage: string): {
+/**
+ * Model for the Claude step, chosen by how much work is left.
+ *
+ * Vision keeps the strong model: reading faded typewriter ink and handwriting off
+ * a scan is perception, and Haiku was measurably bad at it (empty-runs paragraphs
+ * and malformed blocks on real legal scans). Once Sarvam has done the reading —
+ * and, in `pretranslated` mode, the translating — what remains is parsing prose
+ * into typed blocks, which is well within Haiku and ~5x cheaper on output tokens
+ * (output dominates this workload). Both are env-overridable so the tiers can be
+ * moved independently once real output is compared.
+ */
+const TRANSLATE_TEXT_MODEL =
+  process.env.TRANSLATE_TEXT_MODEL?.trim() || "claude-haiku-4-5";
+
+/** Per-batch config for the durable-queue worker. No structured-output schema —
+ *  the detailed prompt + robust parsing suffice (see vision/structured.ts).
+ *
+ *  @param mode how much Sarvam already did for this unit. */
+export function translateBatchConfig(
+  targetLanguage: string,
+  mode: TranslateMode = "vision"
+): {
   prompt: string;
   model: string | undefined;
   schema: Record<string, unknown> | null;
   feature: string;
 } {
-  return { prompt: buildPrompt(targetLanguage), model: undefined, schema: null, feature: "translate" };
+  return {
+    prompt: buildPrompt(targetLanguage, mode),
+    // undefined = the vision default (Sonnet) resolved in vision/structured.ts.
+    model: mode === "vision" ? undefined : TRANSLATE_TEXT_MODEL,
+    schema: null,
+    feature: "translate",
+  };
 }
 
 /** Assemble per-batch results (in reading order) into the final TranslationResult. */

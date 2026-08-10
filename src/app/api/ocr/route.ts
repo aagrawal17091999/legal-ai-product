@@ -7,6 +7,7 @@ import { expireStaleOcrJobs } from "@/lib/ocr/expire";
 import { planBatches } from "@/lib/vision/structured";
 import { enqueueBatches } from "@/lib/jobs/batches";
 import { shouldUseBatchApi } from "@/lib/jobs/batch-api";
+import { isSarvamEnabled, sarvamCanRead } from "@/lib/sarvam/client";
 import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
 
@@ -94,7 +95,17 @@ export async function POST(request: NextRequest) {
     // Enqueue one batch row per planned page range; the cron worker drains them.
     // Large documents go to the Anthropic Batch API (cheaper, async); smaller
     // ones stay on the fast synchronous path. See jobs/batch-api.ts.
-    await enqueueBatches(job.id, "ocr", plan.batches, shouldUseBatchApi(plan) ? "batch" : "sync");
+    // PDF/image units are read by Sarvam Doc AI first (jobs/sarvam-ocr.ts) so
+    // Claude only has to structure the extracted text. A DOCX has no pixels to
+    // read, and Sarvam can't read every format we accept (WebP), so those go
+    // straight to Claude.
+    await enqueueBatches(
+      job.id,
+      "ocr",
+      plan.batches,
+      shouldUseBatchApi(plan) ? "batch" : "sync",
+      isSarvamEnabled() && plan.kind !== "text" && sarvamCanRead(mime, file.name)
+    );
     // Seed the Firestore mirror so the client can subscribe immediately. ownerUid
     // is the Firebase uid the security rule checks; the worker updates status.
     await mirrorJobStatus("ocr", job.id, { ownerUid: decoded.uid, status: "processing" });

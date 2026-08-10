@@ -53,10 +53,12 @@ function buildPrompt(targetLanguage: string, mode: TranslateMode): string {
   const intro =
     mode === "pretranslated"
       ? `You are given the text of a legal/official document that has ALREADY been translated into ${targetLanguage} by a machine translation system. The text was OCR'd from a scan first, so it may contain both OCR errors and translation artefacts. Lines of the form "--- page N ---" mark page boundaries; they are NOT document content.
+0. The OCR engine that produced the source sometimes DESCRIBED a picture instead of transcribing text (e.g. a sentence about "an image containing no text"). Such descriptions are not part of the document. OMIT them entirely.
 1. Do NOT re-translate, rewrite, improve, summarise or correct the wording. Reproduce the text as given — it is the translation of record.
 2. Your ONLY job is to reproduce the document's STRUCTURE as typed blocks, assigning each span of the existing text to the right block type.`
       : mode === "text"
         ? `You are given the raw text of a legal/official document as produced by an OCR engine reading a scan or photo. It may contain OCR errors: garbled words, split or merged characters, mangled table layout, and fragments in the wrong order. Lines of the form "--- page N ---" mark page boundaries; they are NOT document content.
+0. The OCR engine sometimes DESCRIBES a picture instead of transcribing text — e.g. "This image contains no text. It is a black silhouette of an object…". Such descriptions are the engine talking about the page, not words printed on it. OMIT them entirely; never translate them as document content.
 1. Work only from the text given. Use surrounding legal context to recognise what a garbled span was meant to be, but NEVER invent content that isn't there.
 2. Translate everything faithfully into ${targetLanguage}, preserving legal meaning, and reproduce the document's STRUCTURE as typed blocks.`
         : `You are given a legal/official document. In ONE pass:

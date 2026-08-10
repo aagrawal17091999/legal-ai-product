@@ -343,18 +343,34 @@ export async function translatePageText(
 }
 
 export interface SarvamDigitiseText {
-  /** All pages' Markdown joined in page order, separated by a page marker. */
+  /** All pages' text joined in reading order, separated by a page marker. */
   text: string;
   /** Pages that actually produced content — what we meter on. */
   pages: number;
 }
 
 /**
- * Fetch a terminal digitise job's results and flatten them to Markdown.
+ * Layout tags that are page FURNITURE, not document content: the reporter's
+ * running head ("S.C.R.", "SUPREME COURT REPORTS") and the printed page number,
+ * both repeated on every page. Left in, they would be transcribed once per page
+ * and pollute the block model. Dropping them here is safe in a way that dropping
+ * body text never would be — these carry no legal content.
+ */
+const FURNITURE_TAGS = new Set(["page-number", "page-footer", "footer"]);
+
+/**
+ * Fetch a terminal digitise job's results and flatten them to plain text.
  *
- * A page separator is kept in the text so the downstream Claude pass can tell
- * where pages break — that's what lets it drop repeated running headers/footers
- * rather than emitting the court name once per page.
+ * NOTE ON THE RESPONSE SHAPE: the published API reference describes
+ * `documents[].pages[].content` holding a Markdown string. The live API returns
+ * something different and richer — `documents[].pages[].blocks[]`, each with
+ * `text`, `layout_tag` and `reading_order`, and no `content` field at all. This
+ * parser follows the live shape (verified against a real scanned judgment); a
+ * `content` string is still honoured if the API ever starts sending one.
+ *
+ * A page marker is kept between pages so the downstream Claude pass can tell
+ * where pages break, which is what lets it drop repeated running headers rather
+ * than emitting the court name once per page.
  */
 export async function getDigitiseText(jobId: string): Promise<SarvamDigitiseText> {
   const res = await fetch(`${BASE_URL}/doc-ai/v1/job/${encodeURIComponent(jobId)}/results`, {
@@ -364,21 +380,35 @@ export async function getDigitiseText(jobId: string): Promise<SarvamDigitiseText
 
   const data = (await res.json()) as {
     documents?: Array<{
-      pages?: Array<{ page_number?: number; content?: string }>;
+      pages?: Array<{
+        page_num?: number;
+        page_number?: number;
+        content?: string;
+        blocks?: Array<{ text?: string; layout_tag?: string; reading_order?: number }>;
+      }>;
     }>;
   };
 
   const parts: string[] = [];
   let pages = 0;
+
   for (const doc of data.documents ?? []) {
     const ordered = [...(doc.pages ?? [])].sort(
-      (a, b) => (a.page_number ?? 0) - (b.page_number ?? 0)
+      (a, b) => (a.page_num ?? a.page_number ?? 0) - (b.page_num ?? b.page_number ?? 0)
     );
     for (const page of ordered) {
-      const content = (page.content ?? "").trim();
-      if (!content) continue;
+      const blocks = [...(page.blocks ?? [])]
+        .sort((a, b) => (a.reading_order ?? 0) - (b.reading_order ?? 0))
+        .filter((b) => !FURNITURE_TAGS.has((b.layout_tag ?? "").toLowerCase()))
+        .map((b) => (b.text ?? "").trim())
+        .filter(Boolean);
+
+      // Prefer blocks; fall back to `content` for forward compatibility.
+      const body = blocks.length ? blocks.join("\n\n") : (page.content ?? "").trim();
+      if (!body) continue;
+
       pages++;
-      parts.push(`--- page ${page.page_number ?? pages} ---\n${content}`);
+      parts.push(`--- page ${page.page_num ?? page.page_number ?? pages} ---\n${body}`);
     }
   }
 

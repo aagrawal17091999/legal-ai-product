@@ -58,6 +58,7 @@ export interface OcrResult {
 function buildPrompt(fromOcrText: boolean): string {
   const intro = fromOcrText
     ? `You are given the raw text of a document as produced by an OCR engine reading a scan or photo. It may contain OCR errors: garbled words, split or merged characters, mangled table layout, and fragments in the wrong order. Lines of the form "--- page N ---" mark page boundaries; they are NOT document content.
+0. The OCR engine sometimes DESCRIBES a picture instead of transcribing text — e.g. "This image contains no text. It is a black silhouette of an object…". Such descriptions are the engine talking about the page, not words printed on it. OMIT them entirely; never transcribe them as document content.
 1. Work only from the text given. Use surrounding legal context to recognise what a garbled span was meant to be, but NEVER invent content that isn't there.
 2. Reproduce everything EXACTLY as it appears, in its ORIGINAL language and script. Do NOT translate, modernise, correct, or paraphrase anything. Reproduce the document's STRUCTURE as typed blocks.`
     : `You are given a document (often a scan, photo, or faded typewritten/handwritten page). In ONE pass:

@@ -11,10 +11,17 @@
  * Chromium fetches each only when a glyph uses it; we wait for
  * document.fonts.ready before printing so nothing renders as tofu.
  *
- * On Vercel the Lambda Chromium binary is used; locally we fall back to an
- * installed Chrome (PUPPETEER_EXECUTABLE_PATH, or the default macOS path).
+ * Choosing the binary: on a serverless host the bundled Lambda Chromium is used;
+ * everywhere else we launch an installed Chrome/Chromium from
+ * PUPPETEER_EXECUTABLE_PATH, falling back to the usual Linux and macOS paths.
+ *
+ * The Linux path matters: this app now runs on a plain Ubuntu box, not Vercel,
+ * so the serverless branch never fires in production. Before this was handled,
+ * launch() fell through to a hardcoded macOS Chrome path and every OCR job
+ * failed at the render step with "Browser was not found".
  */
 
+import { existsSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
 import puppeteer, { type Browser } from "puppeteer-core";
 import { renderOcrHtml } from "./html";
@@ -22,9 +29,28 @@ import type { OcrResult } from "./ocr";
 
 const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 
-const LOCAL_CHROME =
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const MACOS_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const LINUX_CHROME_CANDIDATES = [
+  "/usr/bin/chromium-browser",
+  "/usr/bin/chromium",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/google-chrome",
+];
+
+function localChrome(): string {
+  const configured = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
+  if (configured) return configured;
+  if (process.platform === "darwin") return MACOS_CHROME;
+  return LINUX_CHROME_CANDIDATES.find((p) => existsSync(p)) ?? MACOS_CHROME;
+}
+
+/**
+ * Chromium refuses to start as root without --no-sandbox, and the app runs as
+ * root under pm2 on the box — without this every OCR render dies at launch.
+ * --disable-dev-shm-usage keeps it off the small default /dev/shm, which
+ * otherwise makes Chromium crash part-way through printing a long document.
+ */
+const LINUX_LAUNCH_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"];
 
 async function launch(): Promise<Browser> {
   if (isServerless) {
@@ -34,7 +60,11 @@ async function launch(): Promise<Browser> {
       headless: true,
     });
   }
-  return puppeteer.launch({ executablePath: LOCAL_CHROME, headless: true });
+  return puppeteer.launch({
+    executablePath: localChrome(),
+    headless: true,
+    ...(process.platform === "linux" ? { args: LINUX_LAUNCH_ARGS } : {}),
+  });
 }
 
 export async function renderOcrPdf(result: OcrResult): Promise<Buffer> {

@@ -27,6 +27,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { PDFDocument } from "pdf-lib";
 import mammoth from "mammoth";
 import { getAnthropicClient } from "../claude";
+import { addClaudeUsage } from "../billing/meter";
 import { SARVAM_MAX_PAGES_PER_JOB } from "../sarvam/client";
 import { logError } from "../error-logger";
 import { type Block, type Run } from "../translate/model";
@@ -284,14 +285,26 @@ async function callBatch(
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const resp = await client.messages.create({
+      // STREAMING IS REQUIRED, not an optimisation: at this max_tokens the SDK
+      // refuses a non-streaming request outright ("Streaming is required for
+      // operations that may take longer than 10 minutes"), which failed every
+      // batch. Streaming also removes the ceiling on how large a batch's JSON
+      // output can get, so page-per-batch can grow without hitting it again.
+      //
+      // The metering proxy in ../claude.ts only wraps .create — it leaves
+      // .stream alone precisely so streaming call sites don't get double
+      // counted — so this one meters itself from finalMessage() below.
+      const stream = client.messages.stream({
         model,
         max_tokens: MAX_TOKENS,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         messages: [{ role: "user", content: content as any }],
         // Structured outputs: force schema-valid JSON when a schema is supplied.
         ...(schema ? { output_config: { format: { type: "json_schema" as const, schema } } } : {}),
-      });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
+      const resp = await stream.finalMessage();
+      if (resp.usage) addClaudeUsage(model, resp.usage);
       const txt = resp.content
         .filter((b): b is Anthropic.TextBlock => b.type === "text")
         .map((b) => b.text)

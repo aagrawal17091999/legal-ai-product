@@ -110,9 +110,14 @@ Leave `BILLING_ENFORCE=on` out until step 5 if you want to smoke-test unbilled.
 
 ## 1. Razorpay console
 
-- ✅ Plans created and configured: `plan_T9oqxUUcsDyhtK` (₹2,000/mo),
-  `plan_T9orXVYWYES8Du` (₹20,000/yr). Confirm **GST is enabled on both**.
-- 🔴 Get the live key secret — see 0a.
+- ✅ Live key secret added and verified against the API.
+- ✅ `plan_T9oqxUUcsDyhtK` — ₹2,000, period `monthly`, interval 1. **Correct.**
+- 🔴 `plan_T9orXVYWYES8Du` — ₹20,000, period **`monthly`**, interval 1.
+  **WRONG: this bills ₹20,000 EVERY MONTH (₹2,40,000/yr).** Razorpay makes
+  `period`/`interval` immutable after creation, so it needs a *new* plan with
+  billing cycle **Yearly**, amount ₹20,000, GST enabled. Then update
+  `RAZORPAY_PLAN_YEARLY`. Until then the yearly option must not be sold.
+- Confirm **GST is enabled on both** plans.
 - Confirm the webhook points at `https://getlegalbrain.com/api/payments/webhook`
   and is subscribed to at least: `payment.captured`, `subscription.activated`,
   `subscription.charged`, `subscription.cancelled`.
@@ -120,15 +125,22 @@ Leave `BILLING_ENFORCE=on` out until step 5 if you want to smoke-test unbilled.
 
 ## 2. ✅ DONE — Firestore
 
-Creating the Firestore database enabled the API. Verified from the box with a
-real admin write → read → delete: **works**.
+Creating the database enabled the API (verified with a real admin write → read →
+delete from the box).
 
-One thing left to check in the Firebase console: publish the repo's
-[`firestore.rules`](../firestore.rules). If the database was created in *test
-mode*, its default rules let any signed-in user read anyone's job status; in
-*production mode* they deny everything and the live push updates silently fall
-back to polling. The committed rules are the correct middle: a user may read
-only their own `ocr_jobs` / `translate_jobs` docs, and no client may write.
+The database was created in **production mode**, whose default rules deny every
+client read — so the live job-status push channel would never have fired, and a
+user watching the OCR spinner would have seen nothing until they switched tabs
+and back (`useJobStatusPush` reconciles on focus).
+
+The committed [`firestore.rules`](../firestore.rules) are now published via the
+Firebase Rules REST API using the app's own service account — no CLI needed:
+
+    ruleset projects/legal-brain-cfd44/rulesets/857695ba-…  (live)
+
+A user may read only their own `ocr_jobs` / `translate_jobs` docs; no client may
+write. To republish after editing the file, re-run the same two-step API call
+(create ruleset → update the `cloud.firestore` release).
 
 ## 3. Deploy the code
 

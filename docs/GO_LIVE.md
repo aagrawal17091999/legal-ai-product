@@ -45,16 +45,12 @@ and the only Razorpay credentials that authenticated were **test-mode**.
 
 ---
 
-## 0a. 🔴 REQUIRED — the live Razorpay key secret
+## 0a. ✅ DONE — the live Razorpay key secret
 
-`RAZORPAY_KEY_SECRET` is still the placeholder `<your live secret>`. It was never
-filled in: the file's only working Razorpay credentials were test-mode, and the
-live key id `rzp_live_T9oiiE7FMmZXFa` has no matching secret anywhere.
+Added and verified against the live API (`/v1/plans` returns 200). It had never
+been filled in — the file's only working Razorpay credentials were test-mode.
 
-Until this is a real value, **every payment and every signature check fails.**
-
-Razorpay Dashboard → Account & Settings → API Keys → the secret for the
-`rzp_live_…` key. Then:
+To re-verify at any time, or after rotating the key:
 
 ```bash
 ssh root@204.168.160.193
@@ -142,7 +138,10 @@ A user may read only their own `ocr_jobs` / `translate_jobs` docs; no client may
 write. To republish after editing the file, re-run the same two-step API call
 (create ruleset → update the `cloud.firestore` release).
 
-## 3. Deploy the code
+## 3. ✅ DONE — Deployed
+
+Released `prod-20260811-120912`. `npm ci` → build → migrations (0 applied, 28
+skipped — 028 is parked) → zero-downtime `pm2 reload` of both cluster workers.
 
 ```bash
 ssh root@204.168.160.193
@@ -164,7 +163,7 @@ Optional tidy — the checkout has stray files from a fumbled shell command
 rm -rf a adcavs '${DATE_THRESHOLD}::date' .venv
 ```
 
-## 4. Install the new systemd timers
+## 4. ✅ DONE — timers installed
 
 **This is the step that makes OCR and translation work at all.** There is
 currently no scheduler for the batch worker on the box, so uploads would sit in
@@ -193,7 +192,12 @@ Confirm the worker is actually running:
 journalctl -u nyayasearch-process-batches.service -n 20 --no-pager
 ```
 
-## 5. Verify
+## 5. ✅ DONE — verified (40 pass, 1 warn, 1 fail)
+
+The single failure is `BILLING_ENFORCE`, deliberately off until the smoke test
+passes. The warning is `high_court_cases` being empty, which predates this work.
+
+Re-run any time with:
 
 ```bash
 bash scripts/verify-prod.sh

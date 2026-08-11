@@ -74,7 +74,8 @@ hdr "Analytics (Mixpanel)"
 if set_ok MIXPANEL_TOKEN; then
   ok "MIXPANEL_TOKEN set"
   # Wrong region = every event silently dropped, and Mixpanel still returns 200.
-  # Accepted with or without a scheme; the server SDK wants a bare hostname.
+  # Accepted with or without a scheme; the server SDK wants a bare hostname. A
+  # typo'd host is a hard fail — nothing would reach Mixpanel at all.
   case "$(ev MIXPANEL_API_HOST | sed -e 's#^https\?://##' -e 's#/.*##')" in
     api.mixpanel.com|api-eu.mixpanel.com|api-in.mixpanel.com)
       ok "MIXPANEL_API_HOST = $(ev MIXPANEL_API_HOST)";;

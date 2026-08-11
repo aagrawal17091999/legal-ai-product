@@ -15,7 +15,9 @@ import type { EventName } from "./events";
 /**
  * Regional ingestion host — a BARE HOSTNAME, not a URL (the SDK builds the URL
  * from `protocol` + `host` + `path`). Mixpanel keeps EU and India projects on
- * separate endpoints and sending to the wrong one silently drops every event:
+ * separate endpoints; use the one matching where the project was created, and
+ * keep it identical to the browser SDK's host so both halves of a funnel land
+ * in the same project:
  *   US      api.mixpanel.com      (default)
  *   EU      api-eu.mixpanel.com
  *   India   api-in.mixpanel.com

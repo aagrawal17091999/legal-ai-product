@@ -7,11 +7,21 @@ Box: `root@204.168.160.193`, checkout `/opt/legal-ai-product`.
 
 ---
 
-## 0. 🔴 Fix the env file FIRST — payments are broken right now
+## 0. ✅ DONE — env file deduplicated (11 Aug 2026)
 
-Production `.env.production.local` contains **two conflicting blocks**. Twelve
-keys appear twice with different values, and **the last occurrence wins** (dotenv
-overwrites earlier keys within a file). Verified live on the box:
+Production `.env.production.local` held **two complete config sets** — test, then
+live — with twelve keys defined twice. dotenv keeps the LAST occurrence, so the
+first set was dead but looked authoritative.
+
+Every duplicated credential was tested against its real service to decide which
+was correct, then the file was rewritten keeping exactly the values already live.
+Verified before/after: only the four Mixpanel keys were added; nothing else
+changed, nothing was lost. Backup at `.env.production.local.bak-predupe-*`.
+
+**One thing remains and it is the blocker for payments** — see 0a.
+
+<details>
+<summary>What the two sets contained (historical)</summary>
 
 | Key | Occurrences | Live value is from |
 |---|---|---|
@@ -27,59 +37,72 @@ overwrites earlier keys within a file). Verified live on the box:
 | `R2_SECRET_ACCESS_KEY` | 29, 39 | 39 |
 | `R2_BUCKET_NAME` | 31, 40 | 40 |
 
-**The live `RAZORPAY_KEY_SECRET` is the literal string `<razorpay-live-key-secret>`.**
-Every signature verification and every Razorpay API call fails with that value,
-so checkout cannot complete today regardless of anything else. The real secret is
-almost certainly the one at line 15, which is being shadowed.
+Credential tests: both `DATABASE_URL`s connected; both R2 pairs worked but
+pointed at different buckets (`legal-judgments` vs the live `legal-brain-prod`);
+and the only Razorpay credentials that authenticated were **test-mode**.
 
-R2 is presumably working because whichever credentials landed in the second block
-are valid — but you have two different R2 key pairs in one file, so confirm which
-is current before deleting either.
+</details>
 
-### Fix
+---
+
+## 0a. 🔴 REQUIRED — the live Razorpay key secret
+
+`RAZORPAY_KEY_SECRET` is still the placeholder `<your live secret>`. It was never
+filled in: the file's only working Razorpay credentials were test-mode, and the
+live key id `rzp_live_T9oiiE7FMmZXFa` has no matching secret anywhere.
+
+Until this is a real value, **every payment and every signature check fails.**
+
+Razorpay Dashboard → Account & Settings → API Keys → the secret for the
+`rzp_live_…` key. Then:
 
 ```bash
 ssh root@204.168.160.193
 cd /opt/legal-ai-product
-cp .env.production.local .env.production.local.bak-$(date +%s)   # keep a copy
-nano .env.production.local
+nano .env.production.local        # replace <your live secret> on the RAZORPAY_KEY_SECRET line
 ```
 
-Delete the **duplicates**, keeping exactly one occurrence of each key with the
-correct value. Then verify no key is defined twice and nothing is a placeholder:
+Verify it authenticates without printing it:
 
 ```bash
-# any key listed here is still duplicated
-grep -oE '^[A-Z_0-9]+' .env.production.local | sort | uniq -d
-
-# any line whose value still looks like <placeholder>
-grep -nE '^[A-Z_0-9]+=<' .env.production.local
+node -e 'require("@next/env").loadEnvConfig(process.cwd(), false);
+fetch("https://api.razorpay.com/v1/plans?count=1",{headers:{Authorization:"Basic "+
+Buffer.from(process.env.RAZORPAY_KEY_ID+":"+process.env.RAZORPAY_KEY_SECRET).toString("base64")}})
+.then(r=>console.log(r.status===200?"RAZORPAY OK":"FAILED HTTP "+r.status))'
 ```
 
-Both should print nothing.
+If you'd rather smoke-test the whole flow without real money first, the backup
+file still has the complete working **test** set (`rzp_test_…` key, its secret,
+and matching `plan_SZ4r…` ids). Swap all four together — a live key id with test
+plan ids fails.
 
-### While you're in there, add
+### Already added for you
 
-```bash
-BILLING_ENFORCE=on                 # NOT set today = shadow mode, nobody is charged
+Mixpanel is configured and the token was verified to ingest (`status: 1` from
+`api.mixpanel.com`). Both the server and browser vars are set to the same project
+and region:
 
-# Server-side analytics (required for any analytics at all)
-MIXPANEL_TOKEN=<project-token>
-MIXPANEL_API_HOST=api-in.mixpanel.com          # bare hostname, see below
-
-# Browser SDK — optional, but it is the ONLY source of referrer/UTM/device data.
-# Same project token; NEXT_PUBLIC_* is baked in at BUILD time, so changing these
-# needs a rebuild, not just a reload.
-NEXT_PUBLIC_MIXPANEL_TOKEN=<same-project-token>
-NEXT_PUBLIC_MIXPANEL_API_HOST=https://api-in.mixpanel.com
+```
+MIXPANEL_TOKEN / NEXT_PUBLIC_MIXPANEL_TOKEN       3f1d657b…
+MIXPANEL_API_HOST                                  api.mixpanel.com
+NEXT_PUBLIC_MIXPANEL_API_HOST                      https://api.mixpanel.com
 ```
 
-`MIXPANEL_API_HOST` matters: an EU or India project rejects events sent to the US
-host, and Mixpanel still answers HTTP 200, so the failure is silent. Use
-`api.mixpanel.com` (US), `api-eu.mixpanel.com` (EU), or `api-in.mixpanel.com`
-(India) — **and the same region for both the server and browser vars**, or your
-client and server events land in different projects and every funnel that crosses
-the boundary breaks. `verify-prod.sh` checks this.
+Razorpay plan ids are set to the live plans: `plan_T9oqxUUcsDyhtK` (₹2,000/mo)
+and `plan_T9orXVYWYES8Du` (₹20,000/yr).
+
+`BILLING_ENFORCE` is present but **commented out on purpose** — turning it on
+before checkout works would block users with no way to pay. Uncomment it at
+step 5, after 0a is done.
+
+`NEXT_PUBLIC_*` values are baked in at BUILD time, so all of the above take
+effect at the next `deploy.sh` build, not on a reload.
+
+`MIXPANEL_API_HOST` must match where the project was created: `api.mixpanel.com`
+(US), `api-eu.mixpanel.com` (EU), `api-in.mixpanel.com` (India) — **and the same
+region for the server and browser vars**, so both halves of a funnel land in one
+project. `verify-prod.sh` checks both. A typo'd host fails outright rather than
+degrading quietly.
 
 Leave `BILLING_ENFORCE=on` out until step 5 if you want to smoke-test unbilled.
 
@@ -87,18 +110,25 @@ Leave `BILLING_ENFORCE=on` out until step 5 if you want to smoke-test unbilled.
 
 ## 1. Razorpay console
 
-- Create/confirm a **₹2,000/month** plan and a **₹20,000/year** plan, GST enabled.
-- Put their plan ids in `RAZORPAY_PLAN_MONTHLY` / `RAZORPAY_PLAN_YEARLY`.
+- ✅ Plans created and configured: `plan_T9oqxUUcsDyhtK` (₹2,000/mo),
+  `plan_T9orXVYWYES8Du` (₹20,000/yr). Confirm **GST is enabled on both**.
+- 🔴 Get the live key secret — see 0a.
 - Confirm the webhook points at `https://getlegalbrain.com/api/payments/webhook`
   and is subscribed to at least: `payment.captured`, `subscription.activated`,
   `subscription.charged`, `subscription.cancelled`.
 - Publish the refund/cancellation policy (now a section in `/terms`).
 
-## 2. Google Cloud console
+## 2. ✅ DONE — Firestore
 
-Enable the **Firestore API** for project `legal-brain-cfd44`. Until then every
-job logs `PERMISSION_DENIED` and the OCR/translate UI falls back to polling
-instead of live push updates.
+Creating the Firestore database enabled the API. Verified from the box with a
+real admin write → read → delete: **works**.
+
+One thing left to check in the Firebase console: publish the repo's
+[`firestore.rules`](../firestore.rules). If the database was created in *test
+mode*, its default rules let any signed-in user read anyone's job status; in
+*production mode* they deny everything and the live push updates silently fall
+back to polling. The committed rules are the correct middle: a user may read
+only their own `ocr_jobs` / `translate_jobs` docs, and no client may write.
 
 ## 3. Deploy the code
 

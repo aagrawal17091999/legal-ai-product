@@ -15,27 +15,16 @@ import type { BatchPlanItem, ParsedBatch } from "../vision/structured";
 
 export type JobKind = "ocr" | "translate";
 
-/** How a unit is processed: a live vision call in the worker, or the Batch API. */
-export type Delivery = "sync" | "batch";
-
 /**
  * Statuses meaning a unit is not yet terminally settled — `done`/`failed` are
- * terminal, everything else is outstanding. Includes the Batch-API lifecycle
- * (planned/submitting/submitted) so a job mid-flight on the Anthropic Batch API
- * is neither prematurely assembled nor failed by the completion check, and the
- * Sarvam OCR-read lifecycle (ocr_pending/ocr_submitted) for the same reason.
+ * terminal, everything else is outstanding. Includes the Sarvam OCR-read
+ * lifecycle (ocr_pending/ocr_submitted) and the Sarvam translate lifecycle
+ * (xlate_pending/xlate_processing) so a job mid-flight through Sarvam is
+ * neither prematurely assembled nor failed by the completion check.
  */
 const OUTSTANDING_SQL =
   "('ocr_pending', 'ocr_submitted', 'xlate_pending', 'xlate_processing', " +
-  "'pending', 'processing', 'planned', 'submitting', 'submitted')";
-
-/**
- * The Batch-API-only in-flight statuses. A job with units in any of these is
- * legitimately waiting on Anthropic (up to the 24h batch window) and must be
- * exempt from the 30-minute stale-job watchdog — its natural bound is the
- * batch's own expiry, after which expired units fall back to the sync path.
- */
-const BATCH_INFLIGHT_SQL = "('planned', 'submitting', 'submitted')";
+  "'pending', 'processing')";
 
 /** Give a batch this many tries before it's marked permanently failed. */
 export const MAX_BATCH_ATTEMPTS = 3;
@@ -55,13 +44,6 @@ export const BATCH_LEASE_MS = 6 * 60 * 1000;
  */
 export const STALE_JOB_TIMEOUT_MS = 30 * 60 * 1000;
 
-/**
- * Hard ceiling for a unit sitting `submitted` on the Anthropic Batch API. The
- * batch window is "usually < 1h, max 24h"; past this we assume the batch is lost
- * and revert the unit to the synchronous path so the job can never hang forever.
- */
-export const BATCH_API_MAX_AGE_MS = 25 * 60 * 60 * 1000;
-
 export const STALE_JOB_MESSAGE =
   "This document took too long to process — it may be very large or the service " +
   "was under heavy load. Please try again.";
@@ -80,13 +62,8 @@ export interface BatchRow {
     | "xlate_processing"
     | "pending"
     | "processing"
-    | "planned"
-    | "submitting"
-    | "submitted"
     | "done"
     | "failed";
-  delivery: Delivery;
-  provider_batch_id: string | null;
   attempts: number;
   result_json: ParsedBatch;
   error: string | null;
@@ -104,8 +81,7 @@ export interface BatchRow {
   xlate_attempts: number;
 }
 
-/** Source info needed to (re)build a job's vision requests, used by the worker
- *  and the Batch-API submitter. */
+/** Source info needed to (re)build a job's vision requests, used by the worker. */
 export interface JobSource {
   user_id: number;
   source_r2_key: string;
@@ -136,12 +112,8 @@ export function jobTable(kind: JobKind): string {
  * Insert one row per planned batch. The starting status decides which worker
  * picks the unit up:
  *   - `ocr_pending`  → the Sarvam submitter reads the pages first (jobs/sarvam-ocr.ts).
- *                      When Sarvam returns, the unit moves on to `pending`/`planned`.
- *   - `pending`      → the synchronous Claude worker claims it (delivery `sync`).
- *   - `planned`      → the Anthropic Batch-API submitter claims it (delivery `batch`).
- *
- * `delivery` is recorded either way, so a unit that goes through Sarvam first
- * still lands on the right Claude path afterwards.
+ *                      When Sarvam returns, the unit moves on to `pending`.
+ *   - `pending`      → the synchronous Claude worker claims it.
  *
  * @param viaSarvam route this job's units through Sarvam Doc AI for the read
  *   step. Only true for PDF/image sources with the integration switched on — a
@@ -151,23 +123,22 @@ export async function enqueueBatches(
   jobId: string,
   jobKind: JobKind,
   items: BatchPlanItem[],
-  delivery: Delivery = "sync",
   viaSarvam = false
 ): Promise<void> {
   if (items.length === 0) return;
-  const status = viaSarvam ? "ocr_pending" : delivery === "batch" ? "planned" : "pending";
+  const status = viaSarvam ? "ocr_pending" : "pending";
   const values: string[] = [];
   const params: unknown[] = [];
   items.forEach((b, i) => {
-    const o = i * 7;
+    const o = i * 6;
     values.push(
-      `($${o + 1}, $${o + 2}, $${o + 3}, $${o + 4}, $${o + 5}, $${o + 6}, $${o + 7})`
+      `($${o + 1}, $${o + 2}, $${o + 3}, $${o + 4}, $${o + 5}, $${o + 6})`
     );
-    params.push(jobId, jobKind, b.index, b.pageStart, b.pageEnd, status, delivery);
+    params.push(jobId, jobKind, b.index, b.pageStart, b.pageEnd, status);
   });
   await pool.query(
     `INSERT INTO job_batches
-       (job_id, job_kind, batch_index, page_start, page_end, status, delivery)
+       (job_id, job_kind, batch_index, page_start, page_end, status)
      VALUES ${values.join(", ")}`,
     params
   );
@@ -260,7 +231,7 @@ export async function jobBatchState(jobId: string): Promise<JobBatchState> {
   return {
     total,
     // Everything that isn't terminally done/failed is still outstanding — this
-    // covers the Batch-API in-flight statuses without enumerating them.
+    // covers the Sarvam read/translate stages without enumerating them.
     outstanding: total - done - failed,
     failed,
     done,
@@ -354,12 +325,6 @@ export async function sweepStaleJobs(
         SET status = 'failed', error = $1, updated_at = NOW()
       WHERE j.status IN ('processing', 'assembling')
         AND j.created_at < NOW() - ($2 * INTERVAL '1 millisecond')
-        -- Exempt jobs still legitimately in flight on the Batch API; their bound
-        -- is the 24h batch window, after which expired units fall back to sync.
-        AND NOT EXISTS (
-          SELECT 1 FROM job_batches b
-           WHERE b.job_id = j.id AND b.status IN ${BATCH_INFLIGHT_SQL}
-        )
       RETURNING j.id`,
     [STALE_JOB_MESSAGE, timeoutMs]
   );
@@ -368,7 +333,7 @@ export async function sweepStaleJobs(
 
 // ── Sarvam Doc AI read step (jobs/sarvam-ocr.ts) ─────────────────────────────
 // PDF/image units are read by Sarvam before Claude structures the text. Units
-// flow ocr_pending → ocr_submitted → pending|planned, with every failure mode
+// flow ocr_pending → ocr_submitted → pending, with every failure mode
 // falling back to `pending` with ocr_text NULL — i.e. the original Claude vision
 // path — so Sarvam is never a single point of failure for a user's job.
 
@@ -455,8 +420,8 @@ export async function findSarvamInFlight(limit = 25): Promise<BatchRow[]> {
 /**
  * Store Sarvam's extracted text and advance the unit to its next stage:
  *   - a TRANSLATION unit goes to `xlate_pending` so Sarvam can translate the text;
- *   - an OCR unit has nothing to translate, so it goes straight to the Claude
- *     structuring phase — `planned` on the Anthropic Batch API path, else `pending`.
+ *   - an OCR unit has nothing to translate, so it goes straight to `pending`
+ *     for the Claude structuring phase.
  *
  * Guarded on `ocr_submitted` so two overlapping pollers can't both advance (and
  * both meter) the same unit; returns true only for the winner.
@@ -470,7 +435,6 @@ export async function completeSarvamOcr(
     `UPDATE job_batches
         SET status = CASE
                        WHEN job_kind = 'translate' THEN 'xlate_pending'
-                       WHEN delivery = 'batch' THEN 'planned'
                        ELSE 'pending'
                      END,
             ocr_text = $2, sarvam_pages = $3, error = NULL, updated_at = NOW()
@@ -527,7 +491,7 @@ export async function completeXlate(
 ): Promise<boolean> {
   const res = await pool.query(
     `UPDATE job_batches
-        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+        SET status = 'pending',
             translated_text = $2, source_language = $3, error = NULL, updated_at = NOW()
       WHERE id = $1 AND status = 'xlate_processing'`,
     [id, translatedText, sourceLanguage]
@@ -549,7 +513,7 @@ export async function fallbackToClaudeTranslation(
   if (ids.length === 0) return;
   await pool.query(
     `UPDATE job_batches
-        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+        SET status = 'pending',
             translated_text = NULL, error = $2, updated_at = NOW()
       WHERE id = ANY($1::uuid[])`,
     [ids, reason]
@@ -580,7 +544,7 @@ export async function requeueXlateUnits(ids: string[], reason: string): Promise<
 export async function revertExhaustedXlateUnits(): Promise<string[]> {
   const { rows } = await pool.query<{ job_id: string }>(
     `UPDATE job_batches
-        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+        SET status = 'pending',
             translated_text = NULL,
             error = 'Translation service unavailable; translating normally.',
             updated_at = NOW()
@@ -603,7 +567,7 @@ export async function fallbackToVision(ids: string[], reason: string): Promise<v
   if (ids.length === 0) return;
   await pool.query(
     `UPDATE job_batches
-        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+        SET status = 'pending',
             ocr_text = NULL, sarvam_job_id = NULL, sarvam_submitted_at = NULL,
             error = $2, updated_at = NOW()
       WHERE id = ANY($1::uuid[])`,
@@ -652,7 +616,7 @@ export async function revertStuckSarvamUnits(
 ): Promise<string[]> {
   const { rows } = await pool.query<{ job_id: string }>(
     `UPDATE job_batches
-        SET status = CASE WHEN delivery = 'batch' THEN 'planned' ELSE 'pending' END,
+        SET status = 'pending',
             ocr_text = NULL, sarvam_job_id = NULL, sarvam_submitted_at = NULL,
             error = 'Document reader unavailable; processing normally.',
             updated_at = NOW()
@@ -663,133 +627,6 @@ export async function revertStuckSarvamUnits(
          OR (status = 'ocr_pending' AND sarvam_attempts >= $2)
       RETURNING job_id`,
     [maxAgeMs, MAX_SARVAM_ATTEMPTS]
-  );
-  return [...new Set(rows.map((r) => r.job_id))];
-}
-
-// ── Batch-API delivery (jobs/batch-api.ts) ───────────────────────────────────
-// Large jobs are submitted to the Anthropic Message Batch API instead of being
-// run as live vision calls. Units flow planned → submitting → submitted → done,
-// with submit/expiry failures falling back to the sync path (status → pending).
-
-/** Jobs of `kind` with units still waiting to be submitted to the Batch API. */
-export async function findPlannedJobs(kind: JobKind, limit = 10): Promise<string[]> {
-  const { rows } = await pool.query<{ job_id: string }>(
-    `SELECT DISTINCT job_id FROM job_batches
-      WHERE job_kind = $1 AND status = 'planned'
-      LIMIT $2`,
-    [kind, limit]
-  );
-  return rows.map((r) => r.job_id);
-}
-
-/**
- * Atomically claim a job's planned units for submission: flip them planned →
- * submitting and return them. Empty result means another worker already claimed
- * this job (the UPDATE is the lock), so the caller should skip it.
- */
-export async function claimJobForSubmission(jobId: string): Promise<BatchRow[]> {
-  const { rows } = await pool.query<BatchRow>(
-    `UPDATE job_batches
-        SET status = 'submitting', updated_at = NOW()
-      WHERE job_id = $1 AND delivery = 'batch' AND status = 'planned'
-      RETURNING *`,
-    [jobId]
-  );
-  return rows;
-}
-
-/** Mark a job's units submitted and stamp the Anthropic batch id on them. */
-export async function markBatchSubmitted(
-  unitIds: string[],
-  providerBatchId: string
-): Promise<void> {
-  if (unitIds.length === 0) return;
-  await pool.query(
-    `UPDATE job_batches
-        SET status = 'submitted', provider_batch_id = $2, updated_at = NOW()
-      WHERE id = ANY($1::uuid[])`,
-    [unitIds, providerBatchId]
-  );
-}
-
-/**
- * Fall back to the synchronous path. Used when batch submission fails or a batch
- * result is unusable/expired: the units return to `pending` as `sync`, so the
- * vision worker processes them at full price rather than stranding the job.
- */
-export async function revertUnitsToSync(unitIds: string[], error?: string): Promise<void> {
-  if (unitIds.length === 0) return;
-  await pool.query(
-    `UPDATE job_batches
-        SET status = 'pending', delivery = 'sync', provider_batch_id = NULL,
-            error = $2, updated_at = NOW()
-      WHERE id = ANY($1::uuid[])`,
-    [unitIds, error ?? null]
-  );
-}
-
-/** Distinct Anthropic batch ids with units still awaiting their results. */
-export async function findInFlightProviderBatches(limit = 25): Promise<string[]> {
-  const { rows } = await pool.query<{ provider_batch_id: string }>(
-    `SELECT DISTINCT provider_batch_id FROM job_batches
-      WHERE status = 'submitted' AND provider_batch_id IS NOT NULL
-      LIMIT $1`,
-    [limit]
-  );
-  return rows.map((r) => r.provider_batch_id);
-}
-
-/** The still-submitted units of one Anthropic batch, for result routing + metering. */
-export async function getProviderBatchUnits(
-  providerBatchId: string
-): Promise<{ id: string; job_id: string; job_kind: JobKind }[]> {
-  const { rows } = await pool.query<{ id: string; job_id: string; job_kind: JobKind }>(
-    `SELECT id, job_id, job_kind FROM job_batches
-      WHERE provider_batch_id = $1 AND status = 'submitted'`,
-    [providerBatchId]
-  );
-  return rows;
-}
-
-/**
- * Store a Batch-API result and mark the unit done (guarded to the submitted
- * state). Returns true only if THIS call flipped the row from submitted → done.
- * Concurrent worker invocations overlap (the cron drains for ~210s but fires
- * every 60s), so two pollers can stream the same ended batch's results; the
- * guard makes exactly one of them win. Callers meter only on a true return so a
- * unit is billed exactly once.
- */
-export async function completeSubmittedBatch(id: string, result: ParsedBatch): Promise<boolean> {
-  const res = await pool.query(
-    `UPDATE job_batches
-        SET status = 'done', result_json = $2, error = NULL, updated_at = NOW()
-      WHERE id = $1 AND status = 'submitted'`,
-    [id, JSON.stringify(result)]
-  );
-  return (res.rowCount ?? 0) > 0;
-}
-
-/**
- * Dead-man's switch for the Batch API. A unit left `submitted` longer than
- * maxAgeMs means its Anthropic batch never reached `ended` (lost batch, or a
- * backlog beyond the poll LIMIT so it was never polled) — and such units are
- * EXEMPT from the stale-job watchdog, so without this the parent job would spin
- * forever. Revert them to the synchronous path so the job still completes (or
- * fails cleanly). Returns the affected job ids so the caller can settle/sweep.
- */
-export async function revertExpiredBatchUnits(
-  maxAgeMs: number = BATCH_API_MAX_AGE_MS
-): Promise<string[]> {
-  const { rows } = await pool.query<{ job_id: string }>(
-    `UPDATE job_batches
-        SET status = 'pending', delivery = 'sync', provider_batch_id = NULL,
-            error = 'Batch API did not complete in time; processing normally.',
-            updated_at = NOW()
-      WHERE status = 'submitted'
-        AND updated_at < NOW() - ($1 * INTERVAL '1 millisecond')
-      RETURNING job_id`,
-    [maxAgeMs]
   );
   return [...new Set(rows.map((r) => r.job_id))];
 }

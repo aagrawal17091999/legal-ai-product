@@ -72,8 +72,8 @@ function apiKey(): string {
 
 /**
  * Whether to route OCR reading through Sarvam. Off unless explicitly switched on
- * AND a key is present, mirroring BATCH_API_ENABLED in jobs/batch-api.ts — with
- * it off, batch units start `pending` and the pipeline is exactly as it was.
+ * AND a key is present — with it off, batch units start `pending` and every page
+ * is read by Claude vision, which is the original (costlier) pipeline.
  */
 export function isSarvamEnabled(): boolean {
   return (

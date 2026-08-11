@@ -1,0 +1,37 @@
+# Drives the OCR + Translation work queue. This is the single most important
+# timer on the box: /api/cron/process-batches is what claims pending job_batches
+# rows, runs the vision/Sarvam calls, assembles finished documents, and sweeps
+# stale jobs. Without it an upload sits in `pending` forever — and never even
+# fails, because the stale-job watchdog lives INSIDE this endpoint.
+#
+# It was declared in vercel.json ("* * * * *") and silently never ran after the
+# move to Hetzner, where there is no Vercel cron runner. This unit is the real
+# scheduler.
+#
+# Install (as root):
+#   cp deploy/systemd/nyayasearch-process-batches.* /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now nyayasearch-process-batches.timer
+#   systemctl list-timers | grep nyayasearch      # verify next run
+#
+# `User=` and `WorkingDirectory=` below are placeholders — bootstrap-box.sh
+# rewrites both to the box's actual run user / checkout path. Keep them as
+# single-line `Key=value` so that sed substitution keeps working.
+[Unit]
+Description=NyayaSearch OCR/Translation batch worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+Environment=CRON_TARGET_BASE=http://127.0.0.1:3000
+# The endpoint drains waves up to BATCH_WORKER_BUDGET_MS (~210s) under a 300s
+# maxDuration, and cron-tick.sh caps the request at --max-time 600. Set the
+# start timeout explicitly to match, so systemd never kills a live worker
+# mid-wave (a killed wave is recoverable — its batches keep their lease and get
+# reclaimed — but it wastes the tokens already spent on that wave).
+TimeoutStartSec=600
+ExecStart=/bin/bash scripts/cron-tick.sh /api/cron/process-batches

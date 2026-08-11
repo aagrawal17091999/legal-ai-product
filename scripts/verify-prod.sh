@@ -23,7 +23,7 @@ export DATABASE_URL; DATABASE_URL="$(ev DATABASE_URL)"
 PSQL() { psql "$DATABASE_URL" -tAc "$1" 2>/dev/null; }
 
 hdr "Secrets present in $ENV_FILE (values never shown)"
-for k in DATABASE_URL ANTHROPIC_API_KEY VOYAGE_API_KEY \
+for k in DATABASE_URL ANTHROPIC_API_KEY VOYAGE_API_KEY SARVAM_API_KEY \
          NEXT_PUBLIC_FIREBASE_API_KEY NEXT_PUBLIC_FIREBASE_PROJECT_ID FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY \
          R2_ENDPOINT R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET_NAME \
          CRON_SECRET BACKUP_ENC_PASSPHRASE; do
@@ -59,6 +59,25 @@ set_ok RAZORPAY_KEY_SECRET   && ok "RAZORPAY_KEY_SECRET set"   || no "RAZORPAY_K
 set_ok RAZORPAY_WEBHOOK_SECRET && ok "RAZORPAY_WEBHOOK_SECRET set" || no "RAZORPAY_WEBHOOK_SECRET missing — webhooks return 'skipped', credits never granted"
 set_ok RAZORPAY_PLAN_MONTHLY && ok "subscription plans configured" || wn "no subscription plan IDs (fine if launching credit-topups only)"
 
+hdr "Billing enforcement"
+# The default is SHADOW mode: usage is recorded but the wallet is never debited
+# and nobody is ever blocked. Launching that way serves paid-tier AI for free,
+# and the failure is completely silent — hence a hard check, not a warning.
+case "$(ev BILLING_ENFORCE)" in
+  on) ok "BILLING_ENFORCE=on (users are actually charged)";;
+  "") no "BILLING_ENFORCE unset — SHADOW MODE: nobody is debited or blocked";;
+  *)  no "BILLING_ENFORCE='$(ev BILLING_ENFORCE)' (not 'on') — SHADOW MODE: nobody is debited";;
+esac
+set_ok SARVAM_OCR_ENABLED && ok "SARVAM_OCR_ENABLED set ($(ev SARVAM_OCR_ENABLED))" || wn "SARVAM_OCR_ENABLED unset — OCR falls back to Claude vision (costlier)"
+
+hdr "Job queue health"
+if [ -n "$DATABASE_URL" ] && command -v psql >/dev/null; then
+  stuck="$(PSQL "SELECT count(*) FROM job_batches WHERE status IN ('pending','processing') AND created_at < NOW() - INTERVAL '30 minutes'")"
+  [ "${stuck:-0}" -eq 0 ] && ok "no batches stuck >30min" || no "$stuck batches stuck >30min — is the batch worker running?"
+  depth="$(PSQL "SELECT count(*) FROM job_batches WHERE status = 'pending'")"
+  echo "  pending batches: ${depth:-?}"
+fi
+
 hdr "App process (pm2)"
 if command -v pm2 >/dev/null; then
   python3 - <<'PY'
@@ -77,6 +96,16 @@ PY
 else no "pm2 not installed"; fi
 
 hdr "Scheduled jobs (systemd timers)"
+# process-batches is a HARD failure, not a warning: it is the entire OCR +
+# Translation engine. Without it an upload sits in `pending` forever and never
+# even fails, because the stale-job watchdog runs inside that same endpoint.
+if systemctl is-active --quiet "nyayasearch-process-batches.timer" 2>/dev/null; then
+  ok "nyayasearch-process-batches.timer active (OCR/translation worker)"
+  last="$(systemctl show nyayasearch-process-batches.service -p Result --value 2>/dev/null)"
+  [ "$last" = "success" ] && ok "last batch-worker run succeeded" || wn "last batch-worker run: ${last:-unknown}"
+else
+  no "nyayasearch-process-batches.timer NOT active — OCR/translation jobs will hang forever"
+fi
 for t in rag-retention backup disk-alert; do
   systemctl is-active --quiet "nyayasearch-$t.timer" 2>/dev/null && ok "nyayasearch-$t.timer active" || wn "nyayasearch-$t.timer not active"
 done

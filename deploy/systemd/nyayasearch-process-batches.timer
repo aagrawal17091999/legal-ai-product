@@ -1,0 +1,24 @@
+# Runs the batch worker continuously, replacing the inert vercel.json "* * * * *".
+#
+# OnUnitInactiveSec (not OnUnitActiveSec): systemd will not run two instances of
+# the same oneshot unit concurrently, so an interval measured from ACTIVATION
+# would silently collapse to "as soon as the previous run ends" whenever a wave
+# ran longer than the interval. Measuring from INACTIVE states the real intent —
+# wait 15s after each run finishes — and keeps idle ticks cheap while letting a
+# busy queue drain back-to-back.
+#
+# Parallelism comes from the endpoint's own fan-out (BATCH_MAX_LANES), not from
+# overlapping timer invocations, so serialised ticks are correct here.
+#
+# No Persistent=true: for a seconds-scale timer that would just fire a pointless
+# catch-up run at boot. OnBootSec gives the app time to come up first.
+[Unit]
+Description=NyayaSearch OCR/Translation batch worker (continuous)
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

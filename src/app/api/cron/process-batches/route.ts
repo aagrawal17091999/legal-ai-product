@@ -14,7 +14,6 @@ import {
   queueDepth,
   jobTable,
   getJobSource,
-  revertExpiredBatchUnits,
   revertStuckSarvamUnits,
   revertExhaustedXlateUnits,
   STALE_JOB_MESSAGE,
@@ -22,7 +21,6 @@ import {
   type JobKind,
   type JobSource,
 } from "@/lib/jobs/batches";
-import { submitPlannedBatchJobs, pollInFlightBatchApi } from "@/lib/jobs/batch-api";
 import {
   submitSarvamOcrBatches,
   pollSarvamOcrBatches,
@@ -196,9 +194,6 @@ export async function GET(request: NextRequest) {
     // Watchdog (dispatcher only, client-independent): fail jobs wedged past the
     // timeout and push the terminal status so the UI stops spinning.
     let swept = 0;
-    let batchSubmitted = 0;
-    let batchDone = 0;
-    let batchFailed = 0;
     let sarvamSubmitted = 0;
     let sarvamDone = 0;
     let sarvamFellBack = 0;
@@ -278,40 +273,6 @@ export async function GET(request: NextRequest) {
             endpoint: "/api/cron/process-batches",
           });
         }
-      }
-
-      // Batch-API delivery (dispatcher only): submit planned large jobs to the
-      // Anthropic Message Batch API, then pull results for any batch that ended.
-      // Both write the same job_batches.result_json the sync path uses, so the
-      // reconcile pass below settles batch jobs unchanged. Runs before the drain
-      // so a freshly-completed batch unit's debit is recorded ahead of assembly's
-      // output-lock check. Self-contained failures fall back to the sync queue.
-      try {
-        // Dead-man's switch: revert units stuck `submitted` past the max batch
-        // window back to the sync path, so a lost Anthropic batch can't leave a
-        // job spinning forever (these units are exempt from the stale sweep).
-        const expired = await revertExpiredBatchUnits();
-        if (expired.length > 0) {
-          logError({
-            category: "extraction",
-            message: `Reverted ${expired.length} stuck Batch-API job(s) to sync after max age`,
-            severity: "warning",
-            endpoint: "/api/cron/process-batches",
-            metadata: { jobIds: expired },
-          });
-        }
-        batchSubmitted = await submitPlannedBatchJobs();
-        const polled = await pollInFlightBatchApi();
-        batchDone = polled.done;
-        batchFailed = polled.failed;
-      } catch (err) {
-        logError({
-          category: "extraction",
-          message: `Batch-API step failed: ${err instanceof Error ? err.message : String(err)}`,
-          error: err,
-          severity: "error",
-          endpoint: "/api/cron/process-batches",
-        });
       }
     }
 
@@ -412,9 +373,6 @@ export async function GET(request: NextRequest) {
       assembled,
       failed,
       swept,
-      batchSubmitted,
-      batchDone,
-      batchFailed,
       sarvamSubmitted,
       sarvamDone,
       sarvamFellBack,

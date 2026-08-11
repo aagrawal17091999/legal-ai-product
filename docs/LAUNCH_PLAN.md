@@ -271,17 +271,15 @@ job never gets failed and the UI spins indefinitely with no error.
 - [ ] **Test with a real multi-page upload before launch.** This path has never run
       unattended.
 
-### 5a-bis. 🟡 Bootstrap would install broken units on a fresh box
+### 5a-bis. ✅ Not a bug — `User=deploy` is an adapted placeholder
 
-The repo's service templates specify `User=deploy`. That user **does not exist** on the
-box (`crontab -u deploy` → "user `deploy' unknown"), and the three installed units have
-been hand-edited to `User=root` — they run fine. So the repo and the box have drifted.
-
-`bootstrap-box.sh` copies the **repo** versions, so a box rebuild installs three units
-that fail immediately, and the new process-batches unit would inherit the same bug.
-
-- [ ] Reconcile `deploy/systemd/*.service` with what's actually installed (`User=root`),
-      or create a real `deploy` user. Don't copy `User=deploy` into the new unit.
+Initially flagged as drift: the repo templates say `User=deploy`, no such user exists,
+and the installed units say `User=root`. On inspection
+[`bootstrap-box.sh:61`](../scripts/bootstrap-box.sh) sed-rewrites both `User=` and
+`WorkingDirectory=` to the box's actual values, so the repo version is an intentional
+placeholder and a fresh bootstrap is correct. No action needed — the new
+process-batches unit just follows the same single-line `Key=value` convention so the
+substitution keeps working.
 
 ### 5b. Env template + verification gaps
 

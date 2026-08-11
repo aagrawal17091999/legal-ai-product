@@ -42,11 +42,6 @@ interface MeterCtx {
   userId: number;
   feature: Feature;
   refId?: string;
-  /** True for Batch-API-delivered work. Charges still use full (sync) rates —
-   *  the 2x rule: cost_inr/credits are 2x the actual half-price batch cost, so
-   *  we keep the discount as margin. The flag lets analytics recover real COGS
-   *  (= cost_inr / 2). See migration 024. */
-  batchApi?: boolean;
   /** When false, the usage is still recorded (for COGS analytics) but the wallet
    *  is NOT debited — used when the metered action failed or was aborted so the
    *  user isn't charged for work they never received. Defaults to true. */
@@ -194,7 +189,7 @@ function summarize(lines: Line[]) {
  * debit went negative). Metering failures never break the user request.
  */
 export async function withMeter<T>(
-  opts: { userId: number; feature: Feature; refId?: string; batchApi?: boolean },
+  opts: { userId: number; feature: Feature; refId?: string },
   fn: () => Promise<T>
 ): Promise<{ result: T; meter: MeterResult }> {
   const ctx: MeterCtx = { ...opts, billable: true, lines: [] };
@@ -234,8 +229,8 @@ async function finalizeMeter(ctx: MeterCtx, billable: boolean): Promise<MeterRes
 
     await pool.query(
       `INSERT INTO usage_events
-         (user_id, feature, ref_id, model_breakdown, cost_inr, credits_charged, enforced, batch_api)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (user_id, feature, ref_id, model_breakdown, cost_inr, credits_charged, enforced)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         ctx.userId,
         ctx.feature,
@@ -245,7 +240,6 @@ async function finalizeMeter(ctx: MeterCtx, billable: boolean): Promise<MeterRes
         // Record what was actually charged: 0 when the action was unbillable.
         charged ? credits : 0,
         enforced,
-        ctx.batchApi ?? false,
       ]
     );
 

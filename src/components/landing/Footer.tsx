@@ -102,10 +102,10 @@ export default function Footer() {
               </li>
               <li>
                 <a
-                  href="mailto:hello@nyayasearch.com"
+                  href="mailto:ansh@getlegalbrain.com"
                   className="text-sm text-ivory-50/80 hover:text-gold-500 transition-colors"
                 >
-                  hello@nyayasearch.com
+                  ansh@getlegalbrain.com
                 </a>
               </li>
               <li>

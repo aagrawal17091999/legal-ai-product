@@ -33,7 +33,7 @@ const faqs = [
   },
   {
     q: "What happens when my free chats run out?",
-    a: "The free plan includes 5 free chats total — a one-time allotment, not a monthly or daily reset, and it covers case-law research, document workspaces, translation, and OCR combined. If you need more, the Pro plan offers unlimited use for ₹1,500 per month or ₹15,000 per year. You can upgrade instantly from your account settings.",
+    a: "The free plan includes 100 credits — a one-time allotment, not a monthly or daily reset, covering case-law research, document workspaces, translation, and OCR combined. Credits are spent in proportion to the AI work a task takes, so a quick lookup costs far less than a long translation. If you need more, Pro gives you 1,000 credits every month for ₹2,000 per month or ₹20,000 per year, plus top-up packs that never expire. You can upgrade instantly from your account settings.",
   },
   {
     q: "Can I use Legal Brain on my own documents, not just case law?",

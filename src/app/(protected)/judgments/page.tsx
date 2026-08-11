@@ -260,8 +260,8 @@ export default function JudgmentsPage() {
                 </div>
                 <p className="mt-5 text-[14px] text-charcoal-600">
                   Try removing a filter to broaden your search. If you believe a judgment is missing from our database, let us know at{" "}
-                  <a href="mailto:hello@nyayasearch.com" className="text-gold-600 hover:text-gold-700">
-                    hello@nyayasearch.com
+                  <a href="mailto:ansh@getlegalbrain.com" className="text-gold-600 hover:text-gold-700">
+                    ansh@getlegalbrain.com
                   </a>.
                 </p>
               </div>

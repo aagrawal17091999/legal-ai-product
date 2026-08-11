@@ -20,10 +20,10 @@ export default function TeamPage() {
           <p className="mt-5 text-[17px] text-charcoal-600 leading-relaxed">
             Want to get in touch?{" "}
             <a
-              href="mailto:hello@nyayasearch.com"
+              href="mailto:ansh@getlegalbrain.com"
               className="text-gold-600 hover:text-gold-700"
             >
-              hello@nyayasearch.com
+              ansh@getlegalbrain.com
             </a>
           </p>
         </div>

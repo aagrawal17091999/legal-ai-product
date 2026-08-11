@@ -183,10 +183,10 @@ export default function AccountPage() {
                 body: JSON.stringify(response),
               });
               if (!verifyRes.ok) {
-                setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+                setBillingError("We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com.");
               }
             } catch {
-              setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+              setBillingError("We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com.");
             } finally {
               await fetchUser();
             }
@@ -252,12 +252,12 @@ export default function AccountPage() {
                 body: JSON.stringify(response),
               });
               if (!verifyRes.ok) {
-                setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+                setBillingError("We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com.");
               } else {
                 setShowUpgradeModal(false);
               }
             } catch {
-              setBillingError("We couldn't verify your payment. If you were charged, contact hello@nyayasearch.com.");
+              setBillingError("We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com.");
             } finally {
               await fetchUser();
             }

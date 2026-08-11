@@ -7,18 +7,18 @@ import Button from "@/components/ui/Button";
 import { loadRazorpay } from "@/lib/loadRazorpay";
 
 const plans = {
-  monthly: { price: "1,500", period: "/month", planKey: "monthly" as const },
+  monthly: { price: "2,000", period: "/month", planKey: "monthly" as const },
   yearly: {
-    price: "15,000",
+    price: "20,000",
     period: "/year",
-    savings: "Save ₹3,000",
+    savings: "Save ₹4,000",
     planKey: "yearly" as const,
   },
 };
 
 const freeFeatures = [
-  "5 free chats total (lifetime, not per month)",
-  "Across research, workspaces, translation & OCR",
+  "100 free credits (one-time, no monthly reset)",
+  "Spend them across research, workspaces, translation & OCR",
   "Streaming, cited answers",
   "Supreme Court and High Court coverage",
   "Inline citations linked to source judgments",
@@ -27,21 +27,30 @@ const freeFeatures = [
 ];
 
 const proFeatures = [
-  "Unlimited chats — research, workspaces, translation & OCR",
+  "1,000 credits every month — research, workspaces, translation & OCR",
+  "Buy top-up credits any time; top-ups never expire",
   "Streaming, cited answers grounded in judgments",
   "Document Workspaces: chat with your own files, cited to page",
   "Translate documents into any language → court-ready Word",
   "OCR scanned & handwritten documents → clean PDF / Word",
   "All pre-filters: court, bench, judge, act, section, category, parties, year",
   "PDF downloads of cited judgments",
-  "Full history across every tool (unlimited retention)",
+  "Full history across every tool",
   "Priority processing and email support",
 ];
 
 const pricingFaqs = [
   {
+    q: "What is a credit?",
+    a: "A credit is the unit we bill work in. Everything you do — a research question, a document chat, a page of translation or OCR — spends credits in proportion to the AI work it takes, so a quick lookup costs far less than a 100-page translation. Your balance is always visible in the app header, and we warn you before it runs out. As a rough guide, 1,000 credits covers a normal month of steady research for one advocate.",
+  },
+  {
     q: "Can I try Pro before committing?",
-    a: "The free plan gives you a genuine sense of how Legal Brain works. Five free chats total — shared across case-law research, document workspaces, translation, and OCR — with the same quality as the Pro plan. The primary difference is volume: Pro removes the limit and unlocks every tool and pre-filter.",
+    a: "The free plan gives you a genuine sense of how Legal Brain works: 100 credits, one time, shared across case-law research, document workspaces, translation, and OCR — with the same answer quality as Pro. The difference is volume and access: Pro adds 1,000 credits a month and unlocks every tool and pre-filter.",
+  },
+  {
+    q: "What happens if I run out of credits?",
+    a: "New work pauses until you top up — nothing you have already produced is lost or deleted. You can buy a top-up pack from the app header or your account settings at any time; top-up credits never expire and are used only after your monthly plan credits are spent.",
   },
   {
     q: "What payment methods do you accept?",
@@ -49,19 +58,19 @@ const pricingFaqs = [
   },
   {
     q: "Can I switch between monthly and annual billing?",
-    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹15,000 for the year and save ₹3,000 compared to monthly billing.",
+    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹20,000 for the year and save ₹4,000 compared to monthly billing. Either way you receive 1,000 credits every month.",
   },
   {
     q: "What happens if I cancel?",
-    a: "You retain full access through the end of your current billing period. After that, your account reverts to the free plan. Your research history is preserved and remains accessible.",
+    a: "You retain full access through the end of your current billing period. After that, your account reverts to the free plan. Your research history is preserved and remains accessible, and any top-up credits you bought stay on your account.",
   },
   {
     q: "Do you offer team or firm pricing?",
-    a: "Not yet. Legal Brain is currently designed for individual advocates. If you are interested in firm-wide access, contact us at hello@nyayasearch.com and we will work with you.",
+    a: "Not yet. Legal Brain is currently designed for individual advocates. If you are interested in firm-wide access, contact us at ansh@getlegalbrain.com and we will work with you.",
   },
   {
     q: "Is GST included in the price?",
-    a: "GST of 18% is charged in addition to the listed price, in compliance with Indian tax regulations. The invoice will reflect the base price plus applicable GST.",
+    a: "GST of 18% is charged in addition to the listed price, in compliance with Indian tax regulations. This applies to subscriptions and to one-time credit top-ups alike; the amount shown at checkout is GST-inclusive and the invoice reflects the base price plus applicable GST.",
   },
 ];
 
@@ -165,9 +174,9 @@ export default function PricingTeaser() {
             serious research.
           </h2>
           <p className="mt-6 max-w-xl mx-auto text-[17px] text-charcoal-600 leading-relaxed">
-            Start free with five chats total — across research, workspaces,
-            translation, and OCR. Upgrade to Pro when your practice needs
-            unlimited, citation-backed work.
+            Start free with 100 credits — across research, workspaces,
+            translation, and OCR. Upgrade to Pro for 1,000 credits a month of
+            citation-backed work, and top up whenever you need more.
           </p>
 
           {/* Billing toggle */}

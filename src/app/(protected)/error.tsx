@@ -27,8 +27,8 @@ export default function ProtectedError({
         <p className="mt-4 text-[15px] text-charcoal-600 leading-relaxed">
           This page failed to load. You can try again — if it keeps happening,
           please let us know at{" "}
-          <a href="mailto:hello@nyayasearch.com" className="text-gold-600 hover:text-gold-700">
-            hello@nyayasearch.com
+          <a href="mailto:ansh@getlegalbrain.com" className="text-gold-600 hover:text-gold-700">
+            ansh@getlegalbrain.com
           </a>.
         </p>
         <div className="mt-8">

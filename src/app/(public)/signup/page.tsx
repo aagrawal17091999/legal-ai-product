@@ -60,7 +60,7 @@ export default function SignupPage() {
           Start your legal research
         </h1>
         <p className="mt-3 text-[15px] text-charcoal-600 text-center">
-          Create a free account. Five free chats, no credit card required.
+          Create a free account. 100 free credits, no credit card required.
         </p>
 
         <button

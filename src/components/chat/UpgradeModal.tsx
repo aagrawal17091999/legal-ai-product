@@ -14,10 +14,12 @@ interface UpgradeModalProps {
 
 export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   const [subscribing, setSubscribing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const { getToken } = useAuth();
   const router = useRouter();
 
   const handleUpgrade = async (plan: "monthly" | "yearly") => {
+    setError(null);
     setSubscribing(true);
     try {
       const token = await getToken();
@@ -30,7 +32,10 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
         body: JSON.stringify({ plan }),
       });
 
-      if (!res.ok) return;
+      if (!res.ok) {
+        setError("We couldn't start checkout. Please try again.");
+        return;
+      }
 
       const data = await res.json();
       if (data.subscription_id && typeof window !== "undefined") {
@@ -68,7 +73,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
         }
       }
     } catch {
-      // Error handled silently
+      setError("Something went wrong starting checkout. Please try again.");
     } finally {
       setSubscribing(false);
     }
@@ -77,10 +82,16 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Upgrade to Pro">
       <p className="text-[15px] text-charcoal-600 leading-relaxed">
-        You&apos;ve used all five free chats. Upgrade to Pro for unlimited,
-        citation-backed research and full access to document workspaces,
-        translation, and OCR.
+        You&apos;ve used your free credits. Upgrade to Pro for 1,000 credits
+        every month of citation-backed research, plus full access to document
+        workspaces, translation, and OCR.
       </p>
+
+      {error && (
+        <p className="mt-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-[13px] text-red-700">
+          {error}
+        </p>
+      )}
 
       <div className="mt-6 space-y-3">
         <Button
@@ -89,7 +100,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
           className="w-full"
           disabled={subscribing}
         >
-          {subscribing ? "Processing…" : "₹1,500 / month →"}
+          {subscribing ? "Processing…" : "₹2,000 / month →"}
         </Button>
         <Button
           variant="outline"
@@ -97,9 +108,13 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
           className="w-full"
           disabled={subscribing}
         >
-          ₹15,000 / year — save ₹3,000
+          ₹20,000 / year — save ₹4,000
         </Button>
       </div>
+
+      <p className="mt-4 text-[12px] text-charcoal-400">
+        Plus 18% GST. Both plans include 1,000 credits per month.
+      </p>
 
       <button
         onClick={onClose}

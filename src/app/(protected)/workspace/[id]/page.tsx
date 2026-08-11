@@ -350,10 +350,10 @@ export default function WorkspaceDetailPage({
         } else if (event === "status") {
           const phase = (data as { phase?: string }).phase;
           const label =
-            phase === "analyzing"
-              ? "Understanding your question…"
-              : phase === "reading"
-                ? "Reading the document…"
+            phase === "reading"
+              ? "Reading the document…"
+              : phase === "answering"
+                ? "Writing the answer…"
                 : phase === "verifying"
                   ? "Verifying citations…"
                   : "Searching your documents…";

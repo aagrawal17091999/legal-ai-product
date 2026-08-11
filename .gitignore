@@ -55,3 +55,6 @@ __pycache__/
 *.dump
 *.sql.gz
 *.backup
+
+# eval run output (regenerable; the eval SETS are committed, the results are not)
+/eval/results/

@@ -1,0 +1,250 @@
+{
+  "_note": "Workspace doc-chat gold set. Each entry is a question against a real production workspace plus notes on what a correct answer must contain. Run `npm run eval:docchat -- --tag baseline` BEFORE changing answer.ts, then again with --tag agent after, and diff. Score PER CATEGORY, never on the average: the whole point of this set is that retrieval-based answering can improve `lookup` while collapsing `exhaustive` and `absence`, and an average hides that.",
+  "_version": "1",
+  "_format": {
+    "id": "stable short id, used in the report",
+    "workspace": "workspace_id the question is asked against",
+    "category": "lookup | exhaustive | absence | negative_control | section | summary",
+    "question": "natural-language question as a user would type it",
+    "expected": "what a correct answer MUST contain, in prose, for the LLM judge",
+    "must_include": "optional literal strings that must appear in the answer (checked exactly, case-insensitive, before the judge runs)",
+    "must_not_include": "optional literal strings whose presence is an automatic fail",
+    "expect_citations": "true if the answer must carry at least one [n] citation marker",
+    "verified": "true = the gold answer was confirmed against the document text; false = drafted from a partial read and still needs a verification pass"
+  },
+  "_workspaces": {
+    "veena_jain": {
+      "id": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "doc": "veen jain final order.pdf",
+      "pages": 66,
+      "est_tokens": 16616,
+      "about": "DRT-I Delhi final order in S.A. No. 326 of 2024, Veena Jain v. City Union Bank — SARFAESI securitisation application over property no. 87, Block E, Veer Nagar, Jain Colony, Delhi"
+    },
+    "etrav": {
+      "id": "b61b0647-e179-46af-93bf-ed7bb09af295",
+      "doc": "E Trav u UoI _LT.pdf",
+      "pages": 201,
+      "est_tokens": 73218,
+      "about": "Delhi High Court W.P.(C) 6844/2026, E Trav Tech Ltd v. Union of India — respondents' short affidavit plus annexures. A compilation with an index, so section-scoped questions matter here."
+    }
+  },
+
+  "questions": [
+    {
+      "id": "vj_sa_number",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "lookup",
+      "question": "What is the securitisation application number and which tribunal decided it?",
+      "expected": "S.A. No. 326 of 2024, decided by Debts Recovery Tribunal-I, Delhi.",
+      "must_include": ["326"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_presiding_officer",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "lookup",
+      "question": "Who was the presiding officer?",
+      "expected": "Shri Govind Ballabh Sharma.",
+      "must_include": ["Govind Ballabh Sharma"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_parties",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "lookup",
+      "question": "Who is the applicant and who is respondent no. 1?",
+      "expected": "Applicant is Smt. Veena Jain, wife of the late Sh. Vinod Kumar Jain. Respondent no. 1 is City Union Bank Limited (registered office at Kumbakonam, Thanjavur, Tamil Nadu).",
+      "must_include": ["Veena Jain", "City Union Bank"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_possession_date",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "lookup",
+      "question": "When was physical possession of the property taken, and under whose order?",
+      "expected": "Physical possession was taken on 03.09.2024 by the Receiver, in compliance with the order dated 05.08.2024 of the CMM, North-West, Rohini Courts, passed under Section 14 of the SARFAESI Act. A possession notice had been issued on 16.08.2024.",
+      "must_include": ["03.09.2024"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_auction_terms",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "lookup",
+      "question": "What was the reserve price of the auction and what did the property finally sell for?",
+      "expected": "The tender-cum-auction sale notice dated 11.09.2024 set a reserve of Rs. 400.00 lacs for an auction on 07.10.2024. The property sold to the highest bidder for Rs. 5,80,00,000 (Rs. 5.8 crore).",
+      "must_include": ["400"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_all_authorities",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "exhaustive",
+      "question": "List every case name that appears anywhere in this order — including judgments relied on as authority and any other proceedings referred to by case title.",
+      "expected": "Five case titles appear, spread across the document. Judgments relied on as authority: (1) Sunil Goel v. Indiabulls Housing Finance Limited, MANU/DE/1654/2020 (Delhi High Court); (2) Bank of India v. M/s Sri Nangli Rice Mills, Civil Appeal No. 7110 of 2025 (Supreme Court). Other proceedings referred to by title: (3) Nainital Bank Ltd v. Mobi Trade Link, RC No. 415/2024; (4) UBI v. Jayna Traders, RC No. 148/2015; (5) Smt. Anju Jain v. Delhi Metro Rail Corporation Ltd. & Anr. Missing any of the five is a FAIL. This is the core exhaustiveness test: the five titles sit at roughly chunks 5, 16, 17, 26 and 31 of 39, so top-K retrieval will surface some and miss others. Distinguishing authorities from other proceedings is good but not required.",
+      "must_include": ["Sunil Goel", "Nangli", "Nainital", "Jayna"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_all_properties",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "exhaustive",
+      "question": "List every property mentioned as security, with its valuation.",
+      "expected": "Must include the Meerut, UP property valued at Rs. 115.25 lacs as on 12.03.2018, and Property No. 87, Block E, Veer Nagar, Jain Colony, Delhi (under-construction multi-storey, admeasuring 135.08 sq. yds., valued for 136.72 sq. yds.) valued at Rs. 617.14 lacs. Missing either property is a FAIL.",
+      "must_include": ["115.25", "617.14"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_all_notice_dates",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "exhaustive",
+      "question": "List every notice mentioned in this order and the date of each.",
+      "expected": "At least nine dated notices appear: recall notice 04.01.2024; demand notice under Section 13(2) dated 30.01.2024 (which contained a typographical error in the property description); possession notice 14.05.2024; sale/auction notice 05.07.2024; possession notice 16.08.2024; auction notice 19.08.2024; tender-cum-auction sale notice under the Act 11.09.2024; notice of enquiry by the Economic Offences Wing 01.08.2025; legal notice 12.11.2025. Score on how many are recovered — six or more is a pass. Do NOT treat a notice absent from this list as a hallucination without checking: this list was itself built by scanning the document and may be incomplete.",
+      "must_include": ["04.01.2024", "30.01.2024", "14.05.2024", "05.07.2024", "11.09.2024"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_sbi_impleadment",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "section",
+      "question": "What was the State Bank of India's impleadment application, and on what basis was it opposed?",
+      "expected": "SBI filed an application on 30.08.2025 under Order 1 Rule 10 read with Section 151 CPC to be impleaded as a respondent in the securitisation application. It was opposed on the basis of Bank of India v. M/s Sri Nangli Rice Mills, Civil Appeal No. 7110 of 2025, on the DRT's jurisdiction.",
+      "must_include": ["Order 1 Rule 10"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_gift_deed",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "section",
+      "question": "What is the dispute about the gift deed?",
+      "expected": "A gift deed registered on 23.08.2022 with the Sub-Registrar VI A, Delhi. The bank alleges it was a fraudulent transfer showing collusion, and filed a criminal complaint dated 12.06.2025. The other side says the allegations of fraud are false and that the gift deed was a bona fide family transaction between mother-in-law and daughter-in-law, executed and registered well before the bank's action.",
+      "must_include": ["23.08.2022"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_dmrc",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "section",
+      "question": "What is the DMRC's involvement in the condition of the property?",
+      "expected": "Grouting work by DMRC (with Afcons Infra Limited) is alleged to have damaged the property and made it uninhabitable. The bank's authorised officer sought an opinion from the panel valuer Real Value Consultants, which issued a valuation report dated 10.10.2025 after evaluating the site.",
+      "must_include": ["DMRC"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_writ_history",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "lookup",
+      "question": "Were there any writ petitions before the Delhi High Court, and what happened to each?",
+      "expected": "Two distinct petitions, and conflating them is a FAIL. (1) W.P.(C) No. 12601/2024, filed by the applicant against orders of the Tribunal, DRAT Delhi and the CJM — DISMISSED by the High Court on 08.10.2024. (2) W.P.(C) No. 18207/2025, titled Smt. Anju Jain (the auction purchaser) v. Delhi Metro Rail Corporation Ltd. & Anr., seeking relief to safeguard the property and compensation — DISPOSED OF on 01.12.2025 with liberty to approach this Tribunal. An answer naming only one petition is incomplete.",
+      "must_include": ["12601", "18207"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "vj_absence_arbitration",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "absence",
+      "question": "Does this order deal with an arbitration clause or arbitral proceedings?",
+      "expected": "No. The answer must clearly state that arbitration is not discussed in the document, using the 'I couldn't find that in your uploaded documents' formulation or an equivalent unambiguous denial. Inventing an arbitration clause, or hedging in a way that implies one might exist, is a FAIL.",
+      "must_not_include": ["arbitral tribunal", "arbitration clause provides"],
+      "expect_citations": false,
+      "verified": true
+    },
+    {
+      "id": "vj_absence_gst",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "absence",
+      "question": "What does the order say about GST liability on the auction sale?",
+      "expected": "The order does not discuss GST. It does mention a 1% TDS refund request on the sale consideration, which is a different tax — mentioning that as a clarification is fine, but the answer must state that GST is not addressed. Asserting a GST holding is a FAIL.",
+      "expect_citations": false,
+      "verified": true
+    },
+    {
+      "id": "vj_negative_kesavananda",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "negative_control",
+      "question": "What did the Supreme Court hold in Kesavananda Bharati?",
+      "expected": "The document says nothing about Kesavananda Bharati. The answer must decline on the basis that it is not in the uploaded documents, and must NOT answer from general legal knowledge — this tests that the grounding rule survives the refactor.",
+      "must_not_include": ["basic structure"],
+      "expect_citations": false,
+      "verified": true
+    },
+    {
+      "id": "vj_summary",
+      "workspace": "69d16744-d5fc-4176-9f90-ba3c923a44f8",
+      "category": "summary",
+      "question": "Summarise this order — what was the dispute and what was decided?",
+      "expected": "A SARFAESI securitisation application by Veena Jain challenging City Union Bank's enforcement action over the Veer Nagar property: loan default and NPA classification (30.11.2023), Section 13(2) demand notice with a typographical error in the property description, Section 14 possession through the CMM, auction on 07.10.2024 to an auction purchaser for Rs. 5.8 crore, disputes over the equitable mortgage extension of 29.06.2018, an allegedly fraudulent gift deed, DMRC damage to the property, and competing applications by the auction purchaser and SBI. Should cover both sides' positions rather than only the applicant's.",
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "et_case_number",
+      "workspace": "b61b0647-e179-46af-93bf-ed7bb09af295",
+      "category": "lookup",
+      "question": "What is the case number and who are the parties?",
+      "expected": "W.P.(C) No. 6844 of 2026 in the High Court of Delhi (extraordinary civil writ jurisdiction). Petitioner: E Trav Tech Limited. Respondents: Union of India & Anr.",
+      "must_include": ["6844"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "et_annexures",
+      "workspace": "b61b0647-e179-46af-93bf-ed7bb09af295",
+      "category": "exhaustive",
+      "question": "List every annexure in this compilation and what each one contains.",
+      "expected": "From the index: Annexure R-01 is the communication dated 30.01.2026 issued by the respondents together with the impugned email dated 04.05.2026 (pages 26-28). Annexure R-02 is the order dated 10.03.2026 passed by the Court in W.P.(C) No. 1562/2026. The document also opens with the short affidavit on behalf of respondents 1 and 2 (pages 1-25). Any further annexures beyond R-02 must be listed too — this entry needs a verification pass against the full index.",
+      "must_include": ["R-01", "R-02"],
+      "expect_citations": true,
+      "verified": false
+    },
+    {
+      "id": "et_impugned_email",
+      "workspace": "b61b0647-e179-46af-93bf-ed7bb09af295",
+      "category": "section",
+      "question": "What is the impugned email and when was it sent?",
+      "expected": "The impugned email is dated 04.05.2026 and is annexed at Annexure R-01 alongside the respondents' communication dated 30.01.2026. Needs verification against the affidavit body for what the email actually conveyed.",
+      "must_include": ["04.05.2026"],
+      "expect_citations": true,
+      "verified": false
+    },
+    {
+      "id": "et_prior_writ",
+      "workspace": "b61b0647-e179-46af-93bf-ed7bb09af295",
+      "category": "lookup",
+      "question": "Is there an earlier writ petition referred to, and what order was passed in it?",
+      "expected": "Yes — W.P.(C) No. 1562/2026, in which this Court passed an order dated 10.03.2026, annexed as Annexure R-02.",
+      "must_include": ["1562"],
+      "expect_citations": true,
+      "verified": true
+    },
+    {
+      "id": "et_absence_criminal",
+      "workspace": "b61b0647-e179-46af-93bf-ed7bb09af295",
+      "category": "absence",
+      "question": "Are there any criminal proceedings or FIRs described in this filing?",
+      "expected": "Needs verification. If the affidavit describes no criminal proceedings, the answer must say so plainly rather than hedging. Confirm against the document before promoting this entry to verified.",
+      "expect_citations": false,
+      "verified": false
+    },
+    {
+      "id": "et_summary",
+      "workspace": "b61b0647-e179-46af-93bf-ed7bb09af295",
+      "category": "summary",
+      "question": "Summarise the respondents' position in this affidavit.",
+      "expected": "Needs verification against the body of the short affidavit (pages 1-25). Should cover the respondents' answer to the petitioner's case and their reliance on the 30.01.2026 communication and the 10.03.2026 order in W.P.(C) 1562/2026.",
+      "expect_citations": true,
+      "verified": false
+    }
+  ]
+}

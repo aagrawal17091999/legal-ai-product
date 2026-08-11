@@ -116,47 +116,6 @@ export async function retrieveWorkspaceChunks(
   }
 }
 
-/**
- * Total cleaned-text size (chars) of a workspace's ready documents. Drives the
- * full-document vs. retrieval decision in answer.ts: small corpora are answered
- * from the entire text, which is far better for summaries, "list every X", and
- * other cross-cutting questions that top-K retrieval structurally can't serve.
- */
-export async function getWorkspaceCorpusSize(workspaceId: string): Promise<number> {
-  const { rows } = await pool.query(
-    `SELECT COALESCE(SUM(char_count), 0)::bigint AS chars
-       FROM workspace_documents
-      WHERE workspace_id = $1 AND status = 'ready'`,
-    [workspaceId]
-  );
-  return Number(rows[0]?.chars ?? 0);
-}
-
-/**
- * Every chunk in a workspace, in natural reading order (by document, then
- * chunk_index). Used by full-document mode so the model sees the complete text
- * while citations still resolve to real chunk ids for the source panel.
- */
-export async function getAllWorkspaceChunks(workspaceId: string): Promise<DocChunkHit[]> {
-  const { rows } = await pool.query(
-    `SELECT dc.id AS chunk_id, dc.document_id, dc.chunk_index, dc.page_no, dc.chunk_text,
-            d.filename AS document_name
-       FROM document_chunks dc
-       JOIN workspace_documents d ON d.id = dc.document_id
-      WHERE dc.workspace_id = $1
-        -- Only ready documents: a doc mid-ingestion may have a partial chunk
-        -- set, which would leak half a document into answers as if complete.
-        AND d.status = 'ready'
-      ORDER BY dc.document_id, dc.chunk_index`,
-    [workspaceId]
-  );
-  return rows.map((r) => ({
-    ...toRawHit(r),
-    rrf_score: 0,
-    rerank_score: 1,
-  }));
-}
-
 async function vectorLane(
   workspaceId: string,
   embedding: number[],

@@ -136,6 +136,21 @@ export interface ToolContext {
   sessionFilters: SearchFilters;
   registry: CaseRegistry;
   trace: ToolCallRecord[];
+  /**
+   * Chunk ids already sent to the model this turn.
+   *
+   * The dominant agent flow is search_fresh → spot a promising case →
+   * load_case on it, and load_case used to re-render every chunk search_fresh
+   * had already returned for that case. Measured across the 13-question golden
+   * set, 803k of 5,224k characters (15%) were text the model had already been
+   * given — re-billed at the 1.25x prompt-cache write rate, and on individual
+   * questions as much as 53%.
+   *
+   * Suppressing a repeat is quality-neutral by construction: the passage is
+   * still in the model's context from the earlier call, and it is told where
+   * (`[^n]`), so nothing it could reason from is removed.
+   */
+  emittedChunkIds: Set<number>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -422,9 +437,12 @@ async function executeLoadCase(
     selected = allChunks.slice(0, LOAD_CASE_MAX_CHUNKS);
   }
 
-  const text = await renderChunksForAgent(selected, ctx.registry, {
-    perCaseCharBudget: LOAD_CASE_PER_CASE_CHARS,
-  });
+  const text = await renderChunksForAgent(
+    selected,
+    ctx.registry,
+    { perCaseCharBudget: LOAD_CASE_PER_CASE_CHARS },
+    ctx.emittedChunkIds
+  );
   return {
     text,
     audit: {
@@ -541,7 +559,7 @@ async function executeSearchFresh(
   const distinctSession = new Set(reranked.filter(inSession).map(keyOf)).size;
   const distinctNew = new Set(reranked.filter((ch) => !inSession(ch)).map(keyOf)).size;
 
-  const body = await renderChunksForAgent(sessionFirst, ctx.registry);
+  const body = await renderChunksForAgent(sessionFirst, ctx.registry, undefined, ctx.emittedChunkIds);
   const note =
     distinctSession > 0
       ? `NOTE: ${distinctSession} of these result(s) are cases already in this session (listed first). Prefer building your answer on them; only bring in the ${distinctNew} new case(s) if they add something the session cases genuinely lack.\n\n`
@@ -601,9 +619,12 @@ async function executeLookupByCitation(
   }
 
   const selected = chunks.slice(0, LOAD_CASE_MAX_CHUNKS);
-  const text = await renderChunksForAgent(selected, ctx.registry, {
-    perCaseCharBudget: LOAD_CASE_PER_CASE_CHARS,
-  });
+  const text = await renderChunksForAgent(
+    selected,
+    ctx.registry,
+    { perCaseCharBudget: LOAD_CASE_PER_CASE_CHARS },
+    ctx.emittedChunkIds
+  );
   return {
     text,
     audit: { resolutions, chunks_returned: selected.length },
@@ -711,13 +732,90 @@ async function executeExpandCitedCases(
  * indices overlap (e.g. local [2] needs to become registry [5] while local [5]
  * also needs to be rewritten).
  */
+/**
+ * Measurement hook (off by default, no production effect).
+ *
+ * Every chunk the agent sends to the model passes through renderChunksForAgent,
+ * so this is the one place that can answer "how much text are we sending twice?"
+ * — e.g. when search_fresh surfaces a case's chunks and load_case then re-emits
+ * the same ones. Set by scripts/measure_chunk_overlap.mts; never set in the app.
+ */
+export type ChunkEmissionSink = (emitted: Array<{ chunkId: number; chars: number }>) => void;
+let emissionSink: ChunkEmissionSink | null = null;
+export function setChunkEmissionSink(sink: ChunkEmissionSink | null): void {
+  emissionSink = sink;
+}
+
+/**
+ * Describe passages suppressed as duplicates, pointing at where the model
+ * already has them. Grouped by case so the note stays short regardless of how
+ * many chunks repeated.
+ */
+function describeRepeats(repeats: RetrievedChunk[], registry: CaseRegistry): string {
+  if (repeats.length === 0) return "";
+  const byCase = new Map<string, { index: number | null; count: number }>();
+  for (const c of repeats) {
+    const key = `${c.source_table}:${c.source_id}`;
+    const known = registry
+      .list()
+      .find((x) => x.source_table === c.source_table && String(x.source_id) === String(c.source_id));
+    const entry = byCase.get(key) ?? { index: known?.index ?? null, count: 0 };
+    entry.count++;
+    byCase.set(key, entry);
+  }
+  const parts = [...byCase.values()].map((e) =>
+    e.index != null
+      ? `${e.count} passage(s) already shown above under [^${e.index}]`
+      : `${e.count} passage(s) already shown above`
+  );
+  return `\n\n(Omitted as duplicates — ${parts.join("; ")}. Use the text already in context.)`;
+}
+
 async function renderChunksForAgent(
   chunks: RetrievedChunk[],
   registry: CaseRegistry,
-  buildOpts?: { perCaseCharBudget?: number; totalCharBudget?: number }
+  buildOpts?: { perCaseCharBudget?: number; totalCharBudget?: number },
+  emittedChunkIds?: Set<number>
 ): Promise<string> {
-  const { contextString, cases } = await buildContext(chunks, buildOpts);
-  if (cases.length === 0) return contextString;
+  // Drop passages the model already has. Filtering BEFORE buildContext is what
+  // makes this a saving rather than a swap: the per-case char budget is a cap,
+  // not a fill target, so removing duplicates renders less text — it does not
+  // backfill with other chunks at the same cost.
+  let toRender = chunks;
+  let repeatNote = "";
+  if (!emittedChunkIds && emissionSink) {
+    emissionSink(chunks.map((c) => ({ chunkId: c.chunk_id, chars: c.chunk_text?.length ?? 0 })));
+  }
+  if (emittedChunkIds) {
+    const fresh: RetrievedChunk[] = [];
+    const repeats: RetrievedChunk[] = [];
+    for (const c of chunks) {
+      (emittedChunkIds.has(c.chunk_id) ? repeats : fresh).push(c);
+    }
+    // Mark everything seen — including repeats, which is a no-op, and fresh,
+    // which must be recorded before any later call can re-request it.
+    for (const c of chunks) emittedChunkIds.add(c.chunk_id);
+
+    // Report what is actually SENT (post-suppression), so the measurement
+    // script proves the dedup rather than re-measuring demand for it.
+    if (emissionSink) {
+      emissionSink(fresh.map((c) => ({ chunkId: c.chunk_id, chars: c.chunk_text?.length ?? 0 })));
+    }
+
+    if (fresh.length === 0) {
+      // Every passage was already sent. Returning the note alone keeps the tool
+      // honest (it did find the case) without paying for the text twice.
+      return (
+        "All passages for this request are already in context above." +
+        describeRepeats(repeats, registry)
+      ).trim();
+    }
+    toRender = fresh;
+    repeatNote = describeRepeats(repeats, registry);
+  }
+
+  const { contextString, cases } = await buildContext(toRender, buildOpts);
+  if (cases.length === 0) return contextString + repeatNote;
 
   const mapping: Array<{ localMarker: string; placeholder: string; finalMarker: string }> = [];
   for (let i = 0; i < cases.length; i++) {
@@ -733,5 +831,5 @@ async function renderChunksForAgent(
   let out = contextString;
   for (const m of mapping) out = out.replace(m.localMarker, m.placeholder);
   for (const m of mapping) out = out.replace(m.placeholder, m.finalMarker);
-  return out;
+  return out + repeatNote;
 }

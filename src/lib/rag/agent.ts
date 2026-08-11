@@ -11,7 +11,8 @@ import {
 import { AGENT_SYSTEM_PROMPT } from "./agentPrompt";
 import { cachedSystem, applyCacheBreakpoints } from "./promptCache";
 import { getAnthropicClient } from "../claude";
-import { addClaudeUsage } from "../billing/meter";
+import { addClaudeUsage, currentCostInr } from "../billing/meter";
+import { CREDIT_INR } from "../billing/cost";
 import { decomposeQuestion } from "./decompose";
 import { reflectSufficiency } from "./reflect";
 import { gradeDraft, describeUnsupported, buildGroundingFooter, buildSupportByCase, type GradeResult } from "./faithfulness";
@@ -49,6 +50,18 @@ const MAX_RESEARCHES = numEnv("MAX_RESEARCH_RESEARCHES", 2);
 const REFLECT_WEAK_THRESHOLD = 0.45;
 // #5 How many times a draft may be sent back for grounding revision.
 const GROUNDING_REVISIONS = numEnv("GROUNDING_MAX_REVISIONS", 1);
+/**
+ * Per-question credit ceiling. Read live from the meter between steps, so a
+ * pathological question winds down instead of walking every tool to the step
+ * limit. Tuning MAX_AGENT_STEPS and the per-case char budget shapes the average
+ * cost; only this bounds the tail.
+ */
+const CREDIT_BUDGET = numEnv("RESEARCH_CREDIT_BUDGET", 25);
+
+/** Credits spent so far on the active metered turn (0 outside a meter). */
+function creditsSpent(): number {
+  return Math.ceil(currentCostInr() / CREDIT_INR);
+}
 
 function numEnv(name: string, fallback: number): number {
   const v = parseInt(process.env[name] ?? "", 10);
@@ -107,6 +120,8 @@ export interface AgentRunResult {
   model: string;
   stopReason: string | null;
   stepsUsed: number;
+  /** True when the credit ceiling forced the loop to stop researching early. */
+  budgetHit: boolean;
   /** In-loop grounding-gate outcome on the final answer (#5). Null if not run. */
   faithfulness: {
     ran: boolean;
@@ -132,6 +147,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     sessionFilters: opts.sessionFilters,
     registry,
     trace: toolTrace,
+    // Fresh per turn: the model's context is rebuilt each turn, so a chunk sent
+    // last turn is not present in this one and must be sent again.
+    emittedChunkIds: new Set<number>(),
   };
 
   // Seed session-case summary into the user-visible turn so the model has
@@ -179,6 +197,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   let stepsUsed = 0;
   let lastCasesCount = 0;
   let researchBudget = MAX_RESEARCHES;
+  let budgetHit = false;
   let revisionBudget = GROUNDING_REVISIONS;
   let lastGrade: GradeResult | null = null;
   let revised = false;
@@ -270,7 +289,22 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
 
       messages.push({ role: "assistant", content: finalMsg.content });
-      messages.push({ role: "user", content: toolResultBlocks });
+
+      // Credit ceiling. Appended alongside the tool results (they must answer
+      // their tool_use blocks immediately) so the model writes a complete answer
+      // from what it has rather than being cut off mid-research.
+      const blocks: Anthropic.ContentBlockParam[] = [...toolResultBlocks];
+      if (!budgetHit && creditsSpent() >= CREDIT_BUDGET) {
+        budgetHit = true;
+        blocks.push({
+          type: "text",
+          text:
+            "You have used the research budget for this question. Stop calling tools and " +
+            "write your answer now from the cases you already have. If the answer is " +
+            "narrower than it would otherwise be, say so in one sentence at the end.",
+        });
+      }
+      messages.push({ role: "user", content: blocks });
       continue;
     }
 
@@ -283,7 +317,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 
     // #1 Reflect → re-search. Only when the model actually searched and the
     // results were weak, and there is re-search budget left.
-    if (researchBudget > 0 && retrievalIsWeak(toolTrace)) {
+    if (researchBudget > 0 && retrievalIsWeak(toolTrace) && creditsSpent() < CREDIT_BUDGET) {
       opts.onStatus?.({ phase: "researching" });
       const r = await reflectSufficiency({
         userMessage: opts.userMessage,
@@ -433,6 +467,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     model,
     stopReason,
     stepsUsed,
+    budgetHit,
     contextDebug: JSON.stringify(
       { session_cases_count: opts.sessionStore.caseSummaries.length, history_turns: messages.length },
       null,

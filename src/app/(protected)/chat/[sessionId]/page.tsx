@@ -4,7 +4,6 @@ import { useEffect, useState, use } from "react";
 import ChatArea from "@/components/chat/ChatArea";
 import ChatInput from "@/components/chat/ChatInput";
 import CitationPanel from "@/components/chat/CitationPanel";
-import UpgradeModal from "@/components/chat/UpgradeModal";
 import { useChatContext } from "../../layout";
 import type { CitationRef } from "@/types";
 
@@ -19,8 +18,6 @@ export default function ChatSessionPage({
     isLoading,
     searchStatus,
     sessionLoading,
-    limitReached,
-    setLimitReached,
     error,
     setError,
     loadSession,
@@ -64,10 +61,6 @@ export default function ChatSessionPage({
           onClose={() => setSelectedCitation(null)}
         />
       </div>
-      <UpgradeModal
-        isOpen={limitReached}
-        onClose={() => setLimitReached(false)}
-      />
     </>
   );
 }

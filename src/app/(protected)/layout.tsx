@@ -21,8 +21,6 @@ interface ChatContextValue {
   isLoading: ReturnType<typeof useChat>["isLoading"];
   searchStatus: ReturnType<typeof useChat>["searchStatus"];
   sessionLoading: ReturnType<typeof useChat>["sessionLoading"];
-  limitReached: ReturnType<typeof useChat>["limitReached"];
-  setLimitReached: ReturnType<typeof useChat>["setLimitReached"];
   error: ReturnType<typeof useChat>["error"];
   setError: ReturnType<typeof useChat>["setError"];
   createSession: (filters: SearchFilters) => Promise<ReturnType<typeof useChat>["currentSession"]>;

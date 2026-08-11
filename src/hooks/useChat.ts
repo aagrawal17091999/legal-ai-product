@@ -107,7 +107,6 @@ export function useChat() {
   // cached to show yet — drives the skeleton so the empty "new chat" state
   // never flashes when opening an existing conversation.
   const [sessionLoading, setSessionLoading] = useState(false);
-  const [limitReached, setLimitReached] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const sessionsLoadedRef = useRef(false);
@@ -262,7 +261,6 @@ export function useChat() {
 
       setIsLoading(true);
       setSearchStatus(null);
-      setLimitReached(false);
       setError(null);
 
       // Use UUIDs (not Date.now()) so two messages created in the same tick
@@ -328,20 +326,6 @@ export function useChat() {
         if (handlePaymentRequired(res)) {
           setMessages((prev) => prev.filter((m) => m.id !== tempUserId && m.id !== tempAssistantId));
           return false;
-        }
-
-        if (res.status === 403) {
-          let data: { error?: string } = {};
-          try {
-            data = await res.json();
-          } catch {
-            /* empty body */
-          }
-          if (data.error === "limit_reached") {
-            setLimitReached(true);
-            setMessages((prev) => prev.filter((m) => m.id !== tempUserId && m.id !== tempAssistantId));
-            return false;
-          }
         }
 
         if (!res.ok || !res.body) {
@@ -554,8 +538,6 @@ export function useChat() {
     isLoading,
     searchStatus,
     sessionLoading,
-    limitReached,
-    setLimitReached,
     error,
     setError,
     loadSessions,

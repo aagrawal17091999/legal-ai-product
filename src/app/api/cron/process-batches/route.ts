@@ -44,17 +44,17 @@ import { logError } from "@/lib/error-logger";
  * job whose batches are now all settled — fails it (a batch exhausted retries) or
  * wins the assembly CAS and renders the final document. This is what lets large
  * documents and many concurrent users get processed without a single request ever
- * hitting the 300s cap. Vercel runs it every minute (vercel.json); it is also
- * safe to hit manually with the CRON_SECRET bearer token.
+ * hitting the 300s cap. Driven on the box by the
+ * nyayasearch-process-batches systemd timer; it is also safe to hit manually
+ * with the CRON_SECRET bearer token.
  */
 export const maxDuration = 300;
 
 // Concurrent vision calls in one wave — caps in-flight Anthropic calls so
 // concurrent uploads degrade gracefully (excess stays `pending`/`processing`)
-// instead of a 429 storm. Env-tunable: because the 210s budget exceeds the 60s
-// cron interval, ~3-4 worker invocations overlap, so peak system-wide concurrency
-// is roughly 4 × this value. Set it to (your Anthropic concurrent-request budget
-// ÷ ~4); raise it as the first throughput lever when backlog grows.
+// instead of a 429 storm. The systemd timer serialises ticks (a oneshot unit
+// can't overlap itself), so peak system-wide concurrency is this value ×
+// BATCH_MAX_LANES. Raise it as the first throughput lever when backlog grows.
 const WORKER_CONCURRENCY = Number(process.env.BATCH_WORKER_CONCURRENCY) || 5;
 // Keep draining waves until this wall-clock budget, leaving margin under the 300s
 // maxDuration for the final wave + assembly. A wave that overruns is harmless:
@@ -69,7 +69,7 @@ const BACKLOG_ALERT = Number(process.env.BATCH_BACKLOG_ALERT) || 200;
 // invocation count is hard-capped at BATCH_MAX_LANES (no exponential fan-out).
 // Default 1 = fan-out OFF (behaviour unchanged); raise it once DB pooling is in
 // place and you have Anthropic rate-limit headroom. Peak concurrency scales with
-// BATCH_MAX_LANES × BATCH_WORKER_CONCURRENCY (× the ~3-4 natural cron overlap).
+// BATCH_MAX_LANES × BATCH_WORKER_CONCURRENCY.
 const MAX_LANES = Math.max(1, Number(process.env.BATCH_MAX_LANES) || 1);
 // Add one peer lane per this many pending batches (backlog-proportional), capped
 // at MAX_LANES. Keeps idle ticks from spawning peers that would find no work.

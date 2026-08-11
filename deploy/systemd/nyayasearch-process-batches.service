@@ -4,9 +4,9 @@
 # stale jobs. Without it an upload sits in `pending` forever — and never even
 # fails, because the stale-job watchdog lives INSIDE this endpoint.
 #
-# It was declared in vercel.json ("* * * * *") and silently never ran after the
-# move to Hetzner, where there is no Vercel cron runner. This unit is the real
-# scheduler.
+# It was previously declared only as a Vercel cron and so silently never ran
+# after the move to Hetzner, where there is no Vercel cron runner. This unit is
+# the real scheduler.
 #
 # Install (as root):
 #   cp deploy/systemd/nyayasearch-process-batches.* /etc/systemd/system/

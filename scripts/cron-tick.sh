@@ -3,10 +3,9 @@ set -euo pipefail
 
 # Fire an internal cron endpoint from the box's own scheduler.
 #
-# On Hetzner there is NO Vercel cron runner, so the schedules declared in
-# vercel.json never execute. This wrapper is what a systemd timer (or crontab)
-# calls to hit a /api/cron/* endpoint locally with the CRON_SECRET the route
-# expects — reproducing what Vercel's cron would have done.
+# This wrapper is what a systemd timer calls to hit a /api/cron/* endpoint
+# locally with the CRON_SECRET the route expects. Every scheduled job on the box
+# goes through it; see deploy/systemd/ for the units.
 #
 # Usage:
 #   ENV_FILE=.env.production.local scripts/cron-tick.sh /api/cron/rag-retention

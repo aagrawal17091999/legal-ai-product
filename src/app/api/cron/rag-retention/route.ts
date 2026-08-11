@@ -13,8 +13,8 @@ import { logError } from "@/lib/error-logger";
  *
  * Schedule: a systemd timer on the Hetzner box fires this at 03:00 daily
  * (deploy/systemd/nyayasearch-rag-retention.*, via scripts/cron-tick.sh). The
- * vercel.json cron entry is INERT here — there is no Vercel cron runner on a
- * self-hosted box — so the timer is the real scheduler.
+ * The systemd timer is the real scheduler — there is no Vercel cron runner on a
+ * self-hosted box.
  *
  * Auth: reads CRON_SECRET from env and compares to the Authorization header.
  * cron-tick.sh attaches the same Bearer token. To run it by hand:

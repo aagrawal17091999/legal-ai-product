@@ -1,5 +1,4 @@
 # Fires the RAG-retention cleanup endpoint. Installed alongside the .timer.
-# Replaces the inert vercel.json cron (Vercel's scheduler doesn't run on Hetzner).
 #
 # Install (as root):
 #   cp deploy/systemd/nyayasearch-rag-retention.* /etc/systemd/system/

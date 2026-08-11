@@ -1,4 +1,4 @@
-# Runs the batch worker continuously, replacing the inert vercel.json "* * * * *".
+# Runs the batch worker continuously.
 #
 # OnUnitInactiveSec (not OnUnitActiveSec): systemd will not run two instances of
 # the same oneshot unit concurrently, so an interval measured from ACTIVATION

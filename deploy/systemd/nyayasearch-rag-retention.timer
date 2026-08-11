@@ -1,5 +1,5 @@
-# Runs the retention service daily at 03:00, matching the old vercel.json cron
-# ("0 3 * * *"). Persistent=true so a missed run (box was down at 03:00) fires
+# Runs the retention service daily at 03:00. Persistent=true so a missed run
+# (box was down at 03:00) fires
 # on next boot instead of being skipped for the day.
 [Unit]
 Description=Daily NyayaSearch RAG audit retention cleanup

@@ -10,6 +10,8 @@ import { isSarvamEnabled, sarvamCanRead } from "@/lib/sarvam/client";
 import { isSupportedLanguage, LANGUAGE_NAMES } from "@/lib/sarvam/languages";
 import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 // Upload only splits the document into batch rows; the cron worker
 // (/api/cron/process-batches) runs the vision passes and assembles the result.
@@ -44,6 +46,10 @@ export async function POST(request: NextRequest) {
     await requireCredits(user.id);
   } catch (e) {
     if (e instanceof OutOfCreditsError) {
+      track(EVENTS.OUT_OF_CREDITS, {
+        userId: user.id,
+        properties: { feature: "translate", plan: user.plan },
+      });
       return NextResponse.json(
         { error: "insufficient_credits", remaining: e.remaining },
         { status: 402 }
@@ -119,6 +125,19 @@ export async function POST(request: NextRequest) {
       plan.batches,
       isSarvamEnabled() && plan.kind !== "text" && sarvamCanRead(mime, file.name)
     );
+    track(EVENTS.TRANSLATE_STARTED, {
+      userId: user.id,
+      insertId: `xlate_start:${job.id}`,
+      properties: {
+        pages: plan.totalPages,
+        batches: plan.batches.length,
+        source_kind: plan.kind,
+        target_language: targetLanguage,
+        via_sarvam: isSarvamEnabled() && plan.kind !== "text" && sarvamCanRead(mime, file.name),
+        file_bytes: file.size,
+      },
+    });
+
     // Seed the Firestore mirror so the client can subscribe immediately.
     await mirrorJobStatus("translate", job.id, { ownerUid: decoded.uid, status: "processing" });
 

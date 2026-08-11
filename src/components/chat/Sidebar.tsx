@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useAuth } from "@/hooks/useAuth";
@@ -25,7 +25,29 @@ export default function Sidebar({
   isOpen,
   onClose,
 }: SidebarProps) {
-  const { user, signOut } = useAuth();
+  const { user, signOut, getToken } = useAuth();
+  // Staff flag comes from our users table, not the Firebase token, so it needs
+  // a fetch. Failure just leaves the link hidden.
+  const [isStaff, setIsStaff] = useState(false);
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const res = await fetch("/api/user", { headers: { Authorization: `Bearer ${token}` } });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setIsStaff(data.is_staff === true);
+      } catch {
+        /* link stays hidden */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, getToken]);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const handleDelete = async (e: React.MouseEvent, sessionId: string) => {
@@ -191,6 +213,19 @@ export default function Sidebar({
               </svg>
               Settings
             </Link>
+            {/* Staff only. The API re-checks is_staff on every request and 404s
+                otherwise, so hiding the link is presentation, not access control. */}
+            {isStaff && (
+              <Link
+                href="/admin/errors"
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
+              >
+                <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01M5.07 19H19a2 2 0 001.75-2.97l-6.93-12a2 2 0 00-3.5 0l-6.93 12A2 2 0 005.07 19z" />
+                </svg>
+                Error log
+              </Link>
+            )}
           </div>
 
           {/* User info */}

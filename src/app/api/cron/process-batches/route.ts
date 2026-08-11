@@ -35,6 +35,8 @@ import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
 import { getRemaining, refund } from "@/lib/billing/credits";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 /**
  * Durable batch worker for OCR + Translation.
@@ -169,6 +171,57 @@ async function refundFailedJob(kind: JobKind, jobId: string): Promise<void> {
   );
   const credits = sums[0]?.c ?? 0;
   if (credits > 0) await refund(userId, credits);
+}
+
+/**
+ * Emit the terminal event for a job. Both outcomes are recorded from the worker
+ * rather than the upload route, because that is the only place that knows how a
+ * job actually ended — the request that started it returned long before.
+ *
+ * Keyed on the job id so the CAS-guarded settle path can't double-count if a
+ * concurrent worker races to the same job.
+ */
+async function trackJobSettled(
+  kind: JobKind,
+  jobId: string,
+  ok: boolean,
+  batches: number,
+  failedBatches: number
+): Promise<void> {
+  try {
+    const { rows } = await pool.query<{
+      user_id: number;
+      created_at: Date;
+      output_locked: boolean | null;
+    }>(
+      `SELECT user_id, created_at, output_locked FROM ${jobTable(kind)} WHERE id = $1`,
+      [jobId]
+    );
+    const row = rows[0];
+    if (!row) return;
+    const event = ok
+      ? kind === "ocr"
+        ? EVENTS.OCR_COMPLETED
+        : EVENTS.TRANSLATE_COMPLETED
+      : kind === "ocr"
+        ? EVENTS.OCR_FAILED
+        : EVENTS.TRANSLATE_FAILED;
+    track(event, {
+      userId: row.user_id,
+      insertId: `job_settle:${jobId}`,
+      properties: {
+        batches,
+        failed_batches: failedBatches,
+        // Wall-clock from upload to finished document — the number that decides
+        // whether this feature feels usable.
+        duration_ms: Date.now() - new Date(row.created_at).getTime(),
+        output_locked: row.output_locked === true,
+      },
+    });
+  } catch {
+    // Never let analytics break the settle loop — a thrown error here would
+    // strand every remaining job in this tick.
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -338,6 +391,7 @@ export async function GET(request: NextRequest) {
             // Refund any successfully-processed sections the user was charged for.
             await refundFailedJob(kind, jobId);
             failed++;
+            await trackJobSettled(kind, jobId, false, state.total, state.failed);
           }
           continue;
         }
@@ -347,6 +401,7 @@ export async function GET(request: NextRequest) {
           // Withhold the finished output if the user ran out of credits midway.
           await lockOutputIfNegative(kind, jobId);
           assembled++;
+          await trackJobSettled(kind, jobId, true, state.total, 0);
         }
       }
     }

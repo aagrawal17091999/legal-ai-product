@@ -5,6 +5,8 @@ import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
 import pool from "@/lib/db";
 import { runDocChat, type DocChatTurn, type DocCitation } from "@/lib/docchat/answer";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 export const maxDuration = 120;
 
@@ -74,6 +76,10 @@ export async function POST(
     await requireCredits(user.id);
   } catch (e) {
     if (e instanceof OutOfCreditsError) {
+      track(EVENTS.OUT_OF_CREDITS, {
+        userId: user.id,
+        properties: { feature: "workspace_chat", plan: user.plan },
+      });
       return NextResponse.json(
         { error: "insufficient_credits", remaining: e.remaining },
         { status: 402 }
@@ -160,10 +166,15 @@ export async function POST(
       let inputTokens: number | null = null;
       let outputTokens: number | null = null;
 
+      track(EVENTS.DOCCHAT_ASKED, {
+        userId: user.id,
+        properties: { message_length: userMessage.length, history_turns: history.length },
+      });
+
       try {
         // Meter the whole doc-chat turn (analyze + retrieve/embed/rerank + the
         // streamed answer + citation verify) and debit when it finalizes.
-        const { result } = await withMeter(
+        const { result, meter: turnMeter } = await withMeter(
           { userId: user.id, feature: "workspace_chat" },
           async () => {
             const r = await runDocChat({
@@ -187,6 +198,15 @@ export async function POST(
         model = result.model;
         inputTokens = result.tokens.input;
         outputTokens = result.tokens.output;
+        track(EVENTS.DOCCHAT_ANSWERED, {
+          userId: user.id,
+          properties: {
+            response_time_ms: Date.now() - tStart,
+            citations: citations.length,
+            credits_charged: turnMeter?.credits ?? 0,
+            answered: Boolean(assistantContent?.trim()),
+          },
+        });
         send("citations", citations);
       } catch (err) {
         status = "error";

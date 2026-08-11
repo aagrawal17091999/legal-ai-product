@@ -3,6 +3,8 @@ import { verifyAuth, getOrCreateUser } from "@/lib/auth";
 import { createSubscription, createCustomer } from "@/lib/razorpay";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 export async function POST(request: NextRequest) {
   const decoded = await verifyAuth(request);
@@ -41,6 +43,11 @@ export async function POST(request: NextRequest) {
     }
 
     const subscription = await createSubscription(customerId, plan, user.id);
+
+    track(EVENTS.CHECKOUT_STARTED, {
+      userId: user.id,
+      properties: { kind: "subscription", plan },
+    });
 
     return NextResponse.json({
       subscription_id: subscription.id,

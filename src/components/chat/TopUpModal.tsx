@@ -5,6 +5,8 @@ import { useAuth } from "@/hooks/useAuth";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import { loadRazorpay } from "@/lib/loadRazorpay";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 import type { TopupTierView } from "@/hooks/useCredits";
 
 interface TopUpModalProps {
@@ -35,6 +37,11 @@ export default function TopUpModal({
   const { getToken } = useAuth();
 
   const handleBuy = async (tier: TopupTierView) => {
+    trackClick(EVENTS.TOPUP_TIER_CLICKED, {
+      tier_id: tier.id,
+      credits: tier.credits,
+      total_inr: tier.totalInr,
+    });
     setError(null);
     setBusyTier(tier.id);
     try {

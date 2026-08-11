@@ -9,6 +9,8 @@ import { enqueueBatches } from "@/lib/jobs/batches";
 import { isSarvamEnabled, sarvamCanRead } from "@/lib/sarvam/client";
 import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 // Upload only splits the document into batch rows; the cron worker
 // (/api/cron/process-batches) runs the vision passes and assembles the result.
@@ -41,6 +43,10 @@ export async function POST(request: NextRequest) {
     await requireCredits(user.id);
   } catch (e) {
     if (e instanceof OutOfCreditsError) {
+      track(EVENTS.OUT_OF_CREDITS, {
+        userId: user.id,
+        properties: { feature: "ocr", plan: user.plan },
+      });
       return NextResponse.json(
         { error: "insufficient_credits", remaining: e.remaining },
         { status: 402 }
@@ -102,6 +108,20 @@ export async function POST(request: NextRequest) {
       plan.batches,
       isSarvamEnabled() && plan.kind !== "text" && sarvamCanRead(mime, file.name)
     );
+    track(EVENTS.OCR_STARTED, {
+      userId: user.id,
+      insertId: `ocr_start:${job.id}`,
+      properties: {
+        // Shape and size only — never the filename, which routinely carries a
+        // client or matter name.
+        pages: plan.totalPages,
+        batches: plan.batches.length,
+        source_kind: plan.kind,
+        via_sarvam: isSarvamEnabled() && plan.kind !== "text" && sarvamCanRead(mime, file.name),
+        file_bytes: file.size,
+      },
+    });
+
     // Seed the Firestore mirror so the client can subscribe immediately. ownerUid
     // is the Firebase uid the security rule checks; the worker updates status.
     await mirrorJobStatus("ocr", job.id, { ownerUid: decoded.uid, status: "processing" });

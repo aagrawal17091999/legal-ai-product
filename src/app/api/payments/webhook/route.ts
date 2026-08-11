@@ -11,6 +11,8 @@ import pool from "@/lib/db";
 import { grant, unlockOutputs } from "@/lib/billing/credits";
 import { PLAN_CREDITS, creditPeriodEnd } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
+import { track, identify } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 export async function POST(request: NextRequest) {
   // Safety net: if the webhook secret isn't configured, don't 500 — Razorpay
@@ -87,6 +89,14 @@ export async function POST(request: NextRequest) {
             periodEnd: creditPeriodEnd(plan, endDate),
             idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
           });
+          track(EVENTS.SUBSCRIPTION_ACTIVATED, {
+            userId,
+            // Keyed on the cycle so a retried webhook delivery — which Razorpay
+            // does freely — can't double-count a subscription.
+            insertId: `sub_active:${subscriptionCycleKey(subscriptionId, currentEnd)}`,
+            properties: { plan, credits: PLAN_CREDITS[plan] },
+          });
+          identify(userId, { plan, subscription_status: "active" });
         } else {
           logError({
             category: "payment",
@@ -132,6 +142,11 @@ export async function POST(request: NextRequest) {
               credits: PLAN_CREDITS[plan],
               periodEnd: creditPeriodEnd(plan, endDate),
               idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
+            });
+            track(EVENTS.SUBSCRIPTION_RENEWED, {
+              userId: rows[0].id,
+              insertId: `sub_renew:${subscriptionCycleKey(subscriptionId, currentEnd)}`,
+              properties: { plan },
             });
           }
         }

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --import ./scripts/ts-test-register.mjs --test \"src/lib/rag/__tests__/*.test.ts\" \"src/lib/sarvam/__tests__/*.test.ts\" \"src/lib/billing/__tests__/*.test.ts\"",
+    "test": "node --experimental-strip-types --import ./scripts/ts-test-register.mjs --test \"src/lib/rag/__tests__/*.test.ts\" \"src/lib/sarvam/__tests__/*.test.ts\" \"src/lib/billing/__tests__/*.test.ts\" \"src/lib/analytics/__tests__/*.test.ts\"",
     "eval:retrieval": "node scripts/eval_retrieval.mjs",
     "eval:docchat": "node --experimental-strip-types --import ./scripts/ts-test-register.mjs scripts/eval_docchat.mts",
     "eval:research": "node --experimental-strip-types --import ./scripts/ts-test-register.mjs scripts/eval_research_cost.mts",

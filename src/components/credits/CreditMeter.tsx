@@ -1,6 +1,8 @@
 "use client";
 
 import { useCreditsContext } from "./CreditsProvider";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 
 /**
  * Credit balance in the app header. Clicking it opens the purchase path.
@@ -35,7 +37,13 @@ export default function CreditMeter() {
 
   return (
     <button
-      onClick={promptForCredits}
+      onClick={() => {
+        trackClick(EVENTS.CREDIT_METER_CLICKED, {
+          remaining: credits.remaining,
+          exhausted: credits.exhausted,
+        });
+        promptForCredits();
+      }}
       className={`rounded-full border px-3 py-1 text-[13px] tabular-nums transition-colors ${tone}`}
       title={
         credits.exhausted

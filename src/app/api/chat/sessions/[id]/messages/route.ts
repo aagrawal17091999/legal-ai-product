@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
 import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 import pool from "@/lib/db";
 import { hydrateSessionStore } from "@/lib/rag/sessionStore";
 import { runAgent, buildAgentAuditSteps, AgentAbortedError } from "@/lib/rag/agent";
@@ -45,6 +47,10 @@ export async function POST(
     await requireCredits(user.id);
   } catch (e) {
     if (e instanceof OutOfCreditsError) {
+      track(EVENTS.OUT_OF_CREDITS, {
+        userId: user.id,
+        properties: { feature: "chat", plan: user.plan },
+      });
       return NextResponse.json(
         { error: "insufficient_credits", remaining: e.remaining },
         { status: 402 }
@@ -169,6 +175,7 @@ export async function POST(
         uncertain: number;
       } | null = null;
       let agentResult: Awaited<ReturnType<typeof runAgent>> | null = null;
+      let turnMeter: Awaited<ReturnType<typeof withMeter>>["meter"] | null = null;
       let sessionStoreForTurn: Awaited<ReturnType<typeof hydrateSessionStore>> | null = null;
 
       try {
@@ -181,11 +188,21 @@ export async function POST(
           history_turns: Math.min(conversationHistory.length, 10),
         });
 
+        track(EVENTS.RESEARCH_ASKED, {
+          userId: user.id,
+          properties: {
+            // Length only — never the question itself (see analytics/events.ts).
+            message_length: userMessage.length,
+            history_turns: Math.min(conversationHistory.length, 10),
+            has_filters: Boolean(sessionFilters),
+          },
+        });
+
         // Meter the whole agent turn: withMeter establishes the request-scoped
         // usage context here (inside the stream producer), so every Claude +
         // Voyage call nested in runAgent is captured, then debited once the turn
         // completes. The streamed Sonnet steps report usage via addClaudeUsage.
-        ({ result: agentResult } = await withMeter(
+        ({ result: agentResult, meter: turnMeter } = await withMeter(
           { userId: user.id, feature: "chat" },
           async () => {
             const r = await runAgent({
@@ -319,6 +336,26 @@ export async function POST(
       }
 
       const responseTimeMs = Date.now() - tStart;
+
+      // One event per completed turn, whatever the outcome — `status` already
+      // distinguishes success / degraded / error, and splitting them into
+      // separate events would make the funnel harder to read, not easier.
+      track(
+        status === "error" ? EVENTS.RESEARCH_FAILED : EVENTS.RESEARCH_ANSWERED,
+        {
+          userId: user.id,
+          properties: {
+            status,
+            response_time_ms: responseTimeMs,
+            steps_used: agentResult?.stepsUsed ?? 0,
+            stop_reason: agentResult?.stopReason ?? null,
+            cases_cited: citedCasesForDb.length,
+            credits_charged: turnMeter?.credits ?? 0,
+            cancelled: errorMsg === "cancelled",
+            citation_mismatches: citationMismatches.length,
+          },
+        }
+      );
 
       // Compose rag_trace with agent-shape metadata.
       const ragTrace: Record<string, unknown> = {

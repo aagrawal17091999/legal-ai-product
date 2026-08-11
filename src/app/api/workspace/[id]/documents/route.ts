@@ -5,6 +5,8 @@ import { uploadToR2 } from "@/lib/r2";
 import { ingestDocument } from "@/lib/docchat/ingest";
 import { detectKind } from "@/lib/extract";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 // Ingestion (OCR + embedding) runs in after(); give it room for multi-page scans.
 export const maxDuration = 300;
@@ -125,6 +127,12 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
       );
       created.push(rows[0]);
       documentIds.push(rows[0].id);
+      track(EVENTS.DOCUMENT_UPLOADED, {
+        userId: user.id,
+        insertId: `doc_upload:${rows[0].id}`,
+        // Size and type only; the filename can carry a client or matter name.
+        properties: { file_bytes: file.size, mime },
+      });
     }
 
     await pool.query(`UPDATE workspaces SET updated_at = NOW() WHERE id = $1`, [workspaceId]);
@@ -133,7 +141,26 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     // memory/concurrency on the OCR + embedding calls.
     after(async () => {
       for (const docId of documentIds) {
+        const startedAt = Date.now();
         await ingestDocument(docId);
+        // ingestDocument owns its own error handling and records the outcome on
+        // the row, so read the settled status back rather than assuming success.
+        try {
+          const { rows: after } = await pool.query<{ status: string }>(
+            `SELECT status FROM workspace_documents WHERE id = $1`,
+            [docId]
+          );
+          const settled = after[0]?.status;
+          if (settled === "ready" || settled === "failed") {
+            track(settled === "ready" ? EVENTS.DOCUMENT_READY : EVENTS.DOCUMENT_FAILED, {
+              userId: user.id,
+              insertId: `doc_ingest:${docId}`,
+              properties: { duration_ms: Date.now() - startedAt },
+            });
+          }
+        } catch {
+          // Best-effort: never let analytics abort the remaining ingestions.
+        }
       }
     });
 

@@ -21,7 +21,9 @@ export async function GET(request: NextRequest) {
       email: user.email,
       display_name: user.display_name,
       plan: user.plan,
-      queries_used_total: user.queries_used_total,
+      // Drives whether the client renders the staff-only admin link. The API
+      // itself re-checks on every request — this only hides the door.
+      is_staff: user.is_staff === true,
       subscription_status: user.subscription_status,
       subscription_end_date: user.subscription_end_date,
     });

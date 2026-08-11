@@ -70,6 +70,20 @@ case "$(ev BILLING_ENFORCE)" in
 esac
 set_ok SARVAM_OCR_ENABLED && ok "SARVAM_OCR_ENABLED set ($(ev SARVAM_OCR_ENABLED))" || wn "SARVAM_OCR_ENABLED unset — OCR falls back to Claude vision (costlier)"
 
+hdr "Analytics (Mixpanel)"
+if set_ok MIXPANEL_TOKEN; then
+  ok "MIXPANEL_TOKEN set"
+  # Wrong region = every event silently dropped, and Mixpanel still returns 200.
+  case "$(ev MIXPANEL_API_HOST)" in
+    https://api.mixpanel.com|https://api-eu.mixpanel.com|https://api-in.mixpanel.com)
+      ok "MIXPANEL_API_HOST = $(ev MIXPANEL_API_HOST)";;
+    "") wn "MIXPANEL_API_HOST unset — defaults to US; events vanish if the project is EU/India";;
+    *)  no "MIXPANEL_API_HOST='$(ev MIXPANEL_API_HOST)' is not a known Mixpanel ingestion host";;
+  esac
+else
+  wn "MIXPANEL_TOKEN unset — analytics disabled (app works, you just fly blind)"
+fi
+
 hdr "Job queue health"
 if [ -n "$DATABASE_URL" ] && command -v psql >/dev/null; then
   stuck="$(PSQL "SELECT count(*) FROM job_batches WHERE status IN ('pending','processing') AND created_at < NOW() - INTERVAL '30 minutes'")"

@@ -3,6 +3,8 @@ import { verifyAuth, getRequestUser } from "@/lib/auth";
 import { getTopupTier } from "@/lib/billing/cost";
 import { createCreditOrder } from "@/lib/razorpay";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 /**
  * POST /api/payments/credits/order
@@ -26,6 +28,11 @@ export async function POST(request: NextRequest) {
       tierId: tier.id,
       credits: tier.credits,
       amountInr: tier.priceInr,
+    });
+
+    track(EVENTS.CHECKOUT_STARTED, {
+      userId: user.id,
+      properties: { kind: "topup", tier_id: tier.id, credits: tier.credits },
     });
 
     return NextResponse.json({

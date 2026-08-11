@@ -6,6 +6,8 @@ import { useAuth } from "@/hooks/useAuth";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import { loadRazorpay } from "@/lib/loadRazorpay";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 
 interface UpgradeModalProps {
   isOpen: boolean;
@@ -19,6 +21,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   const router = useRouter();
 
   const handleUpgrade = async (plan: "monthly" | "yearly") => {
+    trackClick(EVENTS.PLAN_CLICKED, { plan });
     setError(null);
     setSubscribing(true);
     try {

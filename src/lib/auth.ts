@@ -3,6 +3,8 @@ import { adminAuth as getAdminAuth } from "./firebase-admin";
 import pool from "./db";
 import { grantSignupCredits } from "./billing/credits";
 import { logError } from "./error-logger";
+import { track, identify } from "./analytics/server";
+import { EVENTS } from "./analytics/events";
 import type { User } from "@/types";
 
 /** Name of the httpOnly session cookie minted by /api/auth/session. */
@@ -99,7 +101,7 @@ export async function getOrCreateUser(firebaseUser: {
        display_name = COALESCE(EXCLUDED.display_name, users.display_name),
        photo_url = COALESCE(EXCLUDED.photo_url, users.photo_url),
        updated_at = NOW()
-     RETURNING *`,
+     RETURNING *, (xmax = 0) AS inserted`,
     [
       firebaseUser.uid,
       firebaseUser.email,
@@ -108,6 +110,24 @@ export async function getOrCreateUser(firebaseUser: {
     ]
   );
   const user = rows[0];
+  // `xmax = 0` is true only when this statement INSERTed the row, so an upsert
+  // that merely refreshed an existing user doesn't get counted as a signup.
+  // Every other signal here (the credit grant, a "first request" heuristic) is
+  // either idempotent or racy across concurrent logins.
+  const isNewUser = (rows[0] as User & { inserted?: boolean }).inserted === true;
+  if (isNewUser) {
+    track(EVENTS.SIGNED_UP, {
+      userId: user.id,
+      // Dedup key, so a retried request during signup can't double-count.
+      insertId: `signup:${user.id}`,
+      properties: { plan: user.plan },
+    });
+    identify(user.id, {
+      $email: user.email,
+      $created: new Date().toISOString(),
+      plan: user.plan,
+    });
+  }
   // One-time free credit allowance for genuinely new users. Idempotent (no-op if
   // the user already has any ledger history), so it's safe to call on every
   // upsert; never let a billing hiccup break authentication.

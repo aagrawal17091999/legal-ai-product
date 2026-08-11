@@ -3,6 +3,8 @@
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { useCredits, type CreditsState } from "@/hooks/useCredits";
 import TopUpModal from "@/components/chat/TopUpModal";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 import UpgradeModal from "@/components/chat/UpgradeModal";
 
 interface CreditsContextValue {
@@ -47,9 +49,14 @@ export default function CreditsProvider({ children }: { children: React.ReactNod
   // get "I already pay you" support mail.
   const promptForCredits = useCallback(() => {
     const isPro = credits?.plan === "monthly" || credits?.plan === "yearly";
+    trackClick(isPro ? EVENTS.TOPUP_PROMPT_SHOWN : EVENTS.UPGRADE_PROMPT_SHOWN, {
+      plan: credits?.plan ?? "unknown",
+      remaining: credits?.remaining ?? 0,
+      exhausted: credits?.exhausted ?? false,
+    });
     if (isPro) setTopUpOpen(true);
     else setUpgradeOpen(true);
-  }, [credits?.plan]);
+  }, [credits?.plan, credits?.remaining, credits?.exhausted]);
 
   const handlePaymentRequired = useCallback(
     (res: Response) => {

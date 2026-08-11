@@ -1,6 +1,7 @@
 import Razorpay from "razorpay";
 import crypto from "crypto";
 import pool from "@/lib/db";
+import { withGst } from "@/lib/billing/cost";
 
 function getClient(): Razorpay {
   const keyId = process.env.RAZORPAY_KEY_ID;
@@ -100,6 +101,19 @@ export async function createCustomer(email: string, name: string) {
  * recurring subscription). The tier's credits + user are stamped into `notes`
  * so the verify route / webhook can grant the right amount, tamper-proof.
  */
+/**
+ * Create a one-time order for a credit top-up pack.
+ *
+ * `amountInr` is the LISTED (ex-GST) price; the customer is charged that plus
+ * GST, matching the subscription plans and what the pricing page promises. A
+ * one-time Order has no Razorpay plan config to apply tax for us, so the gross-up
+ * has to happen here — without it top-ups silently undercharge tax.
+ *
+ * The ex-GST base is recorded in `notes.base_inr` so the ledger can store what we
+ * actually earned rather than the gross figure (which would inflate every margin
+ * calculation built on credit_transactions.amount_inr). Credits likewise come
+ * from `notes.credits` and are independent of the amount charged.
+ */
 export async function createCreditOrder(opts: {
   userId: number;
   tierId: string;
@@ -108,12 +122,13 @@ export async function createCreditOrder(opts: {
 }) {
   const client = getClient();
   return client.orders.create({
-    amount: Math.round(opts.amountInr * 100), // paise
+    amount: Math.round(withGst(opts.amountInr) * 100), // paise, GST inclusive
     currency: "INR",
     notes: {
       user_id: String(opts.userId),
       tier_id: opts.tierId,
       credits: String(opts.credits),
+      base_inr: String(opts.amountInr),
       kind: "credit_topup",
     },
   });

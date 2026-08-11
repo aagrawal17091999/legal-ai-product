@@ -1,0 +1,14 @@
+# Daily at 04:00 — a credit period boundary only moves once a month, so daily is
+# ample, and the job is idempotent per boundary so an extra run costs nothing.
+#
+# Persistent=true: if the box was down at 04:00 the refill fires on next boot
+# rather than leaving a paying subscriber short for a day.
+[Unit]
+Description=Daily NyayaSearch credit refill for yearly subscribers
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

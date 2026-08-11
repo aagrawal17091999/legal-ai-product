@@ -106,7 +106,7 @@ if systemctl is-active --quiet "nyayasearch-process-batches.timer" 2>/dev/null; 
 else
   no "nyayasearch-process-batches.timer NOT active — OCR/translation jobs will hang forever"
 fi
-for t in rag-retention backup disk-alert; do
+for t in credit-refill rag-retention backup disk-alert; do
   systemctl is-active --quiet "nyayasearch-$t.timer" 2>/dev/null && ok "nyayasearch-$t.timer active" || wn "nyayasearch-$t.timer not active"
 done
 

@@ -14,12 +14,69 @@ export const FX_INR_PER_USD = Number(process.env.BILLING_FX_INR_PER_USD) || 86;
 /** Rupees of COGS represented by one credit. 1000 credits = ₹800 (Pro pool). */
 export const CREDIT_INR = Number(process.env.BILLING_CREDIT_INR) || 0.8;
 
-/** Plan + free allowances, in credits. */
+/**
+ * Allowances in credits. `monthly`/`yearly` are the allowance PER MONTH — a
+ * yearly subscriber gets the same 1,000 credits a month as a monthly one, they
+ * just pay for twelve months up front.
+ *
+ * This used to be read as "credits per billing cycle", which quietly made the
+ * yearly plan a 12x underdelivery: `subscription.charged` fires once per cycle,
+ * so a yearly subscriber was granted 1,000 credits for a WHOLE YEAR while a
+ * monthly subscriber got 1,000 every month for the same per-month price. The
+ * intra-year refills now come from /api/cron/credit-refill.
+ */
 export const PLAN_CREDITS = {
   monthly: 1000,
-  yearly: 1000, // same monthly allowance; reset on each subscription.charged
+  yearly: 1000,
   freeLifetime: 100,
 } as const;
+
+/** GST charged on top of every listed price (subscriptions and top-ups). */
+export const GST_RATE = 0.18;
+
+/** Add GST to a rupee amount, rounded to whole rupees. */
+export function withGst(baseInr: number): number {
+  return Math.round(baseInr * (1 + GST_RATE));
+}
+
+/**
+ * One month after `from`, clamping the day-of-month so the 31st of a month maps
+ * to the last day of a 30-day month instead of silently rolling into the next
+ * one (plain JS Date does that: Jan 31 + 1 month = Mar 2/3, which would skip
+ * February's refill entirely).
+ *
+ * Deliberately all-UTC. The local-time getters would make a subscriber's refill
+ * date depend on the server's timezone, so the same wallet could advance a day
+ * early or late after a box move — and period boundaries are stored as
+ * timestamptz, which has no local component to honour anyway.
+ */
+export function addOneMonth(from: Date): Date {
+  const d = new Date(from);
+  const day = d.getUTCDate();
+  d.setUTCDate(1);
+  d.setUTCMonth(d.getUTCMonth() + 1);
+  const lastDay = new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)
+  ).getUTCDate();
+  d.setUTCDate(Math.min(day, lastDay));
+  return d;
+}
+
+/**
+ * When the current credit pool expires and is refilled. The pool is ALWAYS a
+ * one-month window: for a monthly plan that coincides with the billing cycle,
+ * for a yearly plan it is an internal refill window inside the paid year.
+ * Never runs past the subscription's own end.
+ */
+export function creditPeriodEnd(
+  plan: "monthly" | "yearly",
+  subscriptionEnd: Date,
+  from: Date = new Date()
+): Date {
+  if (plan === "monthly") return subscriptionEnd;
+  const oneMonth = addOneMonth(from);
+  return oneMonth < subscriptionEnd ? oneMonth : subscriptionEnd;
+}
 
 /**
  * USD per 1,000,000 tokens, per Anthropic / Voyage list pricing.

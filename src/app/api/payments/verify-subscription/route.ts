@@ -9,7 +9,7 @@ import {
   subscriptionCycleKey,
 } from "@/lib/razorpay";
 import { grant } from "@/lib/billing/credits";
-import { PLAN_CREDITS } from "@/lib/billing/cost";
+import { PLAN_CREDITS, creditPeriodEnd } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
 
 /**
@@ -151,8 +151,8 @@ export async function POST(request: NextRequest) {
     await grant({
       userId: user.id,
       type: "monthly_reset",
-      credits: PLAN_CREDITS.monthly,
-      periodEnd: endDate,
+      credits: PLAN_CREDITS[plan],
+      periodEnd: creditPeriodEnd(plan, endDate),
       idempotencyKey: subscriptionCycleKey(razorpay_subscription_id, currentEnd),
     });
 

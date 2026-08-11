@@ -5,8 +5,6 @@ import { grantSignupCredits } from "./billing/credits";
 import { logError } from "./error-logger";
 import type { User } from "@/types";
 
-const FREE_QUERY_LIMIT = 5;
-
 /** Name of the httpOnly session cookie minted by /api/auth/session. */
 export const SESSION_COOKIE = "__session";
 
@@ -129,35 +127,4 @@ export async function getOrCreateUser(firebaseUser: {
     expires: Date.now() + USER_CACHE_TTL_MS,
   });
   return user;
-}
-
-export async function checkQueryLimit(
-  userId: number
-): Promise<{ allowed: boolean; remaining: number }> {
-  // Free tier is a lifetime quota: queries_used_total never resets.
-  const { rows } = await pool.query<User>(
-    `SELECT plan, queries_used_total FROM users WHERE id = $1`,
-    [userId]
-  );
-
-  if (rows.length === 0) {
-    return { allowed: false, remaining: 0 };
-  }
-
-  const user = rows[0];
-
-  // Pro users have unlimited queries
-  if (user.plan === "monthly" || user.plan === "yearly") {
-    return { allowed: true, remaining: Infinity };
-  }
-
-  const remaining = FREE_QUERY_LIMIT - user.queries_used_total;
-  return { allowed: remaining > 0, remaining: Math.max(0, remaining) };
-}
-
-export async function incrementQueryCount(userId: number): Promise<void> {
-  await pool.query(
-    `UPDATE users SET queries_used_total = queries_used_total + 1 WHERE id = $1`,
-    [userId]
-  );
 }

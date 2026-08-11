@@ -56,7 +56,7 @@ env PATH="$PATH" pm2 startup systemd -u "$RUN_USER" --hp "/home/$RUN_USER" >/dev
 
 # --- 4. systemd timers (batch worker, retention cron, backup, disk watchdog) -
 say "Installing systemd timers"
-for unit in process-batches rag-retention backup disk-alert; do
+for unit in process-batches credit-refill rag-retention backup disk-alert; do
   # Adapt the shipped units to this box's user + checkout path.
   sed -e "s#^User=.*#User=$RUN_USER#" \
       -e "s#^WorkingDirectory=.*#WorkingDirectory=$APP_DIR#" \
@@ -64,8 +64,9 @@ for unit in process-batches rag-retention backup disk-alert; do
   cp "deploy/systemd/nyayasearch-${unit}.timer" "/etc/systemd/system/nyayasearch-${unit}.timer"
 done
 systemctl daemon-reload
-systemctl enable --now nyayasearch-process-batches.timer nyayasearch-rag-retention.timer \
-                       nyayasearch-backup.timer nyayasearch-disk-alert.timer
+systemctl enable --now nyayasearch-process-batches.timer nyayasearch-credit-refill.timer \
+                       nyayasearch-rag-retention.timer nyayasearch-backup.timer \
+                       nyayasearch-disk-alert.timer
 systemctl list-timers | grep nyayasearch || true
 
 # --- 5. nginx (HTTP-only; certbot adds TLS after) ---------------------------

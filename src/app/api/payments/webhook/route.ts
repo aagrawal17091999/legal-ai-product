@@ -9,7 +9,7 @@ import {
 } from "@/lib/razorpay";
 import pool from "@/lib/db";
 import { grant, unlockOutputs } from "@/lib/billing/credits";
-import { PLAN_CREDITS } from "@/lib/billing/cost";
+import { PLAN_CREDITS, creditPeriodEnd } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
 
 export async function POST(request: NextRequest) {
@@ -74,14 +74,17 @@ export async function POST(request: NextRequest) {
           const currentEnd = entity?.current_end as number | null | undefined;
           const endDate = subscriptionEndDate(plan, currentEnd);
           await markSubscriptionActive({ userId, subscriptionId, plan, endDate });
-          // Grant this cycle's Pro credit allowance (resets plan_credits, no
+          // Grant the first MONTH's Pro allowance (resets plan_credits, no
           // rollover). Idempotent per billing cycle: the charged webhook and a
           // retried activated event won't re-grant or wipe mid-cycle usage.
+          // The credit period is one month even on the yearly plan — the rest of
+          // the year is refilled by /api/cron/credit-refill. Granting against
+          // `endDate` here is what made yearly a 12x underdelivery.
           await grant({
             userId,
             type: "monthly_reset",
-            credits: PLAN_CREDITS.monthly,
-            periodEnd: endDate,
+            credits: PLAN_CREDITS[plan],
+            periodEnd: creditPeriodEnd(plan, endDate),
             idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
           });
         } else {
@@ -120,12 +123,14 @@ export async function POST(request: NextRequest) {
           // Refill the Pro credit pool for the new billing cycle (no rollover).
           // Idempotent per cycle so duplicate/retried charged deliveries can't
           // re-grant credits or reset a paying user's mid-cycle usage to full.
+          // One month of allowance, not one billing cycle's worth — a yearly
+          // subscriber's remaining 11 months come from /api/cron/credit-refill.
           if (rows[0]?.id) {
             await grant({
               userId: rows[0].id,
               type: "monthly_reset",
-              credits: PLAN_CREDITS.monthly,
-              periodEnd: endDate,
+              credits: PLAN_CREDITS[plan],
+              periodEnd: creditPeriodEnd(plan, endDate),
               idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
             });
           }

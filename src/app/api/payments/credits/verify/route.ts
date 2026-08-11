@@ -36,6 +36,10 @@ export async function POST(request: NextRequest) {
     const notes = (order.notes ?? {}) as Record<string, string>;
     const noteUserId = Number(notes.user_id);
     const credits = Number(notes.credits);
+    // Ledger the EX-GST base, not order.amount (which is GST-inclusive) — tax we
+    // collect and remit is not revenue, and amount_inr feeds margin analytics.
+    // Older orders predate notes.base_inr; fall back to the gross figure.
+    const baseInr = Number(notes.base_inr);
     if (notes.kind !== "credit_topup" || noteUserId !== user.id || !(credits > 0)) {
       return NextResponse.json({ error: "Order does not match this user" }, { status: 400 });
     }
@@ -46,7 +50,11 @@ export async function POST(request: NextRequest) {
       credits,
       razorpayPaymentId: paymentId,
       razorpayOrderId: orderId,
-      amountInr: typeof order.amount === "number" ? order.amount / 100 : undefined,
+      amountInr: Number.isFinite(baseInr) && baseInr > 0
+        ? baseInr
+        : typeof order.amount === "number"
+          ? order.amount / 100
+          : undefined,
     });
     if (applied) await unlockOutputs(user.id);
 

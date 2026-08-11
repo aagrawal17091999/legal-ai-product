@@ -1,0 +1,24 @@
+# Issues the intra-year monthly credit refills for YEARLY subscribers.
+# See src/app/api/cron/credit-refill/route.ts for why this is needed: the Pro
+# allowance is per month, but Razorpay only fires subscription.charged once a
+# year on the yearly plan.
+#
+# Install (as root):
+#   cp deploy/systemd/nyayasearch-credit-refill.* /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now nyayasearch-credit-refill.timer
+#
+# `User=` and `WorkingDirectory=` are placeholders — bootstrap-box.sh rewrites
+# both to the box's actual run user / checkout path.
+[Unit]
+Description=NyayaSearch monthly credit refill (yearly subscribers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+Environment=CRON_TARGET_BASE=http://127.0.0.1:3000
+ExecStart=/bin/bash scripts/cron-tick.sh /api/cron/credit-refill

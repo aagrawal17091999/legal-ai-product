@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import { useJobStatusPush } from "@/hooks/useJobStatusPush";
+import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 
@@ -37,6 +38,7 @@ function validateFile(file: File): string | null {
 }
 
 export default function OcrPage() {
+  const { handlePaymentRequired, refresh: refreshCredits } = useCreditsContext();
   const { getToken } = useAuth();
   const [jobs, setJobs] = useState<OcrJob[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -135,6 +137,9 @@ export default function OcrPage() {
         headers: await authHeaders(),
         body: form,
       });
+      // Out of credits: open the purchase path instead of showing a dead-end
+      // error the user has no way to act on.
+      if (handlePaymentRequired(res)) return;
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data.message || data.error || "Failed to start OCR.");
@@ -143,6 +148,7 @@ export default function OcrPage() {
       setFile(null);
       if (fileRef.current) fileRef.current.value = "";
       await loadJobs();
+      void refreshCredits();
     } finally {
       setSubmitting(false);
     }

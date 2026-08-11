@@ -6,17 +6,25 @@ import { useAuth } from "./useAuth";
 export interface TopupTierView {
   id: string;
   credits: number;
+  /** Listed, ex-GST. */
   priceInr: number;
+  /** What the card is actually charged (priceInr + GST). */
+  totalInr: number;
   perCredit: number;
 }
 
 export interface CreditsState {
   plan: string;
+  unlimited: boolean;
   remaining: number;
   planCredits: number;
   topupCredits: number;
   periodEnd: string | null;
+  /** Running low — warn, but work still goes through. */
   lowBalance: boolean;
+  /** Out — new work is blocked with a 402. */
+  exhausted: boolean;
+  gstRate: number;
   tiers: TopupTierView[];
 }
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/useAuth";
+import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
@@ -12,13 +13,13 @@ interface UserData {
   email: string;
   display_name: string | null;
   plan: string;
-  queries_used_total: number;
   subscription_status: string;
   subscription_end_date: string | null;
 }
 
 export default function AccountPage() {
   const { user, getToken } = useAuth();
+  const { credits, promptForCredits } = useCreditsContext();
   const [userData, setUserData] = useState<UserData | null>(null);
 
   // Name editing
@@ -279,8 +280,6 @@ export default function AccountPage() {
     yearly: "Pro Yearly",
   }[userData?.plan || "free"];
 
-  const isPro = userData?.plan === "monthly" || userData?.plan === "yearly";
-
   return (
     <div className="flex-1 overflow-y-auto bg-ivory-50">
     <div className="max-w-2xl mx-auto px-6 py-12 sm:py-16">
@@ -379,14 +378,39 @@ export default function AccountPage() {
                 {planLabel}
               </span>
             </div>
+            {/* Replaces a "queries used / 5" counter that showed a limit which
+                was never enforced and a number that never incremented. Credits
+                are the real gate, so show those. */}
             <div className="flex items-center justify-between py-2 border-b border-ivory-200">
-              <span className="text-[14px] text-charcoal-600">Free chats used</span>
+              <span className="text-[14px] text-charcoal-600">Credits remaining</span>
               <span className="text-[14px] font-medium text-charcoal-900 font-mono">
-                {userData?.plan === "free"
-                  ? `${userData?.queries_used_total || 0} / 5`
-                  : "Unlimited"}
+                {credits?.unlimited
+                  ? "Unlimited"
+                  : credits
+                    ? Math.max(0, credits.remaining).toLocaleString()
+                    : "—"}
               </span>
             </div>
+            {credits && !credits.unlimited && credits.periodEnd && (
+              <div className="flex items-center justify-between py-2 border-b border-ivory-200">
+                <span className="text-[14px] text-charcoal-600">
+                  Plan credits reset
+                </span>
+                <span className="text-[14px] font-medium text-charcoal-900">
+                  {new Date(credits.periodEnd).toLocaleDateString()}
+                </span>
+              </div>
+            )}
+            {credits && !credits.unlimited && (
+              <div className="flex items-center justify-between py-2 border-b border-ivory-200">
+                <span className="text-[14px] text-charcoal-600">
+                  Top-up credits (never expire)
+                </span>
+                <span className="text-[14px] font-medium text-charcoal-900 font-mono">
+                  {Math.max(0, credits.topupCredits).toLocaleString()}
+                </span>
+              </div>
+            )}
             {userData?.subscription_end_date && (
               <div className="flex items-center justify-between py-2 border-b border-ivory-200">
                 <span className="text-[14px] text-charcoal-600">Renews</span>
@@ -421,6 +445,12 @@ export default function AccountPage() {
               </Button>
             ) : (
               <>
+                {/* Pro users who drain the monthly pool buy top-ups, not a
+                    second subscription. Until now there was no route to this
+                    anywhere in the product. */}
+                <Button variant="primary" className="w-full" onClick={promptForCredits}>
+                  Buy credits
+                </Button>
                 {userData?.plan === "monthly" && userData?.subscription_status !== "cancelled" && (
                   <Button
                     variant="outline"

@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useAuth } from "./useAuth";
+import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import { reportError } from "@/lib/report-error";
 import type { ChatSession, ChatMessage, SearchFilters, CitedCase } from "@/types";
 
@@ -94,6 +95,7 @@ function writeCachedMessages(sessionId: string, messages: ChatMessage[]): void {
 
 export function useChat() {
   const { getToken, user, loading: authLoading } = useAuth();
+  const { handlePaymentRequired, refresh: refreshCredits } = useCreditsContext();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -319,6 +321,15 @@ export function useChat() {
           }
         );
 
+        // Out of credits. This is the live gate (requireCredits); the 403 below
+        // is the older per-plan limit. Without this branch the request fell
+        // through to the generic "Failed to send message" error, which told the
+        // user nothing and offered no way to fix it.
+        if (handlePaymentRequired(res)) {
+          setMessages((prev) => prev.filter((m) => m.id !== tempUserId && m.id !== tempAssistantId));
+          return false;
+        }
+
         if (res.status === 403) {
           let data: { error?: string } = {};
           try {
@@ -522,9 +533,13 @@ export function useChat() {
         }
         setIsLoading(false);
         setSearchStatus(null);
+        // Every turn spends credits, so the header meter is stale the moment the
+        // answer lands. Refresh here (not just on 402) so a user watches the
+        // balance fall and can act before being blocked.
+        void refreshCredits();
       }
     },
-    [currentSession, authHeaders, user]
+    [currentSession, authHeaders, user, handlePaymentRequired, refreshCredits]
   );
 
   const stopMessage = useCallback(() => {

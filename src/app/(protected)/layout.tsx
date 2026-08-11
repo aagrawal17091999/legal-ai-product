@@ -5,6 +5,9 @@ import Image from "next/image";
 import { useRouter, usePathname } from "next/navigation";
 import AuthGuard from "@/components/AuthGuard";
 import Sidebar from "@/components/chat/Sidebar";
+import CreditsProvider from "@/components/credits/CreditsProvider";
+import CreditMeter from "@/components/credits/CreditMeter";
+import LowBalanceBanner from "@/components/credits/LowBalanceBanner";
 import { useChat } from "@/hooks/useChat";
 import type { SearchFilters } from "@/types";
 
@@ -117,7 +120,12 @@ function ProtectedContent({ children }: { children: React.ReactNode }) {
                 </span>
               </span>
             </div>
+            <div className="ml-auto">
+              <CreditMeter />
+            </div>
           </div>
+
+          <LowBalanceBanner />
 
           {children}
         </div>
@@ -133,7 +141,11 @@ export default function ProtectedLayout({
 }) {
   return (
     <AuthGuard>
-      <ProtectedContent>{children}</ProtectedContent>
+      {/* Inside AuthGuard: the wallet fetch needs a signed-in user, and the
+          purchase modals are only ever shown to one. */}
+      <CreditsProvider>
+        <ProtectedContent>{children}</ProtectedContent>
+      </CreditsProvider>
     </AuthGuard>
   );
 }

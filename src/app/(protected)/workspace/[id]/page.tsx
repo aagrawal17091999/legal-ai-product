@@ -6,6 +6,7 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAuth } from "@/hooks/useAuth";
+import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Spinner from "@/components/ui/Spinner";
 import WorkspaceCitationPanel, { type DocCitation } from "@/components/workspace/CitationPanel";
 
@@ -44,6 +45,7 @@ export default function WorkspaceDetailPage({
 }) {
   const { id: workspaceId } = usePromise(params);
   const { getToken } = useAuth();
+  const { handlePaymentRequired, refresh: refreshCredits } = useCreditsContext();
 
   const [title, setTitle] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -330,6 +332,12 @@ export default function WorkspaceDetailPage({
         body: JSON.stringify({ message: text }),
       });
 
+      // Out of credits: open the purchase path rather than a dead-end message.
+      if (handlePaymentRequired(res)) {
+        setMessages((prev) => prev.filter((m) => m.id !== tempId && m.id !== `${tempId}-u`));
+        return;
+      }
+
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
         setStatus(data.message || data.error || "Failed to send message.");
@@ -409,6 +417,8 @@ export default function WorkspaceDetailPage({
       setStatus("Something went wrong. Please try again.");
     } finally {
       setSending(false);
+      // Each answer spends credits — keep the header meter honest.
+      void refreshCredits();
       setStatus(null);
     }
   };

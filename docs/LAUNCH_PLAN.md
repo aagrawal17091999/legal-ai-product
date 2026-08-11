@@ -19,8 +19,15 @@ advocates.
 > | 7 | Set `BILLING_ENFORCE=on` (only after 6 passes) and give yourself `unlimited_credits` | prod access |
 > | 8 | After deploy 1 is stable, apply `migrations/028_drop_batch_api.sql` | sequencing |
 >
-> Deferred by choice: analytics (no PostHog/Mixpanel yet — you'll launch blind
-> on conversion) and a staff UI for `/api/admin/errors` (API exists, no page).
+> **Step-by-step commands for all of this: [GO_LIVE.md](GO_LIVE.md).**
+>
+> ⚠️ Task 1 is bigger than it looks: `.env.production.local` has two conflicting
+> blocks and the LAST duplicate wins, which means the live `RAZORPAY_KEY_SECRET`
+> is currently an unfilled `<placeholder>`. Checkout cannot complete until that
+> is deduplicated. See GO_LIVE.md step 0.
+>
+> Analytics (Mixpanel, server-first) and the staff error-log UI are now built —
+> they need `MIXPANEL_TOKEN` and an `is_staff` flag respectively.
 
 ## Decisions locked in
 
@@ -327,11 +334,11 @@ that are live in prod, and `verify-prod.sh` doesn't check them.
 
 ### 5d. Observability
 
-- [ ] Build a staff UI for [`/api/admin/errors`](../src/app/api/admin/errors/route.ts).
-      The API is done — filters, pagination, staff-gated. Nothing calls it. Right now
-      you'd debug launch day with `curl`.
-- [ ] Add analytics (PostHog/Mixpanel). There is currently **none** — you will launch
-      blind on signup → activation → conversion.
+- [x] Build a staff UI for [`/api/admin/errors`](../src/app/api/admin/errors/route.ts)
+      → [`/admin/errors`](../src/app/(protected)/admin/errors/page.tsx). Needs an
+      `is_staff` account to be visible (nobody has one yet — GO_LIVE.md step 7).
+- [x] Add analytics — Mixpanel, server-first. Needs `MIXPANEL_TOKEN` +
+      `MIXPANEL_API_HOST` on the box (GO_LIVE.md step 0).
 - [ ] Confirm `ALERT_WEBHOOK_URL` fires: disk alert, backup failure, batch backlog.
 
 ---

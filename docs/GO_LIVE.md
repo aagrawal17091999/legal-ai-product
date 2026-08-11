@@ -235,9 +235,18 @@ psql "$DB" -c "SELECT count(*) FROM job_batches WHERE status IN ('planned','subm
 cd /opt/legal-ai-product && bash scripts/deploy.sh
 ```
 
-`migrations/028_drop_batch_api.sql` is already committed and applies itself on the
-next deploy once you're ready. It is held back only because dropping columns in
-the same release that stops writing them would break rollback safety.
+`migrations/pending/028_drop_batch_api.sql` is written but parked —
+`scripts/migrate.sh` globs `migrations/*.sql`, which doesn't match that
+subdirectory, so it cannot apply by accident. To run it:
+
+```bash
+git mv migrations/pending/028_drop_batch_api.sql migrations/028_drop_batch_api.sql
+git commit -am "Apply migration 028" && git push
+# then on the box: bash scripts/deploy.sh
+```
+
+It is parked only because dropping columns in the same release that stops writing
+them would make a rollback land on a schema the old code can't read.
 
 ---
 

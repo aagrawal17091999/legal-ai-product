@@ -61,15 +61,25 @@ Both should print nothing.
 ### While you're in there, add
 
 ```bash
-BILLING_ENFORCE=on          # NOT set today = shadow mode, nobody is ever charged
-MIXPANEL_TOKEN=<token>      # server-side only; do NOT prefix NEXT_PUBLIC_
-MIXPANEL_API_HOST=https://api-in.mixpanel.com   # MUST match the project's region
+BILLING_ENFORCE=on                 # NOT set today = shadow mode, nobody is charged
+
+# Server-side analytics (required for any analytics at all)
+MIXPANEL_TOKEN=<project-token>
+MIXPANEL_API_HOST=api-in.mixpanel.com          # bare hostname, see below
+
+# Browser SDK — optional, but it is the ONLY source of referrer/UTM/device data.
+# Same project token; NEXT_PUBLIC_* is baked in at BUILD time, so changing these
+# needs a rebuild, not just a reload.
+NEXT_PUBLIC_MIXPANEL_TOKEN=<same-project-token>
+NEXT_PUBLIC_MIXPANEL_API_HOST=https://api-in.mixpanel.com
 ```
 
 `MIXPANEL_API_HOST` matters: an EU or India project rejects events sent to the US
 host, and Mixpanel still answers HTTP 200, so the failure is silent. Use
-`https://api.mixpanel.com` (US), `https://api-eu.mixpanel.com` (EU), or
-`https://api-in.mixpanel.com` (India).
+`api.mixpanel.com` (US), `api-eu.mixpanel.com` (EU), or `api-in.mixpanel.com`
+(India) — **and the same region for both the server and browser vars**, or your
+client and server events land in different projects and every funnel that crosses
+the boundary breaks. `verify-prod.sh` checks this.
 
 Leave `BILLING_ENFORCE=on` out until step 5 if you want to smoke-test unbilled.
 

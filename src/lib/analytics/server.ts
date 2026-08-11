@@ -1,35 +1,54 @@
 /**
- * Mixpanel ingestion — server-side.
+ * Mixpanel ingestion — server-side, via the official `mixpanel` Node SDK.
  *
- * Everything that matters (signup, payment, messages, job outcomes, errors) is
- * emitted from here rather than the browser: server events can't be blocked by
- * an extension, lost to a closed tab, or forged by a client. The browser only
- * sends clicks, via /api/analytics/event, and only from an allowlist.
+ * Everything that matters (signup, payments, messages, job outcomes) is emitted
+ * from here rather than the browser: server events can't be blocked by an
+ * extension, lost to a closed tab, or forged by a client.
  *
- * No SDK. Mixpanel's /track endpoint is a plain HTTP POST and the `mixpanel`
- * npm package would drag in its own queueing and process-exit handling that
- * fights pm2 cluster mode. A `fetch` is the whole integration.
- *
- * Fire-and-forget by construction: `track()` returns void and every failure
- * path is swallowed. Analytics must never break, slow, or fail a user request.
+ * Fire-and-forget by construction: `track()` returns void and every failure path
+ * is swallowed. Analytics must never break, slow, or fail a user request.
  */
+import Mixpanel from "mixpanel";
 import { logError } from "../error-logger";
 import type { EventName } from "./events";
 
 /**
- * Regional ingestion host. Mixpanel keeps EU and India projects on separate
- * endpoints, and sending to the wrong one silently drops every event (the API
- * still returns 200). Must match where the project was created:
- *   US      https://api.mixpanel.com      (default)
- *   EU      https://api-eu.mixpanel.com
- *   India   https://api-in.mixpanel.com
+ * Regional ingestion host — a BARE HOSTNAME, not a URL (the SDK builds the URL
+ * from `protocol` + `host` + `path`). Mixpanel keeps EU and India projects on
+ * separate endpoints and sending to the wrong one silently drops every event:
+ *   US      api.mixpanel.com      (default)
+ *   EU      api-eu.mixpanel.com
+ *   India   api-in.mixpanel.com
+ * The env var is accepted in either form so a full URL doesn't quietly break it.
  */
-const API_HOST = (process.env.MIXPANEL_API_HOST || "https://api.mixpanel.com").replace(/\/$/, "");
+function resolveHost(): string {
+  const raw = (process.env.MIXPANEL_API_HOST || "api.mixpanel.com").trim();
+  return raw.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+}
+
 const TOKEN = process.env.MIXPANEL_TOKEN?.trim();
+
+/**
+ * One client per process. Under pm2 cluster mode each worker builds its own,
+ * which is fine — the SDK holds no cross-request state for `track()`; it issues
+ * one request per call rather than buffering, so a worker being recycled can't
+ * strand queued events (the reason to avoid `track_batch` here).
+ */
+const client = TOKEN
+  ? Mixpanel.init(TOKEN, {
+      host: resolveHost(),
+      // Never geolocate from the server's IP — every user would appear to be in
+      // the Hetzner datacentre. Location, where it matters, comes from the
+      // browser SDK. This is the SDK default; set explicitly so it survives an
+      // upgrade that changes the default.
+      geolocate: false,
+      keepAlive: true,
+    })
+  : null;
 
 /** Analytics is optional: with no token configured every call is a no-op. */
 export function isAnalyticsEnabled(): boolean {
-  return Boolean(TOKEN);
+  return client !== null;
 }
 
 export interface TrackOptions {
@@ -44,58 +63,43 @@ export interface TrackOptions {
   insertId?: string;
 }
 
-/**
- * Record an event. Never throws, never blocks, never awaited by callers.
- */
+/** Record an event. Never throws, never blocks, never awaited by callers. */
 export function track(event: EventName, opts: TrackOptions): void {
-  if (!TOKEN) return;
-  void send(event, opts).catch(() => {
-    // send() already handles its own reporting; this catch exists so an
-    // unexpected throw can't surface as an unhandled rejection and take down
-    // the worker.
-  });
-}
-
-async function send(event: EventName, opts: TrackOptions): Promise<void> {
-  const payload = [
-    {
+  if (!client) return;
+  try {
+    client.track(
       event,
-      properties: {
-        token: TOKEN,
-        // Mixpanel requires distinct_id; an anonymous event still has value for
-        // counting, so send a stable sentinel rather than dropping it.
+      {
+        // Mixpanel requires distinct_id; an anonymous event still has counting
+        // value, so send a stable sentinel rather than dropping it.
         distinct_id: opts.userId != null ? String(opts.userId) : "anonymous",
-        time: Date.now(),
         ...(opts.insertId ? { $insert_id: opts.insertId } : {}),
         ...sanitize(opts.properties),
       },
-    },
-  ];
-
-  try {
-    const res = await fetch(`${API_HOST}/track`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/plain" },
-      body: JSON.stringify(payload),
-      // Don't let a slow analytics endpoint hold a worker slot.
-      signal: AbortSignal.timeout(5_000),
-    });
-    // Mixpanel answers "1"/"0" with HTTP 200 either way, so a non-OK status is
-    // a transport problem and a "0" body is a rejected payload (bad token,
-    // wrong region). Both are silent data loss, so surface them once as a
-    // warning rather than letting the funnel quietly stay empty.
-    if (!res.ok) {
-      report(`Mixpanel /track HTTP ${res.status}`, { event });
-      return;
-    }
-    const body = (await res.text()).trim();
-    if (body === "0") {
-      report("Mixpanel rejected the payload (check MIXPANEL_TOKEN and MIXPANEL_API_HOST region)", {
-        event,
-      });
-    }
+      (err) => {
+        if (err) report(err.message, { event });
+      }
+    );
   } catch (err) {
+    // The SDK can throw synchronously on a malformed payload; that must not
+    // propagate into the request that happened to trigger it.
     report(err instanceof Error ? err.message : String(err), { event });
+  }
+}
+
+/**
+ * Set profile properties (Mixpanel "People"), so cohorts can be built on plan
+ * without joining every event.
+ */
+export function identify(userId: number, properties: Record<string, unknown>): void {
+  if (!client) return;
+  try {
+    client.people.set(String(userId), sanitize(properties), (err) => {
+      if (err) report(err.message, { kind: "people.set" });
+    });
+  } catch {
+    // Profile enrichment is strictly best-effort — events already carry what a
+    // funnel needs.
   }
 }
 
@@ -103,6 +107,9 @@ async function send(event: EventName, opts: TrackOptions): Promise<void> {
  * Drop null/undefined and refuse anything that isn't a primitive. This is the
  * mechanical half of the privacy rule: an object or array is how a document
  * excerpt or a query string would accidentally reach Mixpanel.
+ *
+ * `$`-prefixed keys are allowed through because that's how Mixpanel's own
+ * reserved properties ($email, $created, $insert_id) are spelled.
  */
 function sanitize(props?: Record<string, unknown>): Record<string, unknown> {
   if (!props) return {};
@@ -115,8 +122,8 @@ function sanitize(props?: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-// Analytics failures are operational noise, not user-facing incidents. Report
-// at most one per minute so a Mixpanel outage can't flood error_logs — which is
+// Analytics failures are operational noise, not user-facing incidents. Report at
+// most one per minute so a Mixpanel outage can't flood error_logs — which is
 // exactly the table the staff error view needs to stay readable.
 let lastReportAt = 0;
 const REPORT_INTERVAL_MS = 60_000;
@@ -127,38 +134,8 @@ function report(message: string, metadata: Record<string, unknown>): void {
   lastReportAt = now;
   logError({
     category: "fetching",
-    message: `Analytics: ${message}`,
+    message: `Analytics: ${message} (check MIXPANEL_TOKEN and that MIXPANEL_API_HOST matches the project's region)`,
     severity: "warning",
     metadata,
   });
-}
-
-/**
- * Set profile properties on a user (Mixpanel "People"). Used at signup and when
- * a plan changes, so cohorts can be built on plan without joining every event.
- */
-export function identify(
-  userId: number,
-  properties: Record<string, unknown>
-): void {
-  if (!TOKEN) return;
-  void (async () => {
-    try {
-      await fetch(`${API_HOST}/engage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/plain" },
-        body: JSON.stringify([
-          {
-            $token: TOKEN,
-            $distinct_id: String(userId),
-            $set: sanitize(properties),
-          },
-        ]),
-        signal: AbortSignal.timeout(5_000),
-      });
-    } catch {
-      // Profile enrichment is strictly best-effort; events already carry the
-      // properties needed to analyse a funnel without it.
-    }
-  })();
 }

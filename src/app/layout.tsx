@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Instrument_Serif, DM_Sans } from "next/font/google";
 import "./globals.css";
 import { SITE_URL } from "@/lib/site";
+import AnalyticsProvider from "@/components/analytics/AnalyticsProvider";
 
 const instrumentSerif = Instrument_Serif({
   subsets: ["latin"],
@@ -56,7 +57,12 @@ export default function RootLayout({
       lang="en"
       className={`${instrumentSerif.variable} ${dmSans.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col font-sans">{children}</body>
+      <body className="min-h-full flex flex-col font-sans">
+        {/* At the root, not inside (protected): the landing pages are where
+            referrer and UTM parameters arrive, and those are the whole point of
+            having a browser SDK at all. No-ops without a public token. */}
+        <AnalyticsProvider>{children}</AnalyticsProvider>
+      </body>
     </html>
   );
 }

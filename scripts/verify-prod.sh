@@ -74,12 +74,24 @@ hdr "Analytics (Mixpanel)"
 if set_ok MIXPANEL_TOKEN; then
   ok "MIXPANEL_TOKEN set"
   # Wrong region = every event silently dropped, and Mixpanel still returns 200.
-  case "$(ev MIXPANEL_API_HOST)" in
-    https://api.mixpanel.com|https://api-eu.mixpanel.com|https://api-in.mixpanel.com)
+  # Accepted with or without a scheme; the server SDK wants a bare hostname.
+  case "$(ev MIXPANEL_API_HOST | sed -e 's#^https\?://##' -e 's#/.*##')" in
+    api.mixpanel.com|api-eu.mixpanel.com|api-in.mixpanel.com)
       ok "MIXPANEL_API_HOST = $(ev MIXPANEL_API_HOST)";;
     "") wn "MIXPANEL_API_HOST unset — defaults to US; events vanish if the project is EU/India";;
     *)  no "MIXPANEL_API_HOST='$(ev MIXPANEL_API_HOST)' is not a known Mixpanel ingestion host";;
   esac
+  # Browser SDK is optional, but a region mismatch splits the funnel in two.
+  if set_ok NEXT_PUBLIC_MIXPANEL_TOKEN; then
+    srv="$(ev MIXPANEL_API_HOST | sed -e 's#^https\?://##' -e 's#/.*##')"
+    cli="$(ev NEXT_PUBLIC_MIXPANEL_API_HOST | sed -e 's#^https\?://##' -e 's#/.*##')"
+    [ "$srv" = "$cli" ] && ok "browser SDK enabled, region matches server" \
+      || no "NEXT_PUBLIC_MIXPANEL_API_HOST ($cli) != MIXPANEL_API_HOST ($srv) — client and server events would land in different projects"
+    [ "$(ev NEXT_PUBLIC_MIXPANEL_TOKEN)" = "$(ev MIXPANEL_TOKEN)" ] && ok "browser token matches server token" \
+      || wn "NEXT_PUBLIC_MIXPANEL_TOKEN differs from MIXPANEL_TOKEN (intentional only if you split projects)"
+  else
+    wn "NEXT_PUBLIC_MIXPANEL_TOKEN unset — no referrer/UTM/device attribution (server events still recorded)"
+  fi
 else
   wn "MIXPANEL_TOKEN unset — analytics disabled (app works, you just fly blind)"
 fi

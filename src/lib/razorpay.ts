@@ -25,6 +25,26 @@ const PLAN_IDS = {
   yearly: process.env.RAZORPAY_PLAN_YEARLY || "",
 };
 
+/**
+ * Whether a plan can actually be billed. Unsetting a plan id is the kill switch
+ * for selling that plan — the UI hides it and the API refuses it, instead of
+ * taking the customer to a checkout that 500s or, worse, subscribes them to a
+ * misconfigured plan.
+ *
+ * This exists because a plan can be wrong in ways only Razorpay knows about: a
+ * "yearly" plan was once created with period=monthly, which would have billed
+ * ₹20,000 every month. Razorpay makes period/interval immutable, so the fix is
+ * a new plan id — and until that lands, the safe state is not offering it.
+ */
+export function isPlanConfigured(plan: "monthly" | "yearly"): boolean {
+  return Boolean(PLAN_IDS[plan]);
+}
+
+/** The plans currently on sale. */
+export function availablePlans(): { monthly: boolean; yearly: boolean } {
+  return { monthly: isPlanConfigured("monthly"), yearly: isPlanConfigured("yearly") };
+}
+
 export async function createSubscription(
   customerId: string,
   plan: "monthly" | "yearly",

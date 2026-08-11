@@ -6,6 +6,7 @@ import { useAuth } from "@/hooks/useAuth";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import { loadRazorpay } from "@/lib/loadRazorpay";
+import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import { trackClick } from "@/lib/analytics/client";
 import { EVENTS } from "@/lib/analytics/events";
 
@@ -17,6 +18,12 @@ interface UpgradeModalProps {
 export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   const [subscribing, setSubscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Never offer a plan the server can't bill. Unsetting its RAZORPAY_PLAN_* id
+  // is the kill switch — used when a plan is misconfigured at the provider and
+  // has to be replaced (period/interval are immutable once a plan exists).
+  const { credits } = useCreditsContext();
+  const canMonthly = credits?.plans?.monthly !== false;
+  const canYearly = credits?.plans?.yearly !== false;
   const { getToken } = useAuth();
   const router = useRouter();
 
@@ -97,22 +104,26 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
       )}
 
       <div className="mt-6 space-y-3">
-        <Button
-          variant="primary"
-          onClick={() => handleUpgrade("monthly")}
-          className="w-full"
-          disabled={subscribing}
-        >
-          {subscribing ? "Processing…" : "₹2,000 / month →"}
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => handleUpgrade("yearly")}
-          className="w-full"
-          disabled={subscribing}
-        >
-          ₹20,000 / year — save ₹4,000
-        </Button>
+        {canMonthly && (
+          <Button
+            variant="primary"
+            onClick={() => handleUpgrade("monthly")}
+            className="w-full"
+            disabled={subscribing}
+          >
+            {subscribing ? "Processing…" : "₹2,000 / month →"}
+          </Button>
+        )}
+        {canYearly && (
+          <Button
+            variant={canMonthly ? "outline" : "primary"}
+            onClick={() => handleUpgrade("yearly")}
+            className="w-full"
+            disabled={subscribing}
+          >
+            ₹20,000 / year — save ₹4,000
+          </Button>
+        )}
       </div>
 
       <p className="mt-4 text-[12px] text-charcoal-400">

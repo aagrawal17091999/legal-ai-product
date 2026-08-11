@@ -25,6 +25,8 @@ export interface CreditsState {
   /** Out — new work is blocked with a 402. */
   exhausted: boolean;
   gstRate: number;
+  /** Subscription plans currently on sale. */
+  plans: { monthly: boolean; yearly: boolean };
   tiers: TopupTierView[];
 }
 

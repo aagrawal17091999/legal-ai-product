@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import { getBalance, isUnlimited } from "@/lib/billing/credits";
 import { TOPUP_TIERS, GST_RATE, withGst } from "@/lib/billing/cost";
+import { availablePlans } from "@/lib/razorpay";
 import { logError } from "@/lib/error-logger";
 
 /**
@@ -36,6 +37,8 @@ export async function GET(request: NextRequest) {
       lowBalance: !unlimited && balance.remaining <= LOW_BALANCE_THRESHOLD,
       exhausted: !unlimited && balance.remaining <= 0,
       gstRate: GST_RATE,
+      // Which subscription plans the UI may offer — see isPlanConfigured().
+      plans: availablePlans(),
       tiers: TOPUP_TIERS.map((t) => ({
         id: t.id,
         credits: t.credits,

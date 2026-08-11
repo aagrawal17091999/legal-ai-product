@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getOrCreateUser } from "@/lib/auth";
-import { createSubscription, createCustomer } from "@/lib/razorpay";
+import { createSubscription, createCustomer, isPlanConfigured } from "@/lib/razorpay";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
 import { track } from "@/lib/analytics/server";
@@ -23,6 +23,15 @@ export async function POST(request: NextRequest) {
   if (!plan || !["monthly", "yearly"].includes(plan)) {
     return NextResponse.json(
       { error: "Invalid plan. Must be 'monthly' or 'yearly'" },
+      { status: 400 }
+    );
+  }
+
+  // A plan with no configured id is deliberately not on sale. Fail clearly here
+  // rather than letting createSubscription throw into a generic 500.
+  if (!isPlanConfigured(plan)) {
+    return NextResponse.json(
+      { error: "plan_unavailable", message: "That plan isn't available right now." },
       { status: 400 }
     );
   }

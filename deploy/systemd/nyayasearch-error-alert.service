@@ -1,0 +1,19 @@
+# Critical-error watchdog. Install with its .timer.
+#   sudo cp deploy/systemd/nyayasearch-error-alert.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now nyayasearch-error-alert.timer
+#
+# User=root matches how the other units are actually installed on the box (there
+# is no `deploy` user); scripts read .env.production.local, which is root-owned
+# 0600.
+[Unit]
+Description=NyayaSearch critical-error watchdog
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=/opt/legal-ai-product/.env.production.local
+Environment=ERROR_ALERT_WINDOW_MIN=15
+Environment=ERROR_ALERT_THRESHOLD=3
+Environment=ERROR_ALERT_COOLDOWN_MIN=60
+ExecStart=/bin/bash scripts/alert-errors.sh

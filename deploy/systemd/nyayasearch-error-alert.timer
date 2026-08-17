@@ -1,0 +1,12 @@
+# Checks the critical-error rate every 5 minutes.
+# Tighter than the disk watchdog because an API-key or database failure breaks
+# every request immediately, whereas a disk fills slowly.
+[Unit]
+Description=NyayaSearch critical-error watchdog (every 5m)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

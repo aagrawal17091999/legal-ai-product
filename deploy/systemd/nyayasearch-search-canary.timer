@@ -1,0 +1,13 @@
+# Runs a real retrieval probe every 10 minutes.
+# At ~6 runs/hour the Voyage cost is negligible, and it bounds how long a silent
+# retrieval outage can last: worst case you learn within 10 minutes instead of
+# whenever the next user happens to ask a question.
+[Unit]
+Description=NyayaSearch search canary (every 10m)
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

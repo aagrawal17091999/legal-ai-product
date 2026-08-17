@@ -1,0 +1,17 @@
+# Synthetic search canary. Install with its .timer.
+#   sudo cp deploy/systemd/nyayasearch-search-canary.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now nyayasearch-search-canary.timer
+#
+# Exercises embed -> pgvector -> rerank on a schedule so a retrieval outage is
+# caught without waiting for a user to hit it. Costs a few paise per run.
+[Unit]
+Description=NyayaSearch synthetic search canary
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=/opt/legal-ai-product/.env.production.local
+Environment=CANARY_MIN_ROWS=5
+Environment=CANARY_COOLDOWN_MIN=60
+ExecStart=/bin/bash scripts/search-canary.sh

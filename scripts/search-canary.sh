@@ -97,8 +97,12 @@ open(sys.argv[2], "w").write("[" + ",".join(map(str, emb)) + "]")
 PY
 
 # ── 2. pgvector ──────────────────────────────────────────────
+# Flatten whitespace in the chunk text: judgment chunks contain newlines, and
+# psql -At emits them raw, so counting output LINES would wildly overcount rows
+# (a 10-row result read as 561). One row per line keeps the row check honest and
+# gives the rerank step whole chunks rather than fragments.
 {
-  printf "select ch.chunk_text from case_chunks ch order by ch.embedding <=> '"
+  printf "select regexp_replace(ch.chunk_text, '\\\\s+', ' ', 'g') from case_chunks ch order by ch.embedding <=> '"
   cat "$WORK/vec.txt"
   printf "'::vector limit 10;\n"
 } > "$WORK/q.sql"

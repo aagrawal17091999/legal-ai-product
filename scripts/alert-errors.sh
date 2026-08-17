@@ -22,7 +22,9 @@ ENV_FILE="${ENV_FILE:-$APP_DIR/.env.production.local}"
 STATE_FILE="${ERROR_ALERT_STATE:-/var/lib/nyayasearch/error-alert.state}"
 
 read_var() {
-  grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- \
+  # `|| true`: grep exits 1 on a missing key, which under `set -e` + `pipefail`
+  # would kill the watchdog before it checks anything. Absent means empty.
+  { grep -E "^$1=" "$ENV_FILE" 2>/dev/null || true; } | tail -1 | cut -d= -f2- \
     | sed -e 's/[[:space:]]*#.*$//' -e 's/^"//' -e 's/"$//'
 }
 

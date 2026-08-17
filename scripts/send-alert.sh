@@ -26,7 +26,11 @@ APP_DIR="${APP_DIR:-/opt/legal-ai-product}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env.production.local}"
 
 read_var() {
-  grep -E "^$1=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- \
+  # `|| true` is load-bearing: grep exits 1 when the key is absent, and under
+  # `set -e` + `pipefail` that non-zero status propagates out of the command
+  # substitution and kills the caller before it ever runs its check. An absent
+  # optional key must read as empty, not as a fatal error.
+  { grep -E "^$1=" "$ENV_FILE" 2>/dev/null || true; } | tail -1 | cut -d= -f2- \
     | sed -e 's/[[:space:]]*#.*$//' -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 

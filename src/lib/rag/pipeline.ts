@@ -15,7 +15,16 @@ export type PipelineStepName =
   | "context_build"
   | "generate"
   | "agent_start"
-  | "tool_call";
+  | "tool_call"
+  // Per-phase timing inside the agent loop (see ./phaseTimer.ts). `generate`
+  // now means *only* the model calls that produced answer text; `turn_total`
+  // carries the end-to-end request wall clock it used to be conflated with.
+  | "turn_total"
+  | "decompose"
+  | "model_round"
+  | "reflect"
+  | "grounding_judge"
+  | "revision";
 
 export type PipelineStepStatus = "success" | "error" | "fallback" | "skipped";
 

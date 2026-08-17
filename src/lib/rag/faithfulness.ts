@@ -1,5 +1,6 @@
 import { getAnthropicClient } from "../claude";
 import { logError } from "../error-logger";
+import { mapLimit } from "../concurrency";
 import type { AssembledCase } from "./contextBuilder";
 import type { SupportSpan } from "@/types";
 
@@ -28,6 +29,18 @@ const MARKER_RE = /\[\^(\d+)(?:\s*,\s*¶([0-9]+(?:\.[0-9]+)?[A-Za-z]?))?\]/g;
 const MIN_CLAIM_CHARS = 25; // ignore fragments too short to be a real assertion
 const MAX_CLAIMS = 40; // cap judge prompt size / latency on very long answers
 const MAX_EXCERPT_CHARS = 6000; // per cited case, fed to the judge
+
+// Judge sharding. Claims are graded in independent batches so latency tracks the
+// largest shard instead of the sum, and each shard carries only the excerpts its
+// own claims cite. Concurrency is capped so a long answer can't burst dozens of
+// simultaneous Haiku calls into a rate limit.
+const JUDGE_SHARD_CLAIMS = numEnv("FAITHFULNESS_SHARD_CLAIMS", 10);
+const JUDGE_SHARD_CONCURRENCY = numEnv("FAITHFULNESS_SHARD_CONCURRENCY", 4);
+
+function numEnv(name: string, fallback: number): number {
+  const v = parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
 
 export type FaithfulnessVerdict = "supported" | "unsupported" | "uncertain";
 
@@ -98,10 +111,23 @@ export async function gradeDraft(
     if (pairs.length >= MAX_CLAIMS) break;
   }
 
-  const citedIndices = Array.from(new Set(pairs.map((p) => p.index)));
-
   try {
-    const findings = await runJudge(pairs, citedIndices, byIndex);
+    // Shard the judge. One batched call carried up to MAX_CLAIMS claims plus
+    // every cited case's excerpt (MAX_EXCERPT_CHARS each), so both its input and
+    // its serial output grew with the answer — on a long research answer that is
+    // a single multi-second call sitting between the draft and the user.
+    // Sharding makes wall time track the LARGEST shard rather than the sum, and
+    // each shard only carries the excerpts its own claims cite, which shrinks
+    // the input too. Verdicts are per (claim, case) pair and never reference
+    // other claims, so splitting cannot change any individual verdict.
+    const shards: Array<typeof pairs> = [];
+    for (let i = 0; i < pairs.length; i += JUDGE_SHARD_CLAIMS) {
+      shards.push(pairs.slice(i, i + JUDGE_SHARD_CLAIMS));
+    }
+    const shardFindings = await mapLimit(shards, JUDGE_SHARD_CONCURRENCY, (shard) =>
+      runJudge(shard, Array.from(new Set(shard.map((p) => p.index))), byIndex)
+    );
+    const findings = shardFindings.flat();
     return {
       findings,
       unsupported: findings.filter((f) => f.verdict === "unsupported"),

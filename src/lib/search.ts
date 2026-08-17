@@ -2,12 +2,26 @@ import pool from "./db";
 import { embedQueries, VOYAGE_EMBED_MODEL } from "./voyage";
 import { logError } from "./error-logger";
 import { toStringArray } from "./metadata";
+import { Semaphore } from "./concurrency";
+import { DB_POOL_MAX } from "./db";
 import type { SearchFilters } from "@/types";
 
 const RRF_K = 60; // Reciprocal Rank Fusion smoothing constant
 const DEFAULT_CANDIDATES_PER_QUERY = 40;
 // #6 Metadata lane: how many headnote/issue-matched cases to fold in per query.
 const META_LANE_LIMIT = 20;
+
+// Process-wide ceiling on concurrent retrieval statements. Deliberately kept
+// BELOW the pg pool size so retrieval can never starve the rest of the app
+// (auth, credits, chat persistence) of pool clients — those queries are short
+// and must not queue behind a 12-statement search fan-out.
+const sqlLane = new Semaphore(
+  (() => {
+    const v = parseInt(process.env.RETRIEVAL_SQL_CONCURRENCY ?? "", 10);
+    if (Number.isFinite(v) && v > 0) return v;
+    return Math.max(2, DB_POOL_MAX - 2);
+  })()
+);
 
 export { RRF_K, DEFAULT_CANDIDATES_PER_QUERY, VOYAGE_EMBED_MODEL };
 
@@ -170,13 +184,21 @@ export async function retrieveChunks(
     };
 
     const tSqlStart = Date.now();
+    // Bound the SQL fan-out. Each query runs 3 lanes, and the agent may have
+    // several search_fresh calls in flight at once, so an unbounded Promise.all
+    // here queues far more statements than the pg pool has clients — the
+    // stragglers exceed `connectionTimeoutMillis` and the whole search throws
+    // "timeout exceeded when trying to connect". Queueing in memory instead
+    // costs nothing and keeps every lane's result.
     const perQueryResults = await Promise.all(
       queries.map(async (q, qi) => {
         const [fts, vec, meta] = await Promise.all([
-          ftsChunks(q, filters, DEFAULT_CANDIDATES_PER_QUERY),
-          vectorChunks(embeddings[qi], filters, DEFAULT_CANDIDATES_PER_QUERY),
+          sqlLane.run(() => ftsChunks(q, filters, DEFAULT_CANDIDATES_PER_QUERY)),
+          sqlLane.run(() =>
+            vectorChunks(embeddings[qi], filters, DEFAULT_CANDIDATES_PER_QUERY)
+          ),
           metadataLane
-            ? metaCaseChunks(q, filters, META_LANE_LIMIT)
+            ? sqlLane.run(() => metaCaseChunks(q, filters, META_LANE_LIMIT))
             : Promise.resolve({ hits: [] as RawChunkHit[], sc: 0, hc: 0 }),
         ]);
         return { qi, q, fts, vec, meta };

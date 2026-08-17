@@ -75,6 +75,14 @@ const STEP_LABELS: Record<string, string> = {
   retrieve: "Retrieve",
   rerank: "Rerank",
   context_build: "Context build",
+  // Per-phase timings from the agent loop. `turn_total` is the end-to-end
+  // request; every other row is a real measured span inside it.
+  turn_total: "Turn total",
+  decompose: "Decompose question",
+  model_round: "Model round",
+  reflect: "Reflect on evidence",
+  grounding_judge: "Grounding judge",
+  revision: "Grounding revision",
 };
 
 export default function TracePage({

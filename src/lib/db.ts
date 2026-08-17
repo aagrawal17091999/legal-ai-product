@@ -2,6 +2,21 @@ import { Pool } from "pg";
 
 let pool: Pool | null = null;
 
+/**
+ * Per-instance pool ceiling, exported so callers that fan out (retrieval) can
+ * size their own concurrency below it rather than guessing.
+ *
+ * Raised from 10 to 20 in production: a single agent turn issues several
+ * concurrent `search_fresh` calls, each expanding to N queries × 3 lanes, and
+ * at 10 the surplus waited past `connectionTimeoutMillis` and failed the search
+ * outright. Real connections = instances × this (+ cron + psql) against
+ * Postgres `max_connections` = 100, so 2 pm2 instances × 20 = 40 leaves ample
+ * headroom. `search.ts` also bounds its own fan-out, which is the durable fix —
+ * this just stops the pool being the first thing to break.
+ */
+export const DB_POOL_MAX =
+  Number(process.env.DB_POOL_MAX) || (process.env.NODE_ENV === "production" ? 20 : 5);
+
 function getPool(): Pool {
   if (pool) return pool;
 
@@ -12,20 +27,12 @@ function getPool(): Pool {
     );
   }
 
-  // Per-instance pool ceiling. Under load many serverless instances (app traffic
-  // + overlapping batch-worker invocations) each open their own pool, so the sum
-  // can exhaust Postgres `max_connections`. Point DATABASE_URL at a transaction-
-  // mode pooler (PgBouncer / Neon pooled / Supavisor) and keep this modest; raise
-  // DB_POOL_MAX only with headroom to spare.
-  // Default kept modest: under pm2 CLUSTER mode this pool exists once PER
-  // instance, so real connections = instances × max (+ staging + cron + psql)
-  // against Postgres max_connections=100. 10 × a few instances stays safe;
-  // scale concurrency out with PgBouncer (deploy/pgbouncer/) rather than a big
-  // per-process pool.
-  const max = Number(process.env.DB_POOL_MAX) || (process.env.NODE_ENV === "production" ? 10 : 5);
+  // Sizing rationale lives on DB_POOL_MAX above. For real concurrency growth,
+  // point DATABASE_URL at the transaction-mode PgBouncer in deploy/pgbouncer/
+  // (port 6432) rather than enlarging this per-process pool further.
   pool = new Pool({
     connectionString,
-    max,
+    max: DB_POOL_MAX,
     // Hand idle connections back so a traffic burst doesn't pin `max` forever.
     idleTimeoutMillis: 30_000,
     // Fail fast when the pool is saturated instead of hanging the event loop,

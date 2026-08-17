@@ -438,6 +438,7 @@ export async function POST(
           userMessage,
           sessionStore: sessionStoreForTurn,
           toolTrace: agentResult?.toolTrace ?? [],
+          phaseTrace: agentResult?.phaseTrace ?? [],
           generate: {
             // rag_pipeline_steps uses the "fallback" vocabulary for a
             // degraded-but-completed turn (see migration 011).

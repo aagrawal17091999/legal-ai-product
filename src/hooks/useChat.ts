@@ -40,6 +40,13 @@ function labelForPhase(phase: string): string {
       return "Searching for more on-point cases…";
     case "verifying":
       return "Verifying citations…";
+    // The stretch between the last tool call and the verified answer is the
+    // longest part of a research turn. Without these the status line sat on
+    // whichever tool ran last for minutes, reading as a hang.
+    case "writing":
+      return "Writing the answer…";
+    case "revising":
+      return "Correcting unsupported citations…";
     default:
       return DEFAULT_SEARCH_STATUS;
   }

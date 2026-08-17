@@ -16,6 +16,8 @@ import { CREDIT_INR } from "../billing/cost";
 import { decomposeQuestion } from "./decompose";
 import { reflectSufficiency } from "./reflect";
 import { gradeDraft, describeUnsupported, buildGroundingFooter, buildSupportByCase, type GradeResult } from "./faithfulness";
+import { patchUnsupported } from "./groundingPatch";
+import { PhaseTimer, phaseStepRecords, type PhaseRecord } from "./phaseTimer";
 import { normalizeCitations } from "./citationNormalizer";
 import type { SessionDocumentStore } from "./sessionStore";
 import type { AssembledCase } from "./contextBuilder";
@@ -88,8 +90,13 @@ export interface AgentRunOptions {
    *  the Cases panel before the answer finishes streaming. */
   onCasesUpdate: (cases: CitedCase[]) => void;
   /** Fires when the loop enters a non-streaming gate (re-search / verification)
-   *  so the UI can show a status while the user waits for the verified answer. */
-  onStatus?: (status: { phase: "researching" | "verifying" }) => void;
+   *  so the UI can show a status while the user waits for the verified answer.
+   *  `writing` and `revising` cover the long stretch between the last tool call
+   *  and the verified answer — without them the status line sits on the last
+   *  tool's label for minutes while the model drafts. */
+  onStatus?: (status: {
+    phase: "researching" | "verifying" | "writing" | "revising";
+  }) => void;
   /** Aborts the run when the client disconnects or hits Stop. Passed to every
    *  Anthropic stream so in-flight generation is cancelled, and checked between
    *  steps so no further model/tool work (or billing) happens after a cancel. */
@@ -129,7 +136,12 @@ export interface AgentRunResult {
     unsupported: number;
     uncertain: number;
     revised: boolean;
+    /** True when a grounding failure was repaired by patching the flagged
+     *  sentences rather than regenerating the whole answer. */
+    patched: boolean;
   } | null;
+  /** Per-phase timings (model rounds, gates, revision) for the audit log. */
+  phaseTrace: PhaseRecord[];
   /** Rendered view of the full system + user + tool messages, for audit only. */
   contextDebug: string;
 }
@@ -141,6 +153,7 @@ function getClient(): Anthropic {
 export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   const client = getClient();
   const registry = new CaseRegistry();
+  const timer = new PhaseTimer();
   const toolTrace: ToolCallRecord[] = [];
   const ctx: ToolContext = {
     sessionStore: opts.sessionStore,
@@ -162,7 +175,11 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // the decomposer itself returns not-compound for single-issue questions.
   let researchPlan = "";
   if (opts.userMessage.trim().length >= DECOMPOSE_MIN_CHARS) {
-    const decomposition = await decomposeQuestion(opts.userMessage);
+    const decomposition = await timer.time(
+      "decompose",
+      () => decomposeQuestion(opts.userMessage),
+      (d) => ({ is_compound: d.isCompound, sub_questions: d.subQuestions.length })
+    );
     if (decomposition.isCompound) {
       researchPlan =
         "RESEARCH PLAN — the question bundles distinct sub-issues. Make sure your retrieval and answer cover EACH of these before synthesising:\n" +
@@ -201,6 +218,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   let revisionBudget = GROUNDING_REVISIONS;
   let lastGrade: GradeResult | null = null;
   let revised = false;
+  let patched = false;
 
   const accUsage = (u: Anthropic.Messages.Usage) => {
     totalInputTokens += u.input_tokens;
@@ -220,27 +238,50 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     // so we don't keep spending on tool rounds / generation for an abandoned turn.
     if (opts.abortSignal?.aborted) throw new AgentAbortedError();
     stepsUsed = step + 1;
-    const stream = client.messages.stream(
-      {
-        model: CHAT_MODEL,
-        max_tokens: MAX_TOKENS_PER_STEP,
-        system: cachedSystemPrompt,
-        tools: TOOL_DEFINITIONS,
-        messages: applyCacheBreakpoints(messages),
+    const finalMsg = await timer.time(
+      "model_round",
+      async () => {
+        const stream = client.messages.stream(
+          {
+            model: CHAT_MODEL,
+            max_tokens: MAX_TOKENS_PER_STEP,
+            system: cachedSystemPrompt,
+            tools: TOOL_DEFINITIONS,
+            messages: applyCacheBreakpoints(messages),
+          },
+          { signal: opts.abortSignal }
+        );
+        // Drafts are deliberately not shown to the user before the grounding
+        // gate runs, but the moment text starts arriving we DO know the model
+        // has stopped calling tools and is writing — which is the multi-minute
+        // stretch the status line used to sit blank through. Announce it on the
+        // first delta rather than guessing up front, so a round that turns out
+        // to call more tools never briefly mislabels itself.
+        let announcedWriting = false;
+        stream.on("text", () => {
+          if (announcedWriting) return;
+          announcedWriting = true;
+          opts.onStatus?.({ phase: "writing" });
+        });
+        stream.on("error", (err: unknown) => {
+          logError({
+            category: "fetching",
+            message: err instanceof Error ? err.message : String(err),
+            error: err,
+            severity: "critical",
+            metadata: { step, model: CHAT_MODEL },
+          });
+        });
+        return stream.finalMessage();
       },
-      { signal: opts.abortSignal }
+      (msg) => ({
+        step,
+        stop_reason: msg.stop_reason,
+        output_tokens: msg.usage.output_tokens,
+        cache_read_tokens: msg.usage.cache_read_input_tokens ?? 0,
+        tool_calls: msg.content.filter((b) => b.type === "tool_use").length,
+      })
     );
-    stream.on("error", (err: unknown) => {
-      logError({
-        category: "fetching",
-        message: err instanceof Error ? err.message : String(err),
-        error: err,
-        severity: "critical",
-        metadata: { step, model: CHAT_MODEL },
-      });
-    });
-
-    const finalMsg = await stream.finalMessage();
     accUsage(finalMsg.usage);
     model = finalMsg.model;
     stopReason = finalMsg.stop_reason ?? null;
@@ -319,10 +360,15 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     // results were weak, and there is re-search budget left.
     if (researchBudget > 0 && retrievalIsWeak(toolTrace) && creditsSpent() < CREDIT_BUDGET) {
       opts.onStatus?.({ phase: "researching" });
-      const r = await reflectSufficiency({
-        userMessage: opts.userMessage,
-        evidenceSummary: summarizeEvidence(registry.list()),
-      });
+      const r = await timer.time(
+        "reflect",
+        () =>
+          reflectSufficiency({
+            userMessage: opts.userMessage,
+            evidenceSummary: summarizeEvidence(registry.list()),
+          }),
+        (res) => ({ sufficient: res.sufficient, has_next_query: Boolean(res.nextQuery) })
+      );
       if (!r.sufficient && r.nextQuery) {
         researchBudget--;
         messages.push({
@@ -337,10 +383,57 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     // unsupported and revision budget remains, send it back to be fixed.
     if (/\[\^\d+/.test(draft)) {
       opts.onStatus?.({ phase: "verifying" });
-      lastGrade = await gradeDraft(draft, registry.list());
+      lastGrade = await timer.time(
+        "grounding_judge",
+        () => gradeDraft(draft, registry.list()),
+        (g) => ({ ran: g.ran, checked: g.checked, unsupported: g.unsupported.length })
+      );
       if (lastGrade.ran && lastGrade.unsupported.length > 0 && revisionBudget > 0) {
         revisionBudget--;
         revised = true;
+        opts.onStatus?.({ phase: "revising" });
+
+        // Repair the flagged sentences in place rather than regenerating the
+        // whole answer. Falls through to the full rewrite below when the patch
+        // can't be made safely, so the gate's guarantee never weakens.
+        const patch = await timer.time(
+          "revision",
+          () =>
+            patchUnsupported({
+              draft,
+              unsupported: lastGrade!.unsupported,
+              cases: registry.list(),
+              abortSignal: opts.abortSignal,
+            }),
+          (p) => ({
+            strategy: p ? "patch" : "fallback_rewrite",
+            patched_claims: p?.patchedClaims.length ?? 0,
+            unpatched_claims: p?.unpatchedClaims.length ?? 0,
+          })
+        );
+
+        if (patch) {
+          patched = true;
+          // Re-grade ONLY the replacements. Untouched sentences are byte-identical
+          // to the ones already graded, so their verdicts still stand.
+          const regrade =
+            patch.replacements.length > 0
+              ? await timer.time(
+                  "grounding_judge",
+                  () => gradeDraft(patch.replacements.join("\n\n"), registry.list()),
+                  (g) => ({
+                    scope: "patched_claims",
+                    ran: g.ran,
+                    checked: g.checked,
+                    unsupported: g.unsupported.length,
+                  })
+                )
+              : null;
+          lastGrade = mergeGrades(lastGrade, patch.patchedClaims, regrade);
+          assistantContent = patch.text;
+          break;
+        }
+
         messages.push({
           role: "user",
           content:
@@ -394,14 +487,27 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         metadata: { phase: "forced_synthesis", model: CHAT_MODEL },
       });
     });
-    const finalMsg = await finalStream.finalMessage();
+    const finalMsg = await timer.time(
+      "model_round",
+      () => finalStream.finalMessage(),
+      (msg) => ({
+        phase: "forced_synthesis",
+        stop_reason: msg.stop_reason,
+        output_tokens: msg.usage.output_tokens,
+      })
+    );
     accUsage(finalMsg.usage);
     model = finalMsg.model;
     stopReason = finalMsg.stop_reason ?? null;
     stepsUsed += 1;
     assistantContent = normalizeCitations(textOf(finalMsg), registry.list().length).text;
     if (/\[\^\d+/.test(assistantContent)) {
-      lastGrade = await gradeDraft(assistantContent, registry.list());
+      opts.onStatus?.({ phase: "verifying" });
+      lastGrade = await timer.time(
+        "grounding_judge",
+        () => gradeDraft(assistantContent, registry.list()),
+        (g) => ({ scope: "forced_synthesis", ran: g.ran, checked: g.checked, unsupported: g.unsupported.length })
+      );
     }
   }
 
@@ -431,6 +537,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         unsupported: lastGrade.unsupported.length,
         uncertain: lastGrade.findings.filter((f) => f.verdict === "uncertain").length,
         revised,
+        patched,
       }
     : null;
 
@@ -455,6 +562,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   return {
     assistantContent,
     faithfulness,
+    phaseTrace: timer.list(),
     assembledCases: registry.list(),
     citedCases,
     toolTrace,
@@ -477,16 +585,51 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
 }
 
 /**
+ * Fold a re-grade of patched sentences back into the original grade.
+ *
+ * After a surgical grounding patch only the replaced sentences changed, so the
+ * original findings still describe every untouched sentence accurately. We drop
+ * the findings for the claims we replaced and add the verdicts for their
+ * replacements. A patched claim whose replacement could not be re-graded (the
+ * judge failed, or the replacement carried no citation to check) is simply gone
+ * from the findings — it no longer exists in the answer.
+ */
+function mergeGrades(
+  original: GradeResult,
+  patchedClaims: string[],
+  regrade: GradeResult | null
+): GradeResult {
+  const replaced = new Set(patchedClaims);
+  const kept = original.findings.filter((f) => !replaced.has(f.claim));
+  const findings = [...kept, ...(regrade?.ran ? regrade.findings : [])];
+  return {
+    findings,
+    unsupported: findings.filter((f) => f.verdict === "unsupported"),
+    // `checked` counts claims actually judged this turn, across both passes.
+    checked: original.checked + (regrade?.checked ?? 0),
+    ran: original.ran,
+  };
+}
+
+/**
  * Adapter: convert the agent's tool-call trace into PipelineStepRecord rows
  * for rag_pipeline_steps. Shape:
- *   step_order 1       = agent_start (what the agent saw as it began)
- *   step_order 2..N+1  = tool_call   (one per tool invocation, in order)
- *   step_order N+2     = generate    (final model output + token usage)
+ *   step_order 1        = agent_start (what the agent saw as it began)
+ *   step_order 2..N+1   = tool_call   (one per tool invocation, in order)
+ *   step_order N+2..M   = per-phase timings (model_round, reflect, judge, …)
+ *   step_order M+1      = turn_total  (end-to-end request wall clock)
+ *
+ * `turn_total` is the whole-request number that used to be written to the
+ * `generate` row — where it double-counted every tool row above it and hid the
+ * fact that nothing inside the loop was timed at all. The phase rows are the
+ * actual breakdown; `generate` now means only the model calls that produced
+ * answer text, and is derived from those rows.
  */
 export function buildAgentAuditSteps(params: {
   userMessage: string;
   sessionStore: SessionDocumentStore;
   toolTrace: ToolCallRecord[];
+  phaseTrace?: PhaseRecord[];
   generate: {
     status: "success" | "error" | "fallback";
     duration_ms: number;
@@ -497,6 +640,7 @@ export function buildAgentAuditSteps(params: {
   agentStartedAt: string;
 }): PipelineStepRecord[] {
   const { userMessage, sessionStore, toolTrace, generate, agentStartedAt } = params;
+  const phaseTrace = params.phaseTrace ?? [];
   const steps: PipelineStepRecord[] = [];
 
   steps.push({
@@ -532,14 +676,36 @@ export function buildAgentAuditSteps(params: {
     });
   }
 
+  // Per-phase timings, in the order they happened.
+  const phaseRows = phaseStepRecords(phaseTrace, toolTrace.length + 2);
+  steps.push(...phaseRows);
+
+  // Model time that produced answer text, summed from the measured rounds. This
+  // is what `generate` should always have meant.
+  const modelMs = phaseTrace
+    .filter((p) => p.phase === "model_round")
+    .reduce((sum, p) => sum + p.duration_ms, 0);
+  const toolMs = toolTrace.reduce((sum, t) => sum + t.duration_ms, 0);
+  const rollup: Record<string, number> = {};
+  for (const p of phaseTrace) rollup[p.phase] = (rollup[p.phase] ?? 0) + p.duration_ms;
+
   steps.push({
-    step_order: toolTrace.length + 2,
-    step: "generate",
+    step_order: toolTrace.length + 2 + phaseRows.length,
+    step: "turn_total",
     status: generate.status,
     duration_ms: generate.duration_ms,
     started_at: generate.started_at,
     error: generate.error,
-    data: generate.data,
+    data: {
+      ...generate.data,
+      // Everything needed to read the turn at a glance without joining rows.
+      model_ms: modelMs,
+      // Tool time SUMMED — tools run concurrently, so this exceeds wall clock.
+      // Compare against turn duration to see how much overlap you're getting.
+      tool_ms_summed: toolMs,
+      phase_ms: rollup,
+      tool_calls: toolTrace.length,
+    },
   });
 
   return steps;

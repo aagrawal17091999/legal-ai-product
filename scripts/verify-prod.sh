@@ -146,6 +146,40 @@ if [ -n "$DATABASE_URL" ] && command -v psql >/dev/null; then
   hc="$(PSQL 'SELECT count(*) FROM high_court_cases')"; [ "${hc:-0}" -gt 0 ] && ok "high_court_cases has $hc rows" || wn "high_court_cases empty (HC data not loaded)"
 fi
 
+hdr "Storage (R2)"
+# One bucket must hold BOTH the judgment corpus and user uploads. Citation PDF
+# links are presigned from (year, path) at click time, so a bucket without
+# `supreme-court/` objects answers every "Open full judgment" click with R2's
+# raw NoSuchKey XML — the app itself logs nothing, which is why this is checked
+# against a real key from the DB rather than just asserting the var is set.
+if command -v aws >/dev/null; then
+  R2B="$(ev R2_BUCKET_NAME)"; R2E="$(ev R2_ENDPOINT)"
+  AWS_ACCESS_KEY_ID="$(ev R2_ACCESS_KEY_ID)"; AWS_SECRET_ACCESS_KEY="$(ev R2_SECRET_ACCESS_KEY)"
+  AWS_DEFAULT_REGION=auto
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+  if aws s3api list-objects-v2 --bucket "$R2B" --prefix supreme-court/ --max-keys 1 \
+       --endpoint-url "$R2E" >/dev/null 2>&1; then
+    ok "R2 bucket '$R2B' reachable with the configured credentials"
+    key=""
+    if [ -n "$DATABASE_URL" ] && command -v psql >/dev/null; then
+      key="$(PSQL "SELECT 'supreme-court/'||year||'/'||path||'_EN.pdf'
+                   FROM supreme_court_cases
+                   WHERE path IS NOT NULL AND year IS NOT NULL LIMIT 1")"
+    fi
+    if [ -n "$key" ]; then
+      aws s3api head-object --bucket "$R2B" --key "$key" --endpoint-url "$R2E" >/dev/null 2>&1 \
+        && ok "judgment corpus is in '$R2B' ($key resolves)" \
+        || no "corpus MISSING from '$R2B' — every citation PDF click returns NoSuchKey"
+    else
+      wn "couldn't derive a corpus key from the DB — corpus presence unverified"
+    fi
+  else
+    no "R2 bucket '$R2B' not readable with the configured credentials"
+  fi
+else
+  wn "aws CLI not installed — R2 bucket contents unverified"
+fi
+
 hdr "HTTP surface"
 h="$(curl -sS -m 15 "$LOCAL_URL/api/health" 2>/dev/null)"; echo "$h" | grep -q '"db":"up"' && ok "local /api/health db:up" || no "local health not ok: $h"
 pc="$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$PUBLIC_URL" 2>/dev/null)"; [ "$pc" = 200 ] && ok "public homepage 200 over HTTPS" || no "public homepage $pc"

@@ -18,7 +18,8 @@ was correct, then the file was rewritten keeping exactly the values already live
 Verified before/after: only the four Mixpanel keys were added; nothing else
 changed, nothing was lost. Backup at `.env.production.local.bak-predupe-*`.
 
-**One thing remains and it is the blocker for payments** — see 0a.
+**One thing remains and it is the blocker for payments** — see 0a. The dedup also
+kept the wrong R2 bucket, which broke every citation PDF link — see 0b.
 
 <details>
 <summary>What the two sets contained (historical)</summary>
@@ -101,6 +102,84 @@ project. `verify-prod.sh` checks both. A typo'd host fails outright rather than
 degrading quietly.
 
 Leave `BILLING_ENFORCE=on` out until step 5 if you want to smoke-test unbilled.
+
+---
+
+## 0b. ⬜ TODO on the box — point R2 at the corpus bucket
+
+**Symptom:** clicking a citation's "Open full judgment" returns R2's raw
+`<Error><Code>NoSuchKey</Code></Error>` XML.
+
+**Cause:** the env dedup in §0 kept `R2_BUCKET_NAME=legal-brain-prod` (set 40),
+but the ingestion pipeline uploads the judgment corpus to `legal-judgments`
+(`pipeline/config.py` default). Supreme Court PDFs are not stored as URLs —
+`/api/judgments/download` rebuilds the key `supreme-court/{year}/{path}_EN.pdf`
+and presigns it at click time. The signature is valid, so R2 accepts the request
+and reports the key as missing; the app logs nothing.
+
+**Verified before changing anything** (against the live DB + `legal-judgments`):
+
+- 38,245 corpus objects vs 38,246 rows — only 5 rows have no PDF (ids 14243,
+  16740, 16802, 36606, 37199). Key derivation is correct; the historical
+  `year`-vs-path drift (227 rows) does *not* cause misses.
+- All 7 R2 keys referenced by live user data (2 workspace docs, 1 translation,
+  1 OCR job) **already exist in `legal-judgments`**, so the switch orphans
+  nothing. `high_court_cases` is empty, so every citation takes this path.
+
+**The bucket is only half of it — the credentials are scoped per bucket.** Done
+on the box 2026-08-17: `R2_BUCKET_NAME=legal-judgments` + `pm2 reload`
+(server-only var, no rebuild; backup `.env.production.local.bak-r2bucket-*`).
+That alone does NOT fix it. The live key pair (dedup set 39/40) is scoped to
+`legal-brain-prod` and returns **AccessDenied** on `legal-judgments`, so the app
+now fails on that bucket for reads *and writes* — citation PDFs and new
+OCR/translate/workspace uploads alike. The pair the dedup discarded as "dead"
+(set 28/29, still in `.env.production.local.bak-predupe-1786445786223`, and the
+same pair as local `.env.local` — verified by hashing the key id) has full
+read/write/delete on `legal-judgments`, tested with a put + delete round-trip.
+
+**Finish it** — swap the key pair to set 28/29, then reload:
+
+```bash
+ssh root@204.168.160.193
+cd /opt/legal-ai-product
+F=.env.production.local.bak-predupe-1786445786223
+cp .env.production.local ".env.production.local.bak-r2creds-$(date +%Y%m%d%H%M%S)"
+AK=$(grep '^R2_ACCESS_KEY_ID=' "$F" | head -1 | cut -d= -f2-)
+SK=$(grep '^R2_SECRET_ACCESS_KEY=' "$F" | head -1 | cut -d= -f2-)
+python3 - "$AK" "$SK" <<'PY'
+import sys
+p = ".env.production.local"; ak, sk = sys.argv[1], sys.argv[2]
+out = []
+for line in open(p):
+    if line.startswith("R2_ACCESS_KEY_ID="):       line = "R2_ACCESS_KEY_ID=%s\n" % ak
+    elif line.startswith("R2_SECRET_ACCESS_KEY="): line = "R2_SECRET_ACCESS_KEY=%s\n" % sk
+    out.append(line)
+open(p, "w").writelines(out)
+PY
+pm2 reload nyayasearch --update-env
+```
+
+Verify (should print the object's metadata, not AccessDenied):
+
+```bash
+set -a; . ./.env.production.local; set +a
+AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+AWS_DEFAULT_REGION=auto aws s3api head-object --bucket "$R2_BUCKET_NAME" \
+  --key supreme-court/2024/2024_3_1009_1013_EN.pdf --endpoint-url "$R2_ENDPOINT"
+```
+
+**Rollback** to the pre-change state at any time — nothing was deleted, and the
+7 user-data objects exist in both buckets:
+
+```bash
+cp .env.production.local.bak-r2bucket-<ts> .env.production.local
+pm2 reload nyayasearch --update-env
+```
+
+Longer-term: issue one Cloudflare R2 token scoped to `legal-judgments` and
+retire `legal-brain-prod` (check it for objects not mirrored in the corpus
+bucket first — the old backups under `app-backups/` and `reference-dumps/` were
+written there and will need the old key pair to read).
 
 ---
 

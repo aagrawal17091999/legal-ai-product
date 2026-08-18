@@ -33,10 +33,9 @@ function getR2Client(): S3Client {
  */
 export async function getSignedPdfUrl(key: string): Promise<string> {
   const client = getR2Client();
-  const bucket = process.env.R2_BUCKET_NAME || "legal-judgments";
 
   const command = new GetObjectCommand({
-    Bucket: bucket,
+    Bucket: bucketName(),
     Key: key,
   });
 
@@ -49,11 +48,18 @@ export async function getSignedPdfUrl(key: string): Promise<string> {
  */
 export function getPublicPdfUrl(key: string): string {
   const endpoint = process.env.R2_ENDPOINT || "";
-  const bucket = process.env.R2_BUCKET_NAME || "legal-judgments";
   // Cloudflare R2 public URL pattern
-  return `${endpoint}/${bucket}/${key}`;
+  return `${endpoint}/${bucketName()}/${key}`;
 }
 
+/**
+ * The single bucket that holds BOTH the judgment corpus (`supreme-court/`,
+ * uploaded by the ingestion pipeline, which defaults to the same name in
+ * `pipeline/config.py`) and user data (`workspaces/`, `ocr/`, `translations/`).
+ * Judgment PDF keys are rebuilt from (year, path) and presigned at click time,
+ * so a bucket without the corpus makes every citation link 404 with R2's raw
+ * NoSuchKey XML. Keep this default and `pipeline/config.py` in agreement.
+ */
 function bucketName(): string {
   return process.env.R2_BUCKET_NAME || "legal-judgments";
 }

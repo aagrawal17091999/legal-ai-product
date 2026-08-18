@@ -142,8 +142,10 @@ for top-ups. No code changes needed. Remaining is **operational**:
       `tuning.conf` + a `walg.env`. `backup-app-data.sh` is the daily net; WAL is
       the minute-level net. **Test a restore of both.**
 - [ ] Firebase: prod project / authorized domains / prod admin key.
-- [ ] R2: prod bucket + lifecycle rule on `app-backups/`; clean orphaned objects
-      from deleted workspaces.
+- [ ] R2: lifecycle rule on `app-backups/`; clean orphaned objects from deleted
+      workspaces. Note the app uses a **single** bucket (`legal-judgments`) for
+      both the judgment corpus and user data — splitting it breaks citation PDF
+      links, which are presigned from (year, path) at click time. See GO_LIVE §0b.
 - [ ] Install the nginx conf + `certbot` for TLS; set real hostnames.
 - [ ] `pm2 install pm2-logrotate` (unrotated pm2 logs fill the shared disk).
 - [ ] Sentry (`@sentry/nextjs`) as an external error sink alongside the DB logger —

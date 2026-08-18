@@ -22,6 +22,7 @@ set -uo pipefail
 #   CANARY_QUERY           the probe query; default is a stable doctrinal phrase
 #   CANARY_MIN_ROWS        minimum vector neighbours expected, default 5
 #   CANARY_COOLDOWN_MIN    silence after an alert, default 60
+#   CANARY_ATTEMPTS        tries per HTTP call before alerting, default 3
 
 APP_DIR="${APP_DIR:-/opt/legal-ai-product}"
 ENV_FILE="${ENV_FILE:-$APP_DIR/.env.production.local}"
@@ -77,18 +78,73 @@ Box: ssh root@$(hostname -I | awk '{print $1}') && cd $APP_DIR" || true
   exit 1
 }
 
+# Retry wrapper for the two Voyage calls.
+#
+# A canary that pages on a single failed request is a canary you learn to
+# ignore. On 2026-08-18 one rerank call failed to connect at 15:48 UTC, the runs
+# ten minutes either side were clean, and the app logged zero errors — nobody was
+# affected, but the alert fired anyway. Transient network failures to a
+# third-party API are normal; a real outage persists.
+#
+# So: attempt up to CANARY_ATTEMPTS times with backoff, and only alert when every
+# attempt fails. Retrying inside the run (rather than requiring two consecutive
+# failed runs) keeps detection fast — a genuine outage is still caught on the
+# first tick, roughly 10 seconds later rather than 10 minutes.
+#
+# Sets: PROBE_HTTP, PROBE_EXIT (curl's own exit code — 28 timeout, 6 DNS, 35 TLS,
+# and so on, which the HTTP code alone cannot tell you), PROBE_ATTEMPTS.
+ATTEMPTS="${CANARY_ATTEMPTS:-$(read_var CANARY_ATTEMPTS)}"; ATTEMPTS="${ATTEMPTS:-3}"
+
+http_probe() {
+  local out_file="$1"; shift
+  local i=1
+  PROBE_HTTP=""; PROBE_EXIT=0; PROBE_ATTEMPTS=0
+  while [ "$i" -le "$ATTEMPTS" ]; do
+    PROBE_ATTEMPTS="$i"
+    # Capture curl's exit code and the HTTP code independently. The old code did
+    # `$(curl -w '%{http_code}' ... || echo 000)`, which on a connection failure
+    # concatenated curl's own "000" with the fallback "000" and reported the
+    # nonsense "HTTP 000000" — losing the one detail that explains the failure.
+    PROBE_HTTP="$(curl -s -o "$out_file" -w '%{http_code}' "$@" 2>/dev/null)"
+    PROBE_EXIT=$?
+    if [ "$PROBE_EXIT" -eq 0 ] && [ "$PROBE_HTTP" = "200" ]; then
+      [ "$i" -gt 1 ] && echo "note: succeeded on attempt $i (earlier attempts failed transiently)" >&2
+      return 0
+    fi
+    [ "$i" -lt "$ATTEMPTS" ] && sleep $((i * 3))
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Human-readable reason for the last probe failure.
+probe_detail() {
+  local body_file="$1"
+  if [ "$PROBE_EXIT" -ne 0 ]; then
+    local why
+    case "$PROBE_EXIT" in
+      6)  why="could not resolve host" ;;
+      7)  why="could not connect" ;;
+      28) why="timed out" ;;
+      35) why="TLS handshake failed" ;;
+      *)  why="curl error" ;;
+    esac
+    echo "$why (curl exit $PROBE_EXIT) after $PROBE_ATTEMPTS attempts"
+  else
+    echo "HTTP $PROBE_HTTP after $PROBE_ATTEMPTS attempts — $(head -c 200 "$body_file" 2>/dev/null)"
+  fi
+}
+
 # ── 1. embed ─────────────────────────────────────────────────
 [ -n "$VOYAGE_KEY" ] || fail "config" "VOYAGE_API_KEY missing from $ENV_FILE"
 [ -n "$DB_URL" ] || fail "config" "DATABASE_URL missing from $ENV_FILE"
 
-HTTP="$(curl -s -o "$WORK/embed.json" -w '%{http_code}' -m 30 \
+http_probe "$WORK/embed.json" -m 30 \
   https://api.voyageai.com/v1/embeddings \
   -H "Authorization: Bearer $VOYAGE_KEY" \
   -H 'Content-Type: application/json' \
   -d "$(python3 -c 'import json,sys; print(json.dumps({"model":"voyage-law-2","input":[sys.argv[1]],"input_type":"query"}))' "$QUERY")" \
-  2>/dev/null || echo "000")"
-
-[ "$HTTP" = "200" ] || fail "voyage_embed" "HTTP $HTTP — $(head -c 200 "$WORK/embed.json" 2>/dev/null)"
+  || fail "voyage_embed" "$(probe_detail "$WORK/embed.json")"
 
 python3 - "$WORK/embed.json" "$WORK/vec.txt" <<'PY' || fail "voyage_embed" "unparseable embedding response"
 import json, sys
@@ -123,13 +179,12 @@ json.dump({"model": "rerank-2", "query": sys.argv[2], "documents": docs, "top_k"
           open(sys.argv[3], "w"))
 PY
 
-HTTP="$(curl -s -o "$WORK/rerank.json" -w '%{http_code}' -m 30 \
+http_probe "$WORK/rerank.json" -m 30 \
   https://api.voyageai.com/v1/rerank \
   -H "Authorization: Bearer $VOYAGE_KEY" \
   -H 'Content-Type: application/json' \
-  --data-binary "@$WORK/rr.json" 2>/dev/null || echo "000")"
-
-[ "$HTTP" = "200" ] || fail "voyage_rerank" "HTTP $HTTP — $(head -c 200 "$WORK/rerank.json" 2>/dev/null)"
+  --data-binary "@$WORK/rr.json" \
+  || fail "voyage_rerank" "$(probe_detail "$WORK/rerank.json")"
 
 TOP="$(python3 -c 'import json,sys; print(round(json.load(open(sys.argv[1]))["data"][0]["relevance_score"], 4))' "$WORK/rerank.json" 2>/dev/null || echo "")"
 [ -n "$TOP" ] || fail "voyage_rerank" "unparseable rerank response"

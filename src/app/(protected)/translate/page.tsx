@@ -49,7 +49,6 @@ export default function TranslatePage() {
   const [target, setTarget] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [downloads, setDownloads] = useState<Record<string, string>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -78,25 +77,32 @@ export default function TranslatePage() {
 
   // Push instead of poll: subscribe to each processing job's Firestore status
   // doc and refresh the list (Postgres is source of truth) the moment one turns
-  // ready/failed. Download URLs are fetched on click via fetchDownload.
+  // ready/failed. Download URLs are fetched on click via download().
   useJobStatusPush(
     "translate",
     jobs.filter((j) => j.status === "processing").map((j) => j.id),
     loadJobs
   );
 
-  // Open the blank tab synchronously on click — before the await — so popup
-  // blockers don't kill it, then point it at the resolved URL.
-  const fetchDownload = async (jobId: string) => {
+  // Fetch a fresh signed URL and open it (URLs are short-lived, so fetch on
+  // click). Open the blank tab synchronously on click — before the await — so
+  // popup blockers don't kill it, then point it at the resolved URL.
+  const download = async (jobId: string, kind: "pdf" | "docx") => {
     setError(null);
     const w = window.open("", "_blank");
     try {
       const res = await fetch(`/api/translate/${jobId}`, { headers: await authHeaders() });
       if (res.ok) {
         const data = await res.json();
-        if (data.downloadUrl) {
-          setDownloads((d) => ({ ...d, [jobId]: data.downloadUrl }));
-          if (w) w.location.href = data.downloadUrl;
+        const url = kind === "pdf" ? data.pdfUrl : data.docxUrl ?? data.downloadUrl;
+        if (url) {
+          if (w) w.location.href = url;
+          return;
+        }
+        // Translations finished before the PDF render shipped only have a .docx.
+        if (kind === "pdf" && (data.docxUrl ?? data.downloadUrl)) {
+          if (w) w.close();
+          setError("This older translation has no PDF — download the .docx instead.");
           return;
         }
       }
@@ -118,11 +124,6 @@ export default function TranslatePage() {
       });
       if (res.ok) {
         setJobs((prev) => prev.filter((j) => j.id !== jobId));
-        setDownloads((d) => {
-          const next = { ...d };
-          delete next[jobId];
-          return next;
-        });
         setError(null);
       } else {
         // Previously silent: the row stayed put after a confirmed delete, which
@@ -195,8 +196,8 @@ export default function TranslatePage() {
       <div className="max-w-3xl mx-auto px-6 py-10">
         <h1 className="font-serif text-2xl text-charcoal-900">Translate Document</h1>
         <p className="text-[14px] text-charcoal-500 mt-1.5 max-w-xl leading-relaxed">
-          Translate a document into any of 23 Indian languages and download a formatted Word
-          draft. Source language is detected automatically.
+          Translate a document into any of 23 Indian languages and download a formatted
+          draft as a PDF or an editable Word file. Source language is detected automatically.
         </p>
 
         {/* Certification notice — kept by default */}
@@ -298,9 +299,14 @@ export default function TranslatePage() {
                       </span>
                     )}
                     {j.status === "ready" && (
-                      <Button size="sm" variant="outline" onClick={() => downloads[j.id] ? window.open(downloads[j.id], "_blank") : fetchDownload(j.id)}>
-                        Download .docx
-                      </Button>
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => download(j.id, "pdf")}>
+                          Download PDF
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => download(j.id, "docx")}>
+                          .docx
+                        </Button>
+                      </>
                     )}
                     {j.status === "failed" && (
                       <span className="text-[12px] text-burgundy-700">Failed</span>

@@ -5,14 +5,16 @@
  * done by the durable queue (job_batches). Once every batch for a job is `done`,
  * the worker wins the assembly CAS (status → 'assembling') and calls
  * `assembleTranslationJob(jobId)`: read the per-batch results in reading order,
- * assemble the block model, render the structured .docx, store it in R2, mark the
- * job ready, and mirror the status to Firestore for an instant client push.
+ * assemble the block model, render the structured .docx (editable) and PDF
+ * (print/file-ready), store both in R2, mark the job ready, and mirror the
+ * status to Firestore for an instant client push.
  */
 
 import pool from "../db";
 import { uploadToR2 } from "../r2";
 import { assembleTranslationResult } from "./translate";
 import { renderBlocksDocx } from "./docx";
+import { renderBlocksPdf } from "../ocr/pdf";
 import { getJobBatches } from "../jobs/batches";
 import { sourceKind } from "../vision/structured";
 import { languageName } from "../sarvam/languages";
@@ -20,6 +22,7 @@ import { mirrorJobStatus } from "../firebase-admin";
 import { logError } from "../error-logger";
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const PDF_MIME = "application/pdf";
 
 export async function assembleTranslationJob(jobId: string): Promise<void> {
   const { rows } = await pool.query(
@@ -63,15 +66,23 @@ export async function assembleTranslationJob(jobId: string): Promise<void> {
       );
     }
 
-    const docxBuffer = await renderBlocksDocx(translation);
+    const [docxBuffer, pdfBuffer] = await Promise.all([
+      renderBlocksDocx(translation),
+      renderBlocksPdf(translation),
+    ]);
 
     const baseName = job.source_filename.replace(/\.[^.]+$/, "").replace(/[^\w.\-]+/g, "_").slice(-100);
     const outKey = `translations/${job.user_id}/${jobId}-${baseName}.docx`;
-    await uploadToR2(outKey, docxBuffer, DOCX_MIME);
+    const pdfKey = `translations/${job.user_id}/${jobId}-${baseName}.pdf`;
+    await Promise.all([
+      uploadToR2(outKey, docxBuffer, DOCX_MIME),
+      uploadToR2(pdfKey, pdfBuffer, PDF_MIME),
+    ]);
 
     await pool.query(
       `UPDATE translation_jobs
-          SET status = 'ready', output_r2_key = $2, detected_language = $3,
+          SET status = 'ready', output_r2_key = $2, output_pdf_r2_key = $8,
+              detected_language = $3,
               segment_count = $4, flagged_count = $5, ocr_used = $6,
               result_json = $7, error = NULL, updated_at = NOW()
         WHERE id = $1`,
@@ -83,6 +94,7 @@ export async function assembleTranslationJob(jobId: string): Promise<void> {
         translation.flaggedCount,
         translation.ocrUsed,
         JSON.stringify(translation),
+        pdfKey,
       ]
     );
     await mirrorJobStatus("translate", jobId, { status: "ready" });

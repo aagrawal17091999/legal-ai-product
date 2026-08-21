@@ -75,10 +75,12 @@ export async function POST(request: NextRequest) {
           }
           const currentEnd = entity?.current_end as number | null | undefined;
           const endDate = subscriptionEndDate(plan, currentEnd);
-          await markSubscriptionActive({ userId, subscriptionId, plan, endDate });
           // Grant the first MONTH's Pro allowance (resets plan_credits, no
-          // rollover). Idempotent per billing cycle: the charged webhook and a
-          // retried activated event won't re-grant or wipe mid-cycle usage.
+          // rollover) BEFORE flipping the plan row: a grant that throws must not
+          // leave the user on the paid plan with a free balance, and this route
+          // returns 500 on a throw so Razorpay retries the whole handler.
+          // Idempotent per billing cycle: the charged webhook and a retried
+          // activated event won't re-grant or wipe mid-cycle usage.
           // The credit period is one month even on the yearly plan — the rest of
           // the year is refilled by /api/cron/credit-refill. Granting against
           // `endDate` here is what made yearly a 12x underdelivery.
@@ -89,6 +91,7 @@ export async function POST(request: NextRequest) {
             periodEnd: creditPeriodEnd(plan, endDate),
             idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
           });
+          await markSubscriptionActive({ userId, subscriptionId, plan, endDate });
           track(EVENTS.SUBSCRIPTION_ACTIVATED, {
             userId,
             // Keyed on the cycle so a retried webhook delivery — which Razorpay

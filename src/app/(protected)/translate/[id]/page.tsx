@@ -66,8 +66,9 @@ export default function TranslationViewerPage({
     notFound: boolean;
     job: TranslationJob | null;
     result: TranslationResult | null;
-    downloadUrl: string | null;
-  }>({ loaded: false, notFound: false, job: null, result: null, downloadUrl: null });
+    docxUrl: string | null;
+    pdfUrl: string | null;
+  }>({ loaded: false, notFound: false, job: null, result: null, docxUrl: null, pdfUrl: null });
 
   const load = useCallback(async () => {
     const token = await getToken();
@@ -75,7 +76,7 @@ export default function TranslationViewerPage({
       headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 404) {
-      setView({ loaded: true, notFound: true, job: null, result: null, downloadUrl: null });
+      setView({ loaded: true, notFound: true, job: null, result: null, docxUrl: null, pdfUrl: null });
       return;
     }
     if (!res.ok) {
@@ -88,11 +89,13 @@ export default function TranslationViewerPage({
       notFound: false,
       job: data.job ?? null,
       result: data.result ?? null,
-      downloadUrl: data.downloadUrl ?? null,
+      docxUrl: data.docxUrl ?? data.downloadUrl ?? null,
+      // Null for translations finished before the PDF render shipped.
+      pdfUrl: data.pdfUrl ?? null,
     });
   }, [getToken, id]);
 
-  const { loaded, notFound, job, result, downloadUrl } = view;
+  const { loaded, notFound, job, result, docxUrl, pdfUrl } = view;
 
   useEffect(() => {
     // On-mount fetch: the single state update commits only after awaited I/O.
@@ -144,14 +147,19 @@ export default function TranslationViewerPage({
                   )}
                 </p>
               </div>
-              {job.status === "ready" && downloadUrl && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => window.open(downloadUrl, "_blank")}
-                >
-                  Download .docx
-                </Button>
+              {job.status === "ready" && (
+                <div className="flex items-center gap-3">
+                  {pdfUrl && (
+                    <Button size="sm" variant="outline" onClick={() => window.open(pdfUrl, "_blank")}>
+                      Download PDF
+                    </Button>
+                  )}
+                  {docxUrl && (
+                    <Button size="sm" variant="ghost" onClick={() => window.open(docxUrl, "_blank")}>
+                      .docx
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
 

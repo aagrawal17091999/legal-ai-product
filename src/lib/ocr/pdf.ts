@@ -1,7 +1,8 @@
 /**
  * HTML → PDF via headless Chromium.
  *
- * We render the OCR block model to HTML (./html.ts) and print it with
+ * We render the shared block model — OCR results and translations alike — to
+ * HTML (./html.ts) and print it with
  * @sparticuz/chromium + puppeteer-core. Chromium is the only engine that shapes
  * Devanagari/Indic conjuncts correctly — pdf-lib would lay glyphs out by raw
  * codepoint and mangle every Hindi/Gujarati matra.
@@ -24,8 +25,7 @@
 import { existsSync } from "node:fs";
 import chromium from "@sparticuz/chromium";
 import puppeteer, { type Browser } from "puppeteer-core";
-import { renderOcrHtml } from "./html";
-import type { OcrResult } from "./ocr";
+import { renderBlocksHtml, type BlockDocument } from "./html";
 
 const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 
@@ -67,8 +67,8 @@ async function launch(): Promise<Browser> {
   });
 }
 
-export async function renderOcrPdf(result: OcrResult): Promise<Buffer> {
-  const { html } = renderOcrHtml(result);
+export async function renderBlocksPdf(result: BlockDocument): Promise<Buffer> {
+  const { html } = renderBlocksHtml(result);
 
   const browser = await launch();
   try {

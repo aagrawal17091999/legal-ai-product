@@ -137,16 +137,16 @@ export async function POST(request: NextRequest) {
     }
 
     const currentEnd = subscription.current_end;
-    const { endDate } = await markSubscriptionActive({
-      userId: user.id,
-      subscriptionId: razorpay_subscription_id,
-      plan,
-      endDate: subscriptionEndDate(plan, currentEnd),
-    });
+    const endDate = subscriptionEndDate(plan, currentEnd);
 
-    // Grant this cycle's Pro allowance synchronously so credits appear without
-    // waiting for the async webhook. Shares the per-cycle idempotency key with
-    // the activated/charged webhooks, so the cycle is granted exactly once no
+    // Grant this cycle's Pro allowance BEFORE flipping the plan row, and
+    // synchronously so credits appear without waiting for the async webhook.
+    // Order matters: if the grant throws, the user must NOT be left sitting on
+    // the paid plan with a free balance — the only thing that would repair that
+    // is the webhook, which no-ops entirely when RAZORPAY_WEBHOOK_SECRET is
+    // unset. Failing before markSubscriptionActive keeps the account in a state
+    // the user can retry out of. Shares the per-cycle idempotency key with the
+    // activated/charged webhooks, so the cycle is granted exactly once no
     // matter which path runs first.
     await grant({
       userId: user.id,
@@ -154,6 +154,13 @@ export async function POST(request: NextRequest) {
       credits: PLAN_CREDITS[plan],
       periodEnd: creditPeriodEnd(plan, endDate),
       idempotencyKey: subscriptionCycleKey(razorpay_subscription_id, currentEnd),
+    });
+
+    await markSubscriptionActive({
+      userId: user.id,
+      subscriptionId: razorpay_subscription_id,
+      plan,
+      endDate,
     });
 
     return NextResponse.json({

@@ -13,7 +13,7 @@ import pool from "../db";
 import { uploadToR2 } from "../r2";
 import { renderBlocksDocx } from "../translate/docx";
 import { assembleOcrResult } from "./ocr";
-import { renderOcrPdf } from "./pdf";
+import { renderBlocksPdf } from "./pdf";
 import { getJobBatches } from "../jobs/batches";
 import { sourceKind } from "../vision/structured";
 import { mirrorJobStatus } from "../firebase-admin";
@@ -54,7 +54,7 @@ export async function assembleOcrJob(jobId: string): Promise<void> {
     }
 
     const [pdfBuffer, docxBuffer] = await Promise.all([
-      renderOcrPdf(result),
+      renderBlocksPdf(result),
       renderBlocksDocx(result),
     ]);
 

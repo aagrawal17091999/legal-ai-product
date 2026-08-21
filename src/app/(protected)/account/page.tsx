@@ -20,7 +20,7 @@ interface UserData {
 
 export default function AccountPage() {
   const { user, getToken } = useAuth();
-  const { credits, promptForCredits } = useCreditsContext();
+  const { credits, promptForCredits, refresh: refreshCredits } = useCreditsContext();
   const [userData, setUserData] = useState<UserData | null>(null);
 
   // Name editing
@@ -189,7 +189,10 @@ export default function AccountPage() {
             } catch {
               setBillingError("We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com.");
             } finally {
-              await fetchUser();
+              // fetchUser() only reloads the plan row. The credit meter is
+              // separate client state fetched once on mount, so without this the
+              // page shows "Pro monthly" next to the pre-purchase balance.
+              await Promise.all([fetchUser(), refreshCredits()]);
             }
           },
         };
@@ -269,7 +272,10 @@ export default function AccountPage() {
             } catch {
               setBillingError("We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com.");
             } finally {
-              await fetchUser();
+              // fetchUser() only reloads the plan row. The credit meter is
+              // separate client state fetched once on mount, so without this the
+              // page shows "Pro monthly" next to the pre-purchase balance.
+              await Promise.all([fetchUser(), refreshCredits()]);
             }
           },
         };

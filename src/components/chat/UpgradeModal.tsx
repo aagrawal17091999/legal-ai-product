@@ -22,7 +22,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   // Never offer a plan the server can't bill. Unsetting its RAZORPAY_PLAN_* id
   // is the kill switch — used when a plan is misconfigured at the provider and
   // has to be replaced (period/interval are immutable once a plan exists).
-  const { credits } = useCreditsContext();
+  const { credits, refresh: refreshCredits } = useCreditsContext();
   const canMonthly = credits?.plans?.monthly !== false;
   const canYearly = credits?.plans?.yearly !== false;
   const { getToken } = useAuth();
@@ -87,6 +87,13 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
                 );
                 router.refresh();
                 return;
+              } finally {
+                // router.refresh() only re-renders server components; the credit
+                // meter is client state fetched once on mount, so without this
+                // the header keeps showing the pre-purchase balance until a full
+                // page load. Runs on the failure paths too — the webhook may
+                // have granted even when verify didn't.
+                await refreshCredits();
               }
               onClose();
               router.refresh();

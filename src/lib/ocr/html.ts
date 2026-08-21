@@ -1,6 +1,7 @@
 /**
- * Renders an OCR result (typed block model) to a self-contained HTML document
- * for headless-Chromium → PDF printing (see ./pdf.ts).
+ * Renders a typed block model (an OCR *or* translation result — both carry the
+ * same `blocks`) to a self-contained HTML document for headless-Chromium → PDF
+ * printing (see ./pdf.ts).
  *
  * House style mirrors the translation .docx: serif (Noto Serif + matching Indic
  * Noto fonts for the source script), 14pt, double line-spacing, 2.5cm margins.
@@ -9,7 +10,6 @@
  */
 
 import { type Block, type Run, runsToText } from "../translate/model";
-import type { OcrResult } from "./ocr";
 import { type FontSpec, fontsForText, fontFamilyStack } from "./fonts";
 
 const FLAG_COLOR = "#B00020";
@@ -72,8 +72,13 @@ function renderBlock(block: Block): string {
   }
 }
 
+/** Any result carrying the shared block model: OcrResult or TranslationResult. */
+export interface BlockDocument {
+  blocks: Block[];
+}
+
 /** All text in the result, used to decide which script fonts to load. */
-function allText(result: OcrResult): string {
+function allText(result: BlockDocument): string {
   const out: string[] = [];
   for (const block of result.blocks) {
     switch (block.type) {
@@ -101,7 +106,7 @@ export interface RenderedHtml {
   fonts: FontSpec[];
 }
 
-export function renderOcrHtml(result: OcrResult): RenderedHtml {
+export function renderBlocksHtml(result: BlockDocument): RenderedHtml {
   const fonts = fontsForText(allText(result));
   const fontStack = fontFamilyStack(fonts);
   // Fault-isolate per block: a single degenerate block must not break the whole

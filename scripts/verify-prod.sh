@@ -29,9 +29,72 @@ for k in DATABASE_URL ANTHROPIC_API_KEY VOYAGE_API_KEY SARVAM_API_KEY \
          CRON_SECRET BACKUP_ENC_PASSPHRASE; do
   set_ok "$k" && ok "$k set" || no "$k MISSING"
 done
-# admin key must be parseable JSON
+# The admin key must parse as JSON — but reading THIS FILE is not enough, and
+# assuming it was cost a full auth outage on 2026-08-21. `@next/env` only fills
+# in variables that are ABSENT from process.env; it never overwrites. So a
+# mangled FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY exported anywhere in the
+# environment silently shadows a perfectly valid line in this file, every
+# authenticated request 401s, and a file-only check reports all clear.
+# Three views, because they can disagree: the file, what the loader resolves,
+# and what the running process actually holds.
 python3 -c "import json,sys; json.loads(sys.argv[1])" "$(ev FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY)" 2>/dev/null \
-  && ok "FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY parses as JSON" || no "FIREBASE admin key is not valid JSON"
+  && ok "FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY parses as JSON (in $ENV_FILE)" \
+  || no "FIREBASE admin key in $ENV_FILE is not valid JSON"
+
+# View 2: what the app's own loader resolves, shadowing included.
+if [ -d node_modules/@next/env ]; then
+  # Node script kept single-quoted (no backticks, no inner single quotes) so it
+  # survives being embedded in this command substitution.
+  fb_res="$(FB_FILE_VALUE="$(ev FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY)" node -e '
+const { loadEnvConfig } = require("@next/env");
+const KEY = "FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY";
+const fromFile = process.env.FB_FILE_VALUE || "";
+delete process.env.FB_FILE_VALUE;
+// Present BEFORE the loader runs => inherited from the environment, and the
+// env file copy will be ignored no matter how correct it is.
+const preset = process.env[KEY];
+loadEnvConfig(process.cwd(), false);
+const v = process.env[KEY] || "";
+let state = "bad";
+try { JSON.parse(v); state = "ok"; } catch (e) {}
+const source =
+  preset === undefined ? "file" : preset === fromFile ? "envsame" : "shadow";
+console.log(state + " " + source);
+' 2>/dev/null)"
+  case "$fb_res" in
+    "ok file"|"ok envsame") ok "admin key the loader resolves parses as JSON (from $ENV_FILE)";;
+    "ok shadow") no "admin key is SHADOWED by an exported env var (valid JSON, but NOT the one in $ENV_FILE — likely the wrong Firebase project)";;
+    "bad shadow") no "admin key is SHADOWED by a mangled exported env var — $ENV_FILE is fine but the app can't use it; ALL auth will 401";;
+    "bad file") no "admin key the loader resolves is not valid JSON";;
+    *) wn "couldn't resolve the admin key via @next/env (node/loader unavailable)";;
+  esac
+else
+  wn "node_modules/@next/env missing — can't check what the app actually resolves"
+fi
+
+# View 3: the process that is serving traffic right now. The shell running this
+# script and the pm2 daemon can have different environments, and pm2 keeps its
+# own copy (plus ~/.pm2/dump.pm2, replayed on boot) that `reload --update-env`
+# adds to but never clears.
+if command -v pm2 >/dev/null 2>&1; then
+  fb_pm2="$(pm2 jlist 2>/dev/null | node -e '
+const KEY = "FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY";
+let raw = ""; process.stdin.on("data", (d) => (raw += d)).on("end", () => {
+  let apps; try { apps = JSON.parse(raw); } catch { return console.log("unreadable"); }
+  const app = apps.find((a) => a.name === "nyayasearch");
+  if (!app) return console.log("notrunning");
+  const v = (app.pm2_env || {})[KEY];
+  if (v === undefined) return console.log("absent");
+  try { JSON.parse(v); console.log("ok"); } catch { console.log("bad"); }
+});' 2>/dev/null)"
+  case "$fb_pm2" in
+    ok)      ok "running pm2 process holds a parseable admin key";;
+    absent)  ok "running pm2 process inherits the admin key from $ENV_FILE (not overridden)";;
+    bad)     no "running pm2 process holds an UNPARSEABLE admin key — fix the source, then: pm2 delete nyayasearch && pm2 start ecosystem.config.js --only nyayasearch --env production && pm2 save (reload --update-env will NOT clear it)";;
+    notrunning) wn "pm2 app 'nyayasearch' not running — skipped live env check";;
+    *)       wn "couldn't read the admin key from pm2";;
+  esac
+fi
 
 hdr "Firebase project actually shipped"
 FBP="$(ev NEXT_PUBLIC_FIREBASE_PROJECT_ID)"

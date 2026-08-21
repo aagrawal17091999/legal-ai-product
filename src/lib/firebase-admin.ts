@@ -25,7 +25,34 @@ function getAdminApp(): App {
       "FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY is not set. Add it to .env.local (see .env.local.example)"
     );
   }
-  const serviceAccount: ServiceAccount = JSON.parse(serviceAccountKey);
+  let serviceAccount: ServiceAccount;
+  try {
+    serviceAccount = JSON.parse(serviceAccountKey);
+  } catch (err) {
+    // Say WHICH variable is broken and what it looks like. A bare
+    // `SyntaxError: Expected property name...` from JSON.parse is caught by
+    // verifyAuth and surfaces as a plain 401, so a config fault reads as "the
+    // user isn't signed in" — which is how a total auth outage on 2026-08-21
+    // was first reported as "account settings won't load".
+    //
+    // The cause that time is worth naming: the env file was CORRECT, but
+    // `@next/env` only fills in variables missing from process.env, so a
+    // shell-mangled FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY exported elsewhere in
+    // the environment shadowed it. Hence the fingerprint below rather than
+    // "check the .env file" — compare it against the file to spot a shadow.
+    // Length and first/last character only; never the key itself.
+    const shape = `${serviceAccountKey.length} chars, starts ${JSON.stringify(
+      serviceAccountKey.slice(0, 1)
+    )}, ends ${JSON.stringify(serviceAccountKey.slice(-1))}`;
+    throw new Error(
+      `FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY is not valid JSON (${shape}): ` +
+        `${err instanceof Error ? err.message : String(err)}. ` +
+        `The value the process resolved may differ from the one in your env file — ` +
+        `an exported variable of the same name shadows it. ` +
+        `Verify with: node -e 'require("@next/env").loadEnvConfig(process.cwd(), false); ` +
+        `JSON.parse(process.env.FIREBASE_ADMIN_SERVICE_ACCOUNT_KEY)'`
+    );
+  }
   _app = initializeApp({ credential: cert(serviceAccount) });
   return _app;
 }

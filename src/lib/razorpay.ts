@@ -65,8 +65,11 @@ export async function createSubscription(
     plan_id: planId,
     // Razorpay requires a finite total_count. A small count (12 / 1) made every
     // subscription auto-`complete` after a year and silently downgrade the user
-    // to free. Use a very large count so the subscription renews until the user
-    // (or we) explicitly cancel it. SUBSCRIPTION_TOTAL_COUNT ≈ 100 years.
+    // to free; a ~100-year count fixed that but pushed the mandate end date to
+    // 2126, which no UPI Autopay or card mandate will register (the UPI QR never
+    // rendered and card auth died with GATEWAY_ERROR at payment_authorization).
+    // SUBSCRIPTION_TOTAL_COUNT is now a 5-year horizon — long enough that no one
+    // reaches it in practice, short enough that the mandate is accepted.
     total_count: SUBSCRIPTION_TOTAL_COUNT[plan],
     quantity: 1,
     customer_notify: 1,
@@ -80,8 +83,17 @@ export async function createSubscription(
   return subscription;
 }
 
-/** Effectively-unbounded billing-cycle counts so subscriptions don't auto-expire. */
-const SUBSCRIPTION_TOTAL_COUNT = { monthly: 1200, yearly: 100 } as const;
+/**
+ * Billing-cycle counts, capped at a 5-year horizon.
+ *
+ * Not "effectively unbounded" any more: the mandate end date Razorpay derives
+ * from this has to be one the payment networks will accept, and a 100-year date
+ * is rejected by every mandate-based method. 60 monthly cycles was verified
+ * working against live (`sub_TSRs5kE7ZIQ3HF`, 2026-08-21) — the UPI QR renders.
+ * A subscription that does run to completion emits `subscription.completed`,
+ * which the webhook already handles.
+ */
+const SUBSCRIPTION_TOTAL_COUNT = { monthly: 60, yearly: 5 } as const;
 
 /**
  * Switch an existing subscription to a different plan in place, instead of

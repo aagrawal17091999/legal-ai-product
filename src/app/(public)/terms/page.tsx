@@ -87,7 +87,7 @@ export default function TermsPage() {
                 does not reset.
               </li>
               <li>
-                Pro includes 1,000 credits per month. Monthly credits do not roll
+                Pro includes 2,000 credits per month. Monthly credits do not roll
                 over; they reset at the start of each monthly period.
               </li>
               <li>

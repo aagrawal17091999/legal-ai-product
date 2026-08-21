@@ -121,7 +121,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Upgrade to Pro">
       <p className="text-[15px] text-charcoal-600 leading-relaxed">
-        You&apos;ve used your free credits. Upgrade to Pro for 1,000 credits
+        You&apos;ve used your free credits. Upgrade to Pro for 2,000 credits
         every month of citation-backed research, plus full access to document
         workspaces, translation, and OCR.
       </p>
@@ -156,7 +156,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
       </div>
 
       <p className="mt-4 text-[12px] text-charcoal-400">
-        Plus 18% GST. Both plans include 1,000 credits per month.
+        Plus 18% GST. Both plans include 2,000 credits per month.
       </p>
 
       <button

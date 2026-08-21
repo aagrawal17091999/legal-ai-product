@@ -295,7 +295,7 @@ unrecognised `MIXPANEL_API_HOST`.
 4. **Buy the smallest top-up with a real card.** Confirm: the charge is
    GST-inclusive, credits land, and `credit_transactions.amount_inr` records the
    **ex-GST** base.
-5. Subscribe on the monthly plan; confirm 1,000 credits land and
+5. Subscribe on the monthly plan; confirm 2,000 credits land and
    `subscription_activated` shows up in Mixpanel.
 6. Drain a test account to zero and confirm the 402 opens the top-up modal
    rather than a dead-end error.

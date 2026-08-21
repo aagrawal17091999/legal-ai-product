@@ -11,23 +11,23 @@
 /** ₹ per USD. Override via env if the rate drifts materially. */
 export const FX_INR_PER_USD = Number(process.env.BILLING_FX_INR_PER_USD) || 86;
 
-/** Rupees of COGS represented by one credit. 1000 credits = ₹800 (Pro pool). */
+/** Rupees of COGS represented by one credit. 2000 credits = ₹1,600 (Pro pool). */
 export const CREDIT_INR = Number(process.env.BILLING_CREDIT_INR) || 0.8;
 
 /**
  * Allowances in credits. `monthly`/`yearly` are the allowance PER MONTH — a
- * yearly subscriber gets the same 1,000 credits a month as a monthly one, they
+ * yearly subscriber gets the same 2,000 credits a month as a monthly one, they
  * just pay for twelve months up front.
  *
  * This used to be read as "credits per billing cycle", which quietly made the
  * yearly plan a 12x underdelivery: `subscription.charged` fires once per cycle,
- * so a yearly subscriber was granted 1,000 credits for a WHOLE YEAR while a
- * monthly subscriber got 1,000 every month for the same per-month price. The
+ * so a yearly subscriber was granted the month's allowance for a WHOLE YEAR
+ * while a monthly subscriber got it every month for the same per-month price. The
  * intra-year refills now come from /api/cron/credit-refill.
  */
 export const PLAN_CREDITS = {
-  monthly: 1000,
-  yearly: 1000,
+  monthly: 2000,
+  yearly: 2000,
   freeLifetime: 200,
 } as const;
 
@@ -192,9 +192,12 @@ export function inrToCredits(costInr: number): number {
 }
 
 /**
- * Top-up packs. Per-credit price decays as size grows (volume discount) but
- * never drops below ₹1.70/credit, keeping ≥50% gross margin on every tier
- * (cost basis is ₹0.80/credit). `id` is what the client sends to /credits/order.
+ * Top-up packs. Priced off the SAME ratio the Pro plan now delivers — ₹2,500
+ * for 2,000 credits, i.e. ₹1.25/credit — with the usual volume discount decaying
+ * below that, never past ₹1.10/credit. That holds ≥27% gross margin on every
+ * tier (cost basis is ₹0.80/credit), in line with the plan's own margin, so
+ * topping up is never a worse deal per credit than the subscription itself.
+ * `id` is what the client sends to /credits/order.
  */
 export interface TopupTier {
   id: string;
@@ -216,10 +219,10 @@ function tier(id: string, credits: number, priceInr: number): TopupTier {
 }
 
 export const TOPUP_TIERS: TopupTier[] = [
-  tier("topup_500", 500, 1000), //  ₹2.00/cr  · 60% margin
-  tier("topup_1000", 1000, 1900), // ₹1.90/cr  · 58% margin
-  tier("topup_2500", 2500, 4500), // ₹1.80/cr  · 56% margin
-  tier("topup_5000", 5000, 8500), // ₹1.70/cr  · 53% margin
+  tier("topup_500", 500, 625), //   ₹1.25/cr · 36% margin — matches the plan
+  tier("topup_1000", 1000, 1200), // ₹1.20/cr · 33% margin
+  tier("topup_2500", 2500, 2875), // ₹1.15/cr · 30% margin
+  tier("topup_5000", 5000, 5500), // ₹1.10/cr · 27% margin
 ];
 
 export function getTopupTier(id: string): TopupTier | undefined {

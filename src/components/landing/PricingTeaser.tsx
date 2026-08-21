@@ -27,7 +27,7 @@ const freeFeatures = [
 ];
 
 const proFeatures = [
-  "1,000 credits every month — research, workspaces, translation & OCR",
+  "2,000 credits every month — research, workspaces, translation & OCR",
   "Buy top-up credits any time; top-ups never expire",
   "Streaming, cited answers grounded in judgments",
   "Document Workspaces: chat with your own files, cited to page",
@@ -42,11 +42,11 @@ const proFeatures = [
 const pricingFaqs = [
   {
     q: "What is a credit?",
-    a: "A credit is the unit we bill work in. Everything you do — a research question, a document chat, a page of translation or OCR — spends credits in proportion to the AI work it takes, so a quick lookup costs far less than a 100-page translation. Your balance is always visible in the app header, and we warn you before it runs out. As a rough guide, 1,000 credits covers a normal month of steady research for one advocate.",
+    a: "A credit is the unit we bill work in. Everything you do — a research question, a document chat, a page of translation or OCR — spends credits in proportion to the AI work it takes, so a quick lookup costs far less than a 100-page translation. Your balance is always visible in the app header, and we warn you before it runs out. As a rough guide, 2,000 credits covers a busy month of steady research for one advocate.",
   },
   {
     q: "Can I try Pro before committing?",
-    a: "The free plan gives you a genuine sense of how Legal Brain works: 200 credits, one time, shared across case-law research, document workspaces, translation, and OCR — with the same answer quality as Pro. The difference is volume and access: Pro adds 1,000 credits a month and unlocks every tool and pre-filter.",
+    a: "The free plan gives you a genuine sense of how Legal Brain works: 200 credits, one time, shared across case-law research, document workspaces, translation, and OCR — with the same answer quality as Pro. The difference is volume and access: Pro adds 2,000 credits a month and unlocks every tool and pre-filter.",
   },
   {
     q: "What happens if I run out of credits?",
@@ -58,7 +58,7 @@ const pricingFaqs = [
   },
   {
     q: "Can I switch between monthly and annual billing?",
-    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹25,000 for the year and save ₹5,000 compared to monthly billing. Either way you receive 1,000 credits every month.",
+    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹25,000 for the year and save ₹5,000 compared to monthly billing. Either way you receive 2,000 credits every month.",
   },
   {
     q: "What happens if I cancel?",
@@ -175,7 +175,7 @@ export default function PricingTeaser() {
           </h2>
           <p className="mt-6 max-w-xl mx-auto text-[17px] text-charcoal-600 leading-relaxed">
             Start free with 200 credits — across research, workspaces,
-            translation, and OCR. Upgrade to Pro for 1,000 credits a month of
+            translation, and OCR. Upgrade to Pro for 2,000 credits a month of
             citation-backed work, and top up whenever you need more.
           </p>
 

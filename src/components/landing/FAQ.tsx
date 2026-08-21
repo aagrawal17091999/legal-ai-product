@@ -24,8 +24,8 @@ const faqs = [
     a: "Every factual claim in a Legal Brain response is backed by an inline citation to a specific judgment. We encourage what we expect every responsible advocate already does: verify the cited source before relying on it. The citation links are designed to make this verification fast — one click to the relevant passage, one more to download the full PDF.",
   },
   {
-    q: "How is this different from Manupatra or SCC Online?",
-    a: "Manupatra and SCC Online are comprehensive legal databases — excellent for keyword search when you know what you are looking for. Legal Brain is different in kind: you describe a legal question in plain language and receive a synthesised, cited answer drawn from case law. Think of it as the difference between searching a library catalogue and asking a research associate to brief you on the authorities.",
+    q: "How is this different from a traditional legal database?",
+    a: "Traditional legal databases are built for keyword search — excellent when you already know what you are looking for. Legal Brain is different in kind: you describe a legal question in plain language and receive a synthesised, cited answer drawn from case law. Think of it as the difference between searching a library catalogue and asking a research associate to brief you on the authorities.",
   },
   {
     q: "Is this compliant with Bar Council of India guidelines?",
@@ -33,7 +33,7 @@ const faqs = [
   },
   {
     q: "What happens when my free chats run out?",
-    a: "The free plan includes 200 credits — a one-time allotment, not a monthly or daily reset, covering case-law research, document workspaces, translation, and OCR combined. Credits are spent in proportion to the AI work a task takes, so a quick lookup costs far less than a long translation. If you need more, Pro gives you 1,000 credits every month for ₹2,500 per month or ₹25,000 per year, plus top-up packs that never expire. You can upgrade instantly from your account settings.",
+    a: "The free plan includes 200 credits — a one-time allotment, not a monthly or daily reset, covering case-law research, document workspaces, translation, and OCR combined. Credits are spent in proportion to the AI work a task takes, so a quick lookup costs far less than a long translation. If you need more, Pro gives you 2,000 credits every month for ₹2,500 per month or ₹25,000 per year, plus top-up packs that never expire. You can upgrade instantly from your account settings.",
   },
   {
     q: "Can I use Legal Brain on my own documents, not just case law?",

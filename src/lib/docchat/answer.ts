@@ -54,6 +54,8 @@ export interface DocChatRunOptions {
   history: DocChatTurn[];
   onTextDelta: (delta: string) => void;
   onStatus?: (status: { phase: DocChatPhase }) => void;
+  /** Aborts on an explicit Stop — never on a mere client disconnect. */
+  abortSignal?: AbortSignal;
 }
 
 export interface DocChatResult {
@@ -66,6 +68,12 @@ export interface DocChatResult {
   groundedFromContext: boolean;
   /** Retained for the trace viewer; historical rows still carry the old modes. */
   mode: "full" | "mapreduce" | "retrieval" | "agent";
+  /** True when the per-question credit ceiling stopped the agent researching
+   *  early. Surfaced so the throttle is measurable — it was computed and
+   *  discarded, so there was no way to tell how often answers were narrowed. */
+  budgetHit: boolean;
+  /** The ceiling in force, so `budgetHit` survives a threshold change. */
+  creditBudget: number;
 }
 
 /** Whitespace-insensitive substring check, for validating verbatim quotes. */
@@ -136,6 +144,7 @@ export async function runDocChat(opts: DocChatRunOptions): Promise<DocChatResult
       history: opts.history,
       onTextDelta: opts.onTextDelta,
       onStatus: (s) => opts.onStatus?.(s),
+      abortSignal: opts.abortSignal,
     });
   } catch (err) {
     logError({
@@ -169,7 +178,14 @@ export async function runDocChat(opts: DocChatRunOptions): Promise<DocChatResult
   let usedCitations =
     usedRefs.size > 0 ? citations.filter((c) => usedRefs.has(c.ref)) : citations;
 
-  if (VERIFY_ENABLED && usedRefs.size > 0 && usedCitations.length > 0) {
+  // A stopped turn keeps whatever text it produced, but there is no point
+  // spending another model call verifying citations nobody is waiting for.
+  if (
+    VERIFY_ENABLED &&
+    !opts.abortSignal?.aborted &&
+    usedRefs.size > 0 &&
+    usedCitations.length > 0
+  ) {
     opts.onStatus?.({ phase: "verifying" });
     usedCitations = await verifyCitations(
       client,
@@ -188,5 +204,7 @@ export async function runDocChat(opts: DocChatRunOptions): Promise<DocChatResult
     topScore: result.chunks.length > 0 ? 1 : 0,
     groundedFromContext: result.chunks.length > 0,
     mode: "agent",
+    budgetHit: result.budgetHit,
+    creditBudget: result.creditBudget,
   };
 }

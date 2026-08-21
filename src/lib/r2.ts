@@ -43,16 +43,6 @@ export async function getSignedPdfUrl(key: string): Promise<string> {
 }
 
 /**
- * Build the public R2 URL for a PDF.
- * Use this if the R2 bucket has public access enabled.
- */
-export function getPublicPdfUrl(key: string): string {
-  const endpoint = process.env.R2_ENDPOINT || "";
-  // Cloudflare R2 public URL pattern
-  return `${endpoint}/${bucketName()}/${key}`;
-}
-
-/**
  * The single bucket that holds BOTH the judgment corpus (`supreme-court/`,
  * uploaded by the ingestion pipeline, which defaults to the same name in
  * `pipeline/config.py`) and user data (`workspaces/`, `ocr/`, `translations/`).

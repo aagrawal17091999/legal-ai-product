@@ -7,7 +7,7 @@ import { useChatContext } from "../layout";
 import type { SearchFilters } from "@/types";
 
 export default function NewChatPage() {
-  const { createSession } = useChatContext();
+  const { createSession, error } = useChatContext();
   const router = useRouter();
 
   const handleApplyFilters = useCallback(
@@ -29,7 +29,16 @@ export default function NewChatPage() {
 
   return (
     <div className="flex-1 flex items-center justify-center bg-ivory-50 px-6 py-12">
-      <FilterPanel onApply={handleApplyFilters} onSkip={handleSkip} />
+      <div className="w-full max-w-2xl">
+        {/* createSession can fail (network, 500). Without this the buttons just
+            did nothing and the user had no idea why. */}
+        {error && (
+          <div className="mb-4 rounded-lg border border-burgundy-700/30 bg-burgundy-100 px-4 py-3">
+            <p className="text-[14px] text-burgundy-700">{error}</p>
+          </div>
+        )}
+        <FilterPanel onApply={handleApplyFilters} onSkip={handleSkip} />
+      </div>
     </div>
   );
 }

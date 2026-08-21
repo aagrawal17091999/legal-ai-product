@@ -12,7 +12,6 @@
  */
 
 import {
-  runStructuredVisionPass,
   assembleBlocks,
   type ParsedBatch,
 } from "../vision/structured";
@@ -96,36 +95,12 @@ Rules:
 - Do not summarise, add commentary, or omit anything.`;
 }
 
-export async function ocrDocumentStructured(
-  buffer: Buffer,
-  mime: string,
-  filename: string
-): Promise<OcrResult> {
-  // No structured-output schema: it backfired. The full typed block schema is
-  // rejected by the API ("grammar too large"), and a loose schema makes the model
-  // emit `runs` as a scalar (" "/null) instead of an array — producing empty
-  // transcriptions. Sonnet + the detailed prompt returns clean, valid JSON on its
-  // own (the parser strips any code fence), so we rely on that + coerceBlock.
-  const { detectedLanguage, blocks, ocrUsed } = await runStructuredVisionPass(
-    buffer,
-    mime,
-    filename,
-    () => buildPrompt(false),
-    "ocr",
-    OCR_VISION_MODEL
-  );
-
-  return {
-    detectedLanguage,
-    blocks,
-    segments: flattenToSegments(blocks),
-    flaggedCount: countFlagged(blocks),
-    ocrUsed,
-  };
-}
-
-/** Per-batch config for the durable-queue worker. No structured-output schema —
- *  see ocrDocumentStructured for why it's omitted.
+/** Per-batch config for the durable-queue worker. No structured-output schema:
+ *  it backfired. The full typed block schema is rejected by the API ("grammar
+ *  too large"), and a loose schema makes the model emit `runs` as a scalar
+ *  (" "/null) instead of an array — producing empty transcriptions. Sonnet plus
+ *  the detailed prompt returns clean, valid JSON on its own (the parser strips
+ *  any code fence), so we rely on that + coerceBlock.
  *
  *  @param fromOcrText true when Sarvam already extracted the text for this unit. */
 export function ocrBatchConfig(fromOcrText = false): {

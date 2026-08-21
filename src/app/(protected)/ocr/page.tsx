@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import { reportError } from "@/lib/report-error";
 import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Button from "@/components/ui/Button";
@@ -111,7 +112,21 @@ export default function OcrPage() {
         method: "DELETE",
         headers: await authHeaders(),
       });
-      if (res.ok) setJobs((prev) => prev.filter((j) => j.id !== jobId));
+      if (res.ok) {
+        setJobs((prev) => prev.filter((j) => j.id !== jobId));
+        setError(null);
+      } else {
+        // Previously silent: the row stayed put after a confirmed delete.
+        setError(`Couldn't delete "${name}". Please try again.`);
+        reportError("Failed to delete OCR job", {
+          page: "ocr",
+          jobId,
+          http_status: res.status,
+        });
+      }
+    } catch (err) {
+      setError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to delete OCR job", { page: "ocr", jobId }, err);
     } finally {
       setDeletingId(null);
     }
@@ -149,6 +164,12 @@ export default function OcrPage() {
       if (fileRef.current) fileRef.current.value = "";
       await loadJobs();
       void refreshCredits();
+    } catch (err) {
+      // There was no catch here at all: a dropped connection mid-upload threw
+      // an unhandled rejection, the spinner stopped, and the user was left
+      // staring at an unchanged page with no job and no explanation.
+      setError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to start OCR job", { page: "ocr" }, err);
     } finally {
       setSubmitting(false);
     }

@@ -127,7 +127,3 @@ def normalize_acts(candidates: list[str]) -> tuple[list[str], list[dict]]:
 
     return clean, unmatched
 
-
-def registry_size() -> int:
-    search_keys, _ = _load_registry()
-    return len(search_keys)

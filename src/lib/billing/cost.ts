@@ -28,7 +28,7 @@ export const CREDIT_INR = Number(process.env.BILLING_CREDIT_INR) || 0.8;
 export const PLAN_CREDITS = {
   monthly: 1000,
   yearly: 1000,
-  freeLifetime: 100,
+  freeLifetime: 200,
 } as const;
 
 /** GST charged on top of every listed price (subscriptions and top-ups). */
@@ -63,6 +63,20 @@ export function addOneMonth(from: Date): Date {
 }
 
 /**
+ * Expiry of a staff-comped plan: `months` whole months after `from`.
+ *
+ * Built on addOneMonth rather than `setMonth(m + n)` so day-of-month clamping
+ * applies at every step. Comping one month from 31 January with plain Date
+ * arithmetic lands on 2 or 3 March — a free extra day or two each time, and a
+ * skipped February refill boundary.
+ */
+export function compedPlanEnd(from: Date, months: number): Date {
+  let end = new Date(from);
+  for (let i = 0; i < months; i++) end = addOneMonth(end);
+  return end;
+}
+
+/**
  * When the current credit pool expires and is refilled. The pool is ALWAYS a
  * one-month window: for a monthly plan that coincides with the billing cycle,
  * for a yearly plan it is an internal refill window inside the paid year.
@@ -85,6 +99,13 @@ export function creditPeriodEnd(
 type Rate = { input: number; output?: number; cacheRead?: number; cacheWrite?: number };
 const RATES: Record<string, Rate> = {
   "claude-opus-4-8": { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  // Sonnet 5 is billed at LIST price even while Anthropic's introductory rate
+  // ($2/$10, through 2026-08-31) is in force: metering the higher number keeps
+  // credit charges conservative rather than under-charging and having costs
+  // jump when the intro period ends. Note the prefix matcher cannot help here —
+  // "claude-sonnet-5" does not start with "claude-sonnet-4-6", so without this
+  // row `rateKeyFor` returns null and every chat turn meters as FREE.
+  "claude-sonnet-5": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-sonnet-4-6": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   "voyage-law-2": { input: 0.12 },

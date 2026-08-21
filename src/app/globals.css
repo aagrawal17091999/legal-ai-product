@@ -63,47 +63,7 @@ body {
   color: #C07D2B;
 }
 
-/* 1px horizontal divider — ivory on light backgrounds. */
-.rule-line {
-  height: 1px;
-  background: #E8E4DC;
-  border: 0;
-  width: 100%;
-}
-
-/* 48px width variant used above section headers. */
-.rule-line-short {
-  height: 1px;
-  background: #E8E4DC;
-  border: 0;
-  width: 48px;
-}
-
-/* Double-line variant for major section breaks. */
-.rule-line-double {
-  height: 5px;
-  border: 0;
-  border-top: 1px solid #E8E4DC;
-  border-bottom: 1px solid #E8E4DC;
-  background: transparent;
-  width: 100%;
-}
-
-/* Dark-bg variants (navy sections). */
-.rule-line-dark,
-.rule-line-dark-short {
-  background: rgba(255, 255, 255, 0.1);
-  border: 0;
-  height: 1px;
-}
-.rule-line-dark-short { width: 48px; }
-
 /* Focus ring — used via Tailwind arbitrary values where needed. */
 :focus-visible {
   outline: none;
-}
-
-/* Subtle gold focus ring for buttons/inputs at 40% opacity. */
-.focus-ring-gold:focus-visible {
-  box-shadow: 0 0 0 3px rgba(192, 125, 43, 0.4);
 }

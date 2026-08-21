@@ -19,7 +19,6 @@
  */
 
 import {
-  runStructuredVisionPass,
   assembleBlocks,
   type ParsedBatch,
 } from "../vision/structured";
@@ -99,32 +98,6 @@ Rules:
       ? `\n- "detected_language" is not something you can tell from this text; output "Unknown" for it.`
       : ""
   }`;
-}
-
-export async function translateDocumentStructured(
-  buffer: Buffer,
-  mime: string,
-  filename: string,
-  targetLanguage: string
-): Promise<TranslationResult> {
-  const { detectedLanguage, blocks, ocrUsed } = await runStructuredVisionPass(
-    buffer,
-    mime,
-    filename,
-    () => buildPrompt(targetLanguage, "vision"),
-    "translate"
-  );
-
-  const segments = flattenToSegments(blocks);
-
-  return {
-    detectedLanguage,
-    targetLanguage,
-    blocks,
-    segments,
-    flaggedCount: countFlagged(blocks),
-    ocrUsed,
-  };
 }
 
 /**

@@ -7,7 +7,6 @@ const VOYAGE_RERANK_URL = "https://api.voyageai.com/v1/rerank";
 // Legal-domain specialized embedding model. 1024 dims, must match the
 // vector(1024) column in case_chunks (see migrations/009_embeddings_v2.sql).
 export const VOYAGE_EMBED_MODEL = "voyage-law-2";
-export const EMBEDDING_DIMENSION = 1024;
 
 // Cross-encoder reranker. rerank-2 is the current generation and handles
 // long legal passages well.

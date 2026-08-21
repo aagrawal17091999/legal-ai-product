@@ -1,0 +1,12 @@
+# Daily at 03:30 — after the 02:30 app-data backup and the 03:00 retention job,
+# so the archive run isn't competing with them for disk and network. pm2-logrotate
+# rotates at midnight by default, so by now yesterday's file is closed and final.
+[Unit]
+Description=Daily NyayaSearch log archive to R2
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
+import { reapStaleTurns } from "@/lib/chat/turnRunner";
 import type { CitedCase } from "@/types";
 
 // GET /api/chat/sessions/[id] — Get session with all messages
@@ -34,7 +35,14 @@ export async function GET(
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
 
-    // Get messages
+    // Fail any turn whose runner died (deploy, crash) and left the row stuck
+    // 'pending' — otherwise the client would reattach to it and spin forever.
+    // Same idea as the translate list endpoint failing orphaned jobs on read.
+    await reapStaleTurns(id).catch(() => 0);
+
+    // Get messages. A 'pending' assistant row is a turn still being written by
+    // a detached runner; the client reattaches to it via the turns/stream
+    // endpoint instead of treating it as a finished (empty) answer.
     const { rows: messageRows } = await pool.query(
       `SELECT id, session_id, role, content, cited_cases, search_query,
               search_results, context_sent, model, token_usage,

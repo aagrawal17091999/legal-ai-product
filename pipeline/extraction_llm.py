@@ -255,35 +255,3 @@ def extract_via_haiku(judgment_text: str, client: anthropic.Anthropic) -> dict:
 
     log_error("fetching", f"Failed after {MAX_RETRIES} retries due to rate limiting", severity="critical", metadata={"model": "claude-haiku-4-5-20251001", "retries": MAX_RETRIES})
     raise RuntimeError(f"Failed after {MAX_RETRIES} retries due to rate limiting")
-
-
-def batch_extract_via_haiku(
-    cases: list[dict],
-    client: anthropic.Anthropic
-) -> list[dict]:
-    """
-    Process a list of cases through Haiku extraction.
-
-    Each case dict must have 'id' and 'judgment_text' keys.
-    Returns a list of dicts with 'id' and 'result' (extracted fields) or 'error'.
-    """
-    results = []
-
-    for i, case in enumerate(cases):
-        case_id = case["id"]
-        judgment_text = case["judgment_text"]
-
-        logger.info(f"  LLM extracting case {case_id} ({i + 1}/{len(cases)})")
-
-        try:
-            extracted = extract_via_haiku(judgment_text, client)
-            results.append({"id": case_id, "result": extracted})
-        except Exception as e:
-            logger.error(f"  LLM extraction failed for case {case_id}: {e}")
-            results.append({"id": case_id, "error": str(e)})
-
-        # Rate limiting delay between calls
-        if i < len(cases) - 1:
-            time.sleep(INTER_CALL_DELAY)
-
-    return results

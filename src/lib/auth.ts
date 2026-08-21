@@ -3,6 +3,7 @@ import { adminAuth as getAdminAuth } from "./firebase-admin";
 import pool from "./db";
 import { grantSignupCredits } from "./billing/credits";
 import { logError } from "./error-logger";
+import { beginRequestContext, setContextUser } from "./request-context";
 import { track, identify } from "./analytics/server";
 import { EVENTS } from "./analytics/events";
 import type { User } from "@/types";
@@ -13,6 +14,15 @@ export const SESSION_COOKIE = "__session";
 export async function verifyAuth(
   request: NextRequest
 ): Promise<{ uid: string; email: string } | null> {
+  // Open the ambient logging context for this request. Done here because this
+  // is the one function on essentially every authenticated path that still has
+  // the NextRequest in hand; everything downstream (including fire-and-forget
+  // logError calls in .catch handlers) inherits it. See request-context.ts.
+  beginRequestContext({
+    endpoint: request.nextUrl.pathname,
+    method: request.method,
+  });
+
   // Prefer the session cookie (sent automatically on same-origin requests,
   // including plain <a> navigations like PDF downloads). Fall back to the
   // Authorization bearer header for the client fetch() flow.
@@ -59,6 +69,22 @@ const USER_CACHE_TTL_MS = 60_000;
 const userCache = new Map<string, { user: User; expires: number }>();
 
 /**
+ * Drop a user's cached row so their very next request re-reads from Postgres.
+ *
+ * Call this after changing a user's row from OUTSIDE their own session — the
+ * admin console changing a plan, granting credits, cancelling a subscription.
+ * Without it the target keeps seeing their old plan for up to USER_CACHE_TTL_MS,
+ * which for an upgrade means the thing they were just told was fixed still isn't.
+ *
+ * Caveat worth knowing: the cache is per function instance, so this clears the
+ * instance that served the admin's request. Other warm instances still expire on
+ * their own TTL — a minute, not a session.
+ */
+export function invalidateUserCache(firebaseUid: string): void {
+  userCache.delete(firebaseUid);
+}
+
+/**
  * Resolve the application user for an authenticated request without writing on
  * every call. Reads from the in-memory cache, then a plain SELECT, and only
  * upserts when the user genuinely doesn't exist yet (first request after
@@ -72,6 +98,7 @@ export async function getRequestUser(firebaseUser: {
 }): Promise<User> {
   const cached = userCache.get(firebaseUser.uid);
   if (cached && cached.expires > Date.now()) {
+    setContextUser(cached.user.id);
     return cached.user;
   }
 
@@ -80,6 +107,7 @@ export async function getRequestUser(firebaseUser: {
     [firebaseUser.uid]
   );
   const user = rows[0] ?? (await getOrCreateUser(firebaseUser));
+  setContextUser(user.id);
   userCache.set(firebaseUser.uid, {
     user,
     expires: Date.now() + USER_CACHE_TTL_MS,
@@ -142,6 +170,7 @@ export async function getOrCreateUser(firebaseUser: {
       metadata: { userId: user.id },
     });
   }
+  setContextUser(user.id);
   userCache.set(user.firebase_uid, {
     user,
     expires: Date.now() + USER_CACHE_TTL_MS,

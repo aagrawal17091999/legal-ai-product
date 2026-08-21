@@ -1,7 +1,11 @@
-# Issues the intra-year monthly credit refills for YEARLY subscribers.
-# See src/app/api/cron/credit-refill/route.ts for why this is needed: the Pro
-# allowance is per month, but Razorpay only fires subscription.charged once a
-# year on the yearly plan.
+# Issues the monthly credit refills that no Razorpay webhook will ever cover,
+# and expires lapsed comped plans.
+# See src/app/api/cron/credit-refill/route.ts for why this is needed:
+#   * YEARLY subscribers — the Pro allowance is per month, but Razorpay fires
+#     subscription.charged once a YEAR on the yearly plan.
+#   * COMPED plans (staff-granted, migration 029) — no money moves and no
+#     subscription exists, so no webhook fires at all. This job both tops them up
+#     monthly and downgrades them once the comp expires.
 #
 # Install (as root):
 #   cp deploy/systemd/nyayasearch-credit-refill.* /etc/systemd/system/
@@ -11,7 +15,7 @@
 # `User=` and `WorkingDirectory=` are placeholders — bootstrap-box.sh rewrites
 # both to the box's actual run user / checkout path.
 [Unit]
-Description=NyayaSearch monthly credit refill (yearly subscribers)
+Description=NyayaSearch monthly credit refill (yearly + comped plans)
 After=network-online.target
 Wants=network-online.target
 

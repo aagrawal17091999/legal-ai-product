@@ -6,6 +6,8 @@ import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useAuth } from "@/hooks/useAuth";
+import { reportError } from "@/lib/report-error";
+import { userFacingError } from "@/lib/user-error";
 import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Spinner from "@/components/ui/Spinner";
 import WorkspaceCitationPanel, { type DocCitation } from "@/components/workspace/CitationPanel";
@@ -21,12 +23,25 @@ interface DocRow {
   error: string | null;
 }
 
+// Reattach budget. A turn survives on the server, so a dropped connection is
+// worth retrying a few times before telling the user anything is wrong.
+const ATTACH_MAX_ATTEMPTS = 4;
+const ATTACH_RETRY_MS = 750;
+
 interface WsMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   citations: DocCitation[];
+  /**
+   * "success" | "degraded" | "error" | "pending" — mirrors
+   * workspace_messages.status. A "pending" row is a turn still being written by
+   * a detached runner; the page reattaches to its stream rather than rendering
+   * it as a finished answer.
+   */
   status: string;
+  /** Why the turn failed, when it did. Persisted on the row. */
+  error: string | null;
 }
 
 interface ConvSummary {
@@ -57,8 +72,16 @@ export default function WorkspaceDetailPage({
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [convMenuOpen, setConvMenuOpen] = useState(false);
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
+  // WHICH conversation is mid-answer, not merely THAT one is. A turn now
+  // outlives navigation between chats, so a single boolean would show the
+  // spinner on whichever conversation the user happened to switch to.
+  const [sendingConvId, setSendingConvId] = useState<string | null>(null);
+  // Transient progress text ("Reading the document…"), cleared when a turn ends.
   const [status, setStatus] = useState<string | null>(null);
+  // A failure the user must keep seeing. Kept apart from `status` because that
+  // is cleared in the send's `finally`, which used to wipe the error message
+  // milliseconds after it appeared — the failure was effectively invisible.
+  const [chatError, setChatError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -70,6 +93,30 @@ export default function WorkspaceDetailPage({
   // When polling for processing docs first started — used by the watchdog so we
   // don't poll forever if a doc is stuck pending/processing on the backend.
   const pollStartRef = useRef<number | null>(null);
+  // The turn currently being rendered, by persisted row id. Stop needs it:
+  // cancelling is a request to the server now, not a closed socket.
+  const activeTurnRef = useRef<{ convId: string; messageId: string } | null>(null);
+  // Stop pressed in the sub-second window before the server announced the
+  // turn's id; replayed as soon as it arrives.
+  const stopRequestedRef = useRef(false);
+  // Turn ids already reattached to, so the pending-row effect doesn't open a
+  // second stream onto the same answer on every re-render.
+  const followedTurnsRef = useRef<Set<string>>(new Set());
+  // Latest messages, readable synchronously so a reattach can work out how much
+  // of the answer it already has.
+  const messagesRef = useRef<WsMessage[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  // The conversation on screen, readable inside a stream handler that may
+  // outlive the user's presence on it.
+  const activeConvRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeConvRef.current = activeConvId;
+  }, [activeConvId]);
+
+  // Only this conversation's turn drives this conversation's spinner.
+  const sending = sendingConvId !== null && sendingConvId === activeConvId;
 
   const authHeaders = useCallback(async () => {
     const token = await getToken();
@@ -78,19 +125,44 @@ export default function WorkspaceDetailPage({
 
   const loadMessages = useCallback(
     async (convId: string) => {
-      const res = await fetch(`/api/workspace/${workspaceId}/conversations/${convId}/messages`, {
-        headers: await authHeaders(),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(
-          (data.messages ?? []).map((m: Record<string, unknown>) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content,
-            citations: (m.citations as DocCitation[]) ?? [],
-            status: m.status,
-          }))
+      try {
+        const res = await fetch(`/api/workspace/${workspaceId}/conversations/${convId}/messages`, {
+          headers: await authHeaders(),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setMessages(
+            (data.messages ?? []).map((m: Record<string, unknown>) => ({
+              id: m.id,
+              role: m.role,
+              content: m.content,
+              citations: (m.citations as DocCitation[]) ?? [],
+              status: m.status,
+              error: (m.error as string | null) ?? null,
+            }))
+          );
+          // Deliberately does NOT clear `chatError`. Starting a turn in a brand
+          // new conversation sets activeConvId, which fires this loader; if the
+          // turn then failed fast (a 400, say) while this fetch was still in
+          // flight, clearing here would erase the failure the user needs to see.
+          // `chatError` is cleared only when a new turn actually starts.
+        } else {
+          // Previously swallowed: a failed history load rendered as an empty
+          // chat, indistinguishable from a brand-new one.
+          setChatError("Couldn't load this chat's history. Please refresh and try again.");
+          reportError("Failed to load workspace conversation", {
+            page: "workspace",
+            workspaceId,
+            conversationId: convId,
+            http_status: res.status,
+          });
+        }
+      } catch (err) {
+        setChatError("Couldn't reach the server. Check your connection and try again.");
+        reportError(
+          "Failed to load workspace conversation",
+          { page: "workspace", workspaceId, conversationId: convId },
+          err
         );
       }
     },
@@ -139,12 +211,25 @@ export default function WorkspaceDetailPage({
   }, [workspaceId, authHeaders]);
 
   const refreshDocs = useCallback(async () => {
-    const res = await fetch(`/api/workspace/${workspaceId}/documents`, {
-      headers: await authHeaders(),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setDocuments(data.documents ?? []);
+    try {
+      const res = await fetch(`/api/workspace/${workspaceId}/documents`, {
+        headers: await authHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDocuments(data.documents ?? []);
+        return;
+      }
+      // A poll that keeps failing looks identical to "still processing". Record
+      // it so a wedged status endpoint is visible in error_logs rather than
+      // being read as a slow document.
+      reportError("Workspace document status poll failed", {
+        page: "workspace",
+        workspaceId,
+        http_status: res.status,
+      });
+    } catch (err) {
+      reportError("Workspace document status poll failed", { page: "workspace", workspaceId }, err);
     }
   }, [workspaceId, authHeaders]);
 
@@ -158,9 +243,12 @@ export default function WorkspaceDetailPage({
     else setMessages([]);
   }, [activeConvId, loadMessages]);
 
-  // Poll while any document is still processing — but give up after ~10 minutes
-  // so a doc stuck pending/processing on the backend doesn't poll indefinitely.
-  const POLL_TIMEOUT_MS = 10 * 60 * 1000;
+  // Poll while any document is still processing. The give-up point sits just
+  // past the server-side stale-document watchdog (STALE_DOCUMENT_TIMEOUT_MS,
+  // 15 min) so a killed ingestion is polled long enough to see the watchdog flip
+  // it to `failed` — the user gets a real failure rather than this soft "still
+  // processing" note, which is now only reached if the backend is wedged.
+  const POLL_TIMEOUT_MS = 16 * 60 * 1000;
   useEffect(() => {
     const anyPending = documents.some((d) => d.status === "pending" || d.status === "processing");
     if (!anyPending) {
@@ -234,7 +322,19 @@ export default function WorkspaceDetailPage({
         const data = await res.json();
         setTitle(data.title ?? null);
         setEditingTitle(false);
+        setChatError(null);
+      } else {
+        // Previously silent: the field stayed in edit mode as if unclicked.
+        setChatError("Couldn't rename this workspace. Please try again.");
+        reportError("Failed to rename workspace", {
+          page: "workspace",
+          workspaceId,
+          http_status: res.status,
+        });
       }
+    } catch (err) {
+      setChatError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to rename workspace", { page: "workspace", workspaceId }, err);
     } finally {
       setSavingTitle(false);
     }
@@ -251,11 +351,26 @@ export default function WorkspaceDetailPage({
         if (res.ok) {
           const { url } = await res.json();
           if (w) w.location.href = url;
-        } else if (w) {
-          w.close();
+          return;
         }
-      } catch {
+        // The blank tab snapping shut with no message read as a popup blocker
+        // or a misfired click. Say what actually happened.
         if (w) w.close();
+        setChatError("Couldn't open that document. Please try again.");
+        reportError("Failed to open workspace document", {
+          page: "workspace",
+          workspaceId,
+          documentId,
+          http_status: res.status,
+        });
+      } catch (err) {
+        if (w) w.close();
+        setChatError("Couldn't reach the server. Check your connection and try again.");
+        reportError(
+          "Failed to open workspace document",
+          { page: "workspace", workspaceId, documentId },
+          err
+        );
       }
     },
     [workspaceId, authHeaders]
@@ -267,7 +382,14 @@ export default function WorkspaceDetailPage({
       headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: JSON.stringify({}),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      reportError("Failed to create workspace conversation", {
+        page: "workspace",
+        workspaceId,
+        http_status: res.status,
+      });
+      return null;
+    }
     const conv = (await res.json()) as ConvSummary;
     setConversations((prev) => [conv, ...prev]);
     setActiveConvId(conv.id);
@@ -282,7 +404,17 @@ export default function WorkspaceDetailPage({
         method: "DELETE",
         headers: await authHeaders(),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        // Previously silent: the chat stayed in the list with no explanation.
+        setChatError("Couldn't delete that chat. Please try again.");
+        reportError("Failed to delete workspace conversation", {
+          page: "workspace",
+          workspaceId,
+          conversationId: convId,
+          http_status: res.status,
+        });
+        return;
+      }
       setConversations((prev) => {
         const next = prev.filter((c) => c.id !== convId);
         if (activeConvId === convId) setActiveConvId(next[0]?.id ?? null);
@@ -295,65 +427,93 @@ export default function WorkspaceDetailPage({
   const readyCount = documents.filter((d) => d.status === "ready").length;
   const activeConv = conversations.find((c) => c.id === activeConvId) ?? null;
 
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text || sending) return;
-    if (readyCount === 0) {
-      setStatus("Upload and process at least one document first.");
+  // Ask the server to stop a turn. Detaching the stream no longer does it — the
+  // whole point of the durable-turn change — so Stop has to say so out loud.
+  const postStop = useCallback(
+    async (convId: string, messageId: string) => {
+      try {
+        const res = await fetch(
+          `/api/workspace/${workspaceId}/conversations/${convId}/turns/${messageId}/stop`,
+          { method: "POST", headers: await authHeaders() }
+        );
+        if (!res.ok) {
+          reportError("Failed to stop workspace turn", {
+            page: "workspace",
+            workspaceId,
+            conversationId: convId,
+            messageId,
+            http_status: res.status,
+          });
+        }
+      } catch (err) {
+        reportError(
+          "Failed to stop workspace turn",
+          { page: "workspace", workspaceId, conversationId: convId, messageId },
+          err
+        );
+      }
+    },
+    [authHeaders, workspaceId]
+  );
+
+  const stopMessage = useCallback(() => {
+    const active = activeTurnRef.current;
+    if (!active) {
+      // Pressed before the server told us the turn's id (a sub-second window).
+      // Remember it and send the stop the moment the id arrives.
+      stopRequestedRef.current = true;
       return;
     }
+    void postStop(active.convId, active.messageId);
+  }, [postStop]);
 
-    // Ensure there is a conversation to post into.
-    let convId = activeConvId;
-    if (!convId) {
-      convId = await createConversation();
-      if (!convId) {
-        setStatus("Couldn't start a new chat. Please try again.");
-        return;
-      }
-    }
+  // Parse one SSE turn stream and fold its events into `messages`. Shared by the
+  // POST that starts a turn and by every reattach, so a reconnected client
+  // renders exactly what a first-time one does.
+  //
+  // Returns whether a terminal event arrived. A stream that ends WITHOUT one no
+  // longer means the answer died — the turn runs detached from this connection
+  // — so the caller reattaches instead of declaring failure.
+  const consumeDocTurn = useCallback(
+    async (
+      res: Response,
+      opts: { convId: string; assistantId: string; tempUserId?: string | null }
+    ): Promise<{ terminal: boolean; assistantId: string }> => {
+      const { convId, tempUserId } = opts;
+      // Reassigned when the server announces the real row id, so every later
+      // event targets the persisted message rather than the optimistic one.
+      let assistantId = opts.assistantId;
+      let sawTerminalEvent = false;
 
-    setInput("");
-    setSending(true);
-    setStatus(null);
-
-    const tempId = `temp-${Date.now()}`;
-    setMessages((prev) => [
-      ...prev,
-      { id: `${tempId}-u`, role: "user", content: text, citations: [], status: "success" },
-      { id: tempId, role: "assistant", content: "", citations: [], status: "success" },
-    ]);
-
-    try {
-      const token = await getToken();
-      const res = await fetch(`/api/workspace/${workspaceId}/conversations/${convId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ message: text }),
-      });
-
-      // Out of credits: open the purchase path rather than a dead-end message.
-      if (handlePaymentRequired(res)) {
-        setMessages((prev) => prev.filter((m) => m.id !== tempId && m.id !== `${tempId}-u`));
-        return;
-      }
-
-      if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        setStatus(data.message || data.error || "Failed to send message.");
-        setMessages((prev) => prev.filter((m) => m.id !== tempId && m.id !== `${tempId}-u`));
-        return;
-      }
-
-      const reader = res.body.getReader();
+      const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
 
       const apply = (event: string, data: unknown) => {
-        if (event === "token") {
+        if (event === "turn") {
+          const realId = (data as { message_id?: string }).message_id;
+          if (realId && realId !== assistantId) {
+            const previousId = assistantId;
+            assistantId = realId;
+            setMessages((prev) =>
+              prev.map((m) => (m.id === previousId ? { ...m, id: realId } : m))
+            );
+          }
+          if (realId) {
+            activeTurnRef.current = { convId, messageId: realId };
+            if (stopRequestedRef.current) {
+              stopRequestedRef.current = false;
+              void postStop(convId, realId);
+            }
+          }
+        } else if (event === "token") {
           const delta = (data as { delta?: string }).delta ?? "";
           setMessages((prev) =>
-            prev.map((m) => (m.id === tempId ? { ...m, content: m.content + delta } : m))
+            prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + delta } : m))
+          );
+        } else if (event === "rollback") {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, content: "" } : m))
           );
         } else if (event === "status") {
           const phase = (data as { phase?: string }).phase;
@@ -368,24 +528,62 @@ export default function WorkspaceDetailPage({
           setStatus(label);
         } else if (event === "citations") {
           const cites = (data as DocCitation[]) ?? [];
-          setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, citations: cites } : m)));
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, citations: cites } : m))
+          );
         } else if (event === "done") {
-          const d = data as { message_id?: string; content?: string; status?: string };
+          sawTerminalEvent = true;
+          const d = data as {
+            message_id?: string;
+            content?: string;
+            status?: string;
+            error?: string | null;
+          };
+          // The turn can finish at the HTTP level while the server recorded it
+          // as failed or degraded — show that now, not on the next reload. Only
+          // banner it if the user is still looking at this conversation; the
+          // bubble itself carries the failure either way.
+          const doneReason = userFacingError(d.error);
+          if (d.status === "error" && doneReason && activeConvRef.current === convId) {
+            setChatError(doneReason);
+          }
+          // A stop is recorded as status "error" with the sentinel reason
+          // "cancelled", which userFacingError deliberately maps to null (it is
+          // not a failure to report). Keep the sentinel so the bubble renders a
+          // stopped turn plainly instead of as an error.
+          const cancelled = d.error === "cancelled";
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === tempId
-                ? { ...m, id: d.message_id || m.id, content: d.content ?? m.content, status: d.status || m.status }
-                : m
+              m.id === assistantId
+                ? {
+                    ...m,
+                    id: d.message_id || m.id,
+                    content: d.content ?? m.content,
+                    status: d.status || "success",
+                    error: cancelled ? "cancelled" : (doneReason ?? m.error),
+                  }
+                : tempUserId && m.id === tempUserId
+                  ? { ...m, id: `user-${crypto.randomUUID()}` }
+                  : m
             )
           );
           // Refresh the conversation list so a freshly auto-titled chat shows up.
           loadDetail();
         } else if (event === "error") {
-          const msg = (data as { message?: string }).message || "Error";
+          sawTerminalEvent = true;
+          // Raw provider text — sanitize before display; the server has already
+          // persisted the full version on the row.
+          const msg =
+            userFacingError((data as { message?: string }).message) ??
+            "Something went wrong answering from your documents. Please try again.";
           setMessages((prev) =>
-            prev.map((m) => (m.id === tempId ? { ...m, status: "error", content: m.content || msg } : m))
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, status: "error", error: msg, content: m.content || msg }
+                : m
+            )
           );
-          setStatus(msg);
+          if (activeConvRef.current === convId) setChatError(msg);
         }
       };
 
@@ -413,15 +611,219 @@ export default function WorkspaceDetailPage({
           apply(ev, parsed);
         }
       }
-    } catch {
-      setStatus("Something went wrong. Please try again.");
+
+      return { terminal: sawTerminalEvent, assistantId };
+    },
+    [loadDetail, postStop]
+  );
+
+  /**
+   * Follow a turn that is already running server-side, picking up from whatever
+   * text we already have. Used on reload (the conversation load found a
+   * `pending` row), and to recover a stream that dropped mid-answer.
+   */
+  const followDocTurn = useCallback(
+    async (convId: string, messageId: string): Promise<boolean> => {
+      setSendingConvId(convId);
+      activeTurnRef.current = { convId, messageId };
+
+      const currentOffset = () =>
+        messagesRef.current.find((m) => m.id === messageId)?.content.length ?? 0;
+
+      try {
+        for (let attempt = 0; attempt < ATTACH_MAX_ATTEMPTS; attempt++) {
+          try {
+            const res = await fetch(
+              `/api/workspace/${workspaceId}/conversations/${convId}/turns/${messageId}/stream?offset=${currentOffset()}`,
+              { headers: await authHeaders() }
+            );
+            if (!res.ok || !res.body) return false;
+            // Not an SSE stream: the turn had already finished, and the row the
+            // client loaded is the whole answer.
+            if (!res.headers.get("Content-Type")?.includes("text/event-stream")) {
+              return false;
+            }
+            const { terminal } = await consumeDocTurn(res, {
+              convId,
+              assistantId: messageId,
+            });
+            if (terminal) return true;
+          } catch (err) {
+            reportError(
+              "Failed to follow in-progress workspace turn",
+              { page: "workspace", workspaceId, conversationId: convId, attempt },
+              err
+            );
+          }
+          await new Promise((r) => setTimeout(r, ATTACH_RETRY_MS * (attempt + 1)));
+        }
+
+        // Out of attempts. The answer may well still be finishing server-side —
+        // say that, rather than claiming it failed.
+        if (activeConvRef.current === convId) {
+          setChatError(
+            "Lost the connection to this answer. It may still be finishing — reload to pick it up."
+          );
+        }
+        return false;
+      } finally {
+        setSendingConvId((cur) => (cur === convId ? null : cur));
+        activeTurnRef.current = null;
+        setStatus(null);
+        void refreshCredits();
+      }
+    },
+    [authHeaders, consumeDocTurn, refreshCredits, workspaceId]
+  );
+
+  // Reattach to an in-progress turn. This is what makes a refresh a non-event:
+  // the conversation load returns a `status='pending'` assistant row, and we
+  // pick the stream back up from the characters already on it.
+  useEffect(() => {
+    if (!activeConvId || sendingConvId) return;
+    const pending = messages.find((m) => m.role === "assistant" && m.status === "pending");
+    if (!pending || pending.id.startsWith("temp-")) return;
+    if (followedTurnsRef.current.has(pending.id)) return;
+    followedTurnsRef.current.add(pending.id);
+
+    const convId = activeConvId;
+    void followDocTurn(convId, pending.id).then((ok) => {
+      // Couldn't follow it — the turn finished while we were away, or was
+      // reaped. Re-read the conversation so the bubble shows its real outcome.
+      // The id stays in followedTurnsRef: if the reload still shows it pending,
+      // retrying here would spin.
+      if (!ok) void loadMessages(convId);
+    });
+  }, [activeConvId, sendingConvId, messages, followDocTurn, loadMessages]);
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+    if (readyCount === 0) {
+      setChatError("Upload and process at least one document first.");
+      return;
+    }
+
+    // Ensure there is a conversation to post into.
+    let convId = activeConvId;
+    if (!convId) {
+      convId = await createConversation();
+      if (!convId) {
+        setChatError("Couldn't start a new chat. Please try again.");
+        return;
+      }
+    }
+
+    setInput("");
+    setSendingConvId(convId);
+    setStatus(null);
+    stopRequestedRef.current = false;
+    // Clear the previous turn's failure only here, at the start of a new
+    // attempt — never in the `finally`, which runs before the user can read it.
+    setChatError(null);
+
+    const tempId = `temp-${crypto.randomUUID()}`;
+    const tempUserId = `${tempId}-u`;
+    setMessages((prev) => [
+      ...prev,
+      { id: tempUserId, role: "user", content: text, citations: [], status: "success", error: null },
+      { id: tempId, role: "assistant", content: "", citations: [], status: "success", error: null },
+    ]);
+
+    let assistantId = tempId;
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/workspace/${workspaceId}/conversations/${convId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ message: text }),
+      });
+
+      // Out of credits: open the purchase path rather than a dead-end message.
+      if (handlePaymentRequired(res)) {
+        setMessages((prev) => prev.filter((m) => m.id !== tempId && m.id !== tempUserId));
+        return;
+      }
+
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        const msg = data.message || data.error || "Failed to send message.";
+        setChatError(msg);
+        setMessages((prev) => prev.filter((m) => m.id !== tempId && m.id !== tempUserId));
+        reportError("Workspace chat request failed", {
+          page: "workspace",
+          workspaceId,
+          conversationId: convId,
+          http_status: res.status,
+          server_error: msg,
+        });
+        return;
+      }
+
+      const outcome = await consumeDocTurn(res, {
+        convId,
+        assistantId: tempId,
+        tempUserId,
+      });
+      assistantId = outcome.assistantId;
+      if (outcome.terminal) return;
+
+      // The stream ended without "done" or "error" — a proxy timeout, a dropped
+      // connection, a lost socket. The TURN is still running though; it is no
+      // longer tied to this request. Reattach and keep rendering rather than
+      // declaring a half-written bubble failed.
+      if (assistantId !== tempId) {
+        followedTurnsRef.current.add(assistantId);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempUserId ? { ...m, id: `user-${crypto.randomUUID()}` } : m
+          )
+        );
+        await followDocTurn(convId, assistantId);
+        return;
+      }
+
+      // We never even learned the turn's id, so there is nothing to reattach to
+      // — the request died before the server got going.
+      const msg =
+        "The connection to the server was lost before this answer started. Please try again.";
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId ? { ...m, status: "error", error: msg, content: m.content || msg } : m
+        )
+      );
+      setChatError(msg);
+      reportError("Workspace chat stream ended without a terminal event", {
+        page: "workspace",
+        workspaceId,
+        conversationId: convId,
+      });
+    } catch (err) {
+      const msg = "Something went wrong. Please check your connection and try again.";
+      // Keep the bubbles and mark the assistant turn failed — the server may
+      // already have persisted this turn, so wiping local state would hide it.
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId ? { ...m, status: "error", error: msg, content: m.content || msg } : m
+        )
+      );
+      setChatError(msg);
+      reportError(
+        "Workspace chat send failed",
+        { page: "workspace", workspaceId, conversationId: convId },
+        err
+      );
     } finally {
-      setSending(false);
+      setSendingConvId((cur) => (cur === convId ? null : cur));
+      activeTurnRef.current = null;
       // Each answer spends credits — keep the header meter honest.
       void refreshCredits();
+      // Only the transient progress line is cleared here; `chatError` persists
+      // until the user starts another turn.
       setStatus(null);
     }
   };
+
 
   return (
     <div className="flex-1 flex min-h-0">
@@ -679,6 +1081,33 @@ export default function WorkspaceDetailPage({
 
         <div className="border-t border-ivory-200 px-6 py-4">
           <div className="max-w-2xl mx-auto">
+            {chatError && (
+              <div className="mb-2 flex items-start gap-2 rounded-lg border border-burgundy-700/30 bg-burgundy-100 px-3 py-2">
+                <svg
+                  className="w-4 h-4 text-burgundy-700 mt-0.5 flex-shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="flex-1 text-[12px] text-burgundy-700 leading-relaxed">{chatError}</p>
+                <button
+                  onClick={() => setChatError(null)}
+                  className="text-burgundy-700/60 hover:text-burgundy-700 flex-shrink-0"
+                  title="Dismiss"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )}
             {status && <p className="text-[12px] text-charcoal-500 mb-2">{status}</p>}
             <div className="flex items-end gap-2">
               <textarea
@@ -703,6 +1132,18 @@ export default function WorkspaceDetailPage({
               >
                 {sending ? <Spinner size="sm" /> : "Send"}
               </button>
+              {/* Stopping is an explicit instruction to the server now, so it
+                  needs a control. Closing the tab used to be the only way to
+                  end a doc-chat turn — and it no longer ends one. */}
+              {sending && (
+                <button
+                  type="button"
+                  onClick={stopMessage}
+                  className="rounded-lg border border-ivory-300 text-charcoal-600 px-4 py-3 text-[14px] font-medium hover:bg-ivory-100 transition-colors"
+                >
+                  Stop
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -754,6 +1195,10 @@ function ChatBubble({
   const isUser = message.role === "user";
   const validRefs = new Set(message.citations.map((c) => c.ref));
   const prepared = isUser ? message.content : inlineCitations(message.content, validRefs);
+  const failed = !isUser && message.status === "error";
+  const degraded = !isUser && message.status === "degraded";
+  // The row stores the raw provider failure for debugging; never render it.
+  const failureReason = failed ? userFacingError(message.error) : null;
 
   const openRef = (href: string): boolean => {
     const match = href.match(CITE_HREF_RE);
@@ -769,7 +1214,11 @@ function ChatBubble({
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-5`}>
       <div
         className={`max-w-[85%] rounded-xl px-5 py-4 ${
-          isUser ? "bg-navy-950 text-ivory-50" : "bg-ivory-100 border border-ivory-200 text-charcoal-900"
+          isUser
+            ? "bg-navy-950 text-ivory-50"
+            : failed
+              ? "bg-burgundy-100 border border-burgundy-700/30 text-charcoal-900"
+              : "bg-ivory-100 border border-ivory-200 text-charcoal-900"
         }`}
       >
         {isUser ? (
@@ -806,6 +1255,34 @@ function ChatBubble({
                 {prepared || "…"}
               </ReactMarkdown>
             </div>
+            {/* The failure lives on the turn itself, so it survives scrolling,
+                the next message, and a reload (status/error come off the row). */}
+            {failed && (
+              <div className="mt-3 flex items-start gap-2 border-t border-burgundy-700/20 pt-3">
+                <svg
+                  className="w-4 h-4 text-burgundy-700 mt-0.5 flex-shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-[12px] text-burgundy-700 leading-relaxed">
+                  <span className="font-semibold">This answer failed.</span>
+                  {failureReason ? ` ${failureReason}` : " Please try again."}
+                </p>
+              </div>
+            )}
+            {degraded && (
+              <p className="mt-3 border-t border-ivory-200 pt-3 text-[12px] text-charcoal-500 leading-relaxed">
+                This answer came back incomplete. Try rephrasing your question.
+              </p>
+            )}
             {message.citations.length > 0 && (
               <div className="mt-4 pt-4 border-t border-ivory-200">
                 <p className="text-[11px] font-medium text-charcoal-400 uppercase tracking-wider mb-2">

@@ -35,8 +35,21 @@ const numEnv = (name: string, fallback: number): number => {
 };
 
 const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || "claude-sonnet-4-6";
+/**
+ * Doc chat shares the CHAT_MODEL env var with the research agent, so pointing
+ * that variable at Sonnet 5 changes this feature too. On Sonnet 4.6 omitting
+ * `thinking` meant no extended thinking; on Sonnet 5 omitting it runs ADAPTIVE
+ * thinking — which would quietly add reasoning tokens to every doc-chat round.
+ * Disable it explicitly so the behaviour is the same on either model.
+ */
+const THINKING_OFF = { thinking: { type: "disabled" } } as const;
 const MAX_STEPS = numEnv("DOC_AGENT_MAX_STEPS", 8);
-const MAX_TOKENS_PER_STEP = numEnv("DOC_AGENT_MAX_TOKENS", 4096);
+/**
+ * Output cap per round. Doubled alongside the research agent's: multi-document
+ * answers were liable to the same silent truncation at `max_tokens`. A ceiling,
+ * not a target — short answers are unaffected.
+ */
+const MAX_TOKENS_PER_STEP = numEnv("DOC_AGENT_MAX_TOKENS", 8192);
 const HISTORY_TURNS = 10;
 
 /**
@@ -58,6 +71,20 @@ export interface DocAgentOptions {
   history: DocAgentTurn[];
   onTextDelta: (delta: string) => void;
   onStatus?: (status: { phase: "reading" | "retrieving" | "answering" }) => void;
+  /**
+   * Aborts the run when the user presses Stop. This is NOT the request's
+   * signal — a client that merely disconnects must not cancel the turn (see
+   * lib/turns/durableTurns.ts).
+   */
+  abortSignal?: AbortSignal;
+}
+
+/** Thrown when a run is stopped on purpose, so callers can tell it from a fault. */
+export class DocAgentAbortedError extends Error {
+  constructor() {
+    super("doc agent aborted");
+    this.name = "DocAgentAbortedError";
+  }
 }
 
 export interface DocAgentResult {
@@ -68,6 +95,9 @@ export interface DocAgentResult {
   toolCalls: DocToolCallRecord[];
   stepsUsed: number;
   budgetHit: boolean;
+  /** The ceiling in force, so `budgetHit` stays interpretable after a
+   *  DOC_AGENT_CREDIT_BUDGET change. */
+  creditBudget: number;
 }
 
 function textOf(msg: Anthropic.Message): string {
@@ -110,6 +140,9 @@ export async function runDocAgent(opts: DocAgentOptions): Promise<DocAgentResult
   let answer = "";
 
   for (let step = 0; step < MAX_STEPS; step++) {
+    // Bail out (unbilled) if the user hit Stop between steps, so we don't keep
+    // spending on tool rounds and generation for an abandoned turn.
+    if (opts.abortSignal?.aborted) throw new DocAgentAbortedError();
     stepsUsed = step + 1;
 
     // Interim steps are not streamed to the user: the model narrates its tool
@@ -119,13 +152,17 @@ export async function runDocAgent(opts: DocAgentOptions): Promise<DocAgentResult
       opts.onStatus({ phase: step === 0 ? "retrieving" : isLikelyFinal ? "answering" : "reading" });
     }
 
-    const stream = client.messages.stream({
-      model: CHAT_MODEL,
-      max_tokens: MAX_TOKENS_PER_STEP,
-      system,
-      tools: DOC_TOOL_DEFINITIONS,
-      messages: applyCacheBreakpoints(messages),
-    });
+    const stream = client.messages.stream(
+      {
+        model: CHAT_MODEL,
+        max_tokens: MAX_TOKENS_PER_STEP,
+        system,
+        tools: DOC_TOOL_DEFINITIONS,
+        messages: applyCacheBreakpoints(messages),
+        ...THINKING_OFF,
+      },
+      { signal: opts.abortSignal }
+    );
     stream.on("error", (err: unknown) => {
       logError({
         category: "fetching",
@@ -197,19 +234,24 @@ export async function runDocAgent(opts: DocAgentOptions): Promise<DocAgentResult
   // research). Ask once for an answer from what was gathered, with tools off so
   // it cannot start another round.
   if (!answer) {
-    const closing = client.messages.stream({
-      model: CHAT_MODEL,
-      max_tokens: MAX_TOKENS_PER_STEP,
-      system,
-      messages: applyCacheBreakpoints([
-        ...messages,
-        {
-          role: "user",
-          content:
-            "Answer the question now using only the passages above. Do not request more.",
-        },
-      ]),
-    });
+    if (opts.abortSignal?.aborted) throw new DocAgentAbortedError();
+    const closing = client.messages.stream(
+      {
+        model: CHAT_MODEL,
+        max_tokens: MAX_TOKENS_PER_STEP,
+        system,
+        ...THINKING_OFF,
+        messages: applyCacheBreakpoints([
+          ...messages,
+          {
+            role: "user",
+            content:
+              "Answer the question now using only the passages above. Do not request more.",
+          },
+        ]),
+      },
+      { signal: opts.abortSignal }
+    );
     const finalMsg = await closing.finalMessage();
     accUsage(finalMsg.usage);
     answer = textOf(finalMsg);
@@ -232,5 +274,6 @@ export async function runDocAgent(opts: DocAgentOptions): Promise<DocAgentResult
     toolCalls,
     stepsUsed,
     budgetHit,
+    creditBudget: CREDIT_BUDGET,
   };
 }

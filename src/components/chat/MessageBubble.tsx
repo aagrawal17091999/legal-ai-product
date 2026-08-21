@@ -3,6 +3,7 @@
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { userFacingError } from "@/lib/user-error";
 import type { ChatMessage, CitationRef } from "@/types";
 
 interface MessageBubbleProps {
@@ -29,6 +30,15 @@ function MessageBubble({
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const prepared = isUser ? message.content : inlineCitations(message.content);
+  // A turn the server recorded as failed. "cancelled" is a user-initiated stop,
+  // not a failure, so it is not dressed up as one.
+  const failed =
+    !isUser && message.status === "error" && message.error !== "cancelled";
+  // Completed, but the answer isn't trustworthy/complete (empty generation, or
+  // the forced-synthesis fallback). Worth flagging, but not an outright failure.
+  const degraded = !isUser && message.status === "degraded";
+  // The row stores the raw provider failure for debugging; never render it.
+  const failureReason = failed ? userFacingError(message.error) : null;
 
   const handleCitationHref = (href: string): boolean => {
     const match = href.match(CITATION_HREF_RE);
@@ -52,7 +62,9 @@ function MessageBubble({
         className={`max-w-[85%] rounded-xl px-5 py-4 ${
           isUser
             ? "bg-navy-950 text-ivory-50"
-            : "bg-ivory-100 border border-ivory-200 text-charcoal-900"
+            : failed
+              ? "bg-burgundy-100 border border-burgundy-700/30 text-charcoal-900"
+              : "bg-ivory-100 border border-ivory-200 text-charcoal-900"
         }`}
       >
         {isUser ? (
@@ -89,9 +101,33 @@ function MessageBubble({
             >
               {prepared}
             </ReactMarkdown>
-            {message.status === "error" && message.error && (
-              <p className="text-xs text-burgundy-700 mt-2">
-                Error: {message.error}
+            {/* The failed state has to be visible on the turn itself — not just
+                a transient banner that a scroll or the next message hides, and
+                not only after a reload re-reads `status` off the row. */}
+            {failed && (
+              <div className="mt-3 flex items-start gap-2 border-t border-burgundy-700/20 pt-3">
+                <svg
+                  className="w-4 h-4 text-burgundy-700 mt-0.5 flex-shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+                <p className="text-[12px] text-burgundy-700 leading-relaxed">
+                  <span className="font-semibold">This answer failed.</span>
+                  {failureReason ? ` ${failureReason}` : " Please try again."}
+                </p>
+              </div>
+            )}
+            {degraded && (
+              <p className="mt-3 border-t border-ivory-200 pt-3 text-[12px] text-charcoal-500 leading-relaxed">
+                This answer came back incomplete. Try rephrasing your question.
               </p>
             )}
           </div>

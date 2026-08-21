@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
+import { reportError } from "@/lib/report-error";
 import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Button from "@/components/ui/Button";
@@ -122,7 +123,20 @@ export default function TranslatePage() {
           delete next[jobId];
           return next;
         });
+        setError(null);
+      } else {
+        // Previously silent: the row stayed put after a confirmed delete, which
+        // reads as the click not registering.
+        setError(`Couldn't delete "${name}". Please try again.`);
+        reportError("Failed to delete translation job", {
+          page: "translate",
+          jobId,
+          http_status: res.status,
+        });
       }
+    } catch (err) {
+      setError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to delete translation job", { page: "translate", jobId }, err);
     } finally {
       setDeletingId(null);
     }
@@ -165,6 +179,12 @@ export default function TranslatePage() {
       if (fileRef.current) fileRef.current.value = "";
       await loadJobs();
       void refreshCredits();
+    } catch (err) {
+      // There was no catch here at all: a dropped connection mid-upload threw
+      // an unhandled rejection, the spinner stopped, and the user was left
+      // staring at an unchanged page with no job and no explanation.
+      setError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to start translation job", { page: "translate" }, err);
     } finally {
       setSubmitting(false);
     }

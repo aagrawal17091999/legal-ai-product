@@ -50,6 +50,12 @@ export interface FaithfulnessFinding {
   verdict: FaithfulnessVerdict;
   reason: string;
   /**
+   * Half-open range of this claim in the graded text, or undefined when the
+   * claim is not safely replaceable in place (currently: Markdown table rows).
+   * The grounding patch splices by this range — see `Claim.start`.
+   */
+  span?: { start: number; end: number };
+  /**
    * For "supported" verdicts: the verbatim span from the cited case's excerpt
    * that backs the claim, validated as a substring of that excerpt. Undefined
    * when the judge returned no quote or the quote could not be verified verbatim
@@ -58,19 +64,22 @@ export interface FaithfulnessFinding {
   quote?: string;
 }
 
-export interface FaithfulnessResult {
-  /** Possibly-augmented answer (warning footer appended when unsupported claims exist). */
-  text: string;
-  findings: FaithfulnessFinding[];
-  /** Number of (claim, case) pairs actually sent to the judge. */
-  checked: number;
-  /** True if the judge ran; false when skipped (no claims) or it errored. */
-  ran: boolean;
-}
-
 interface Claim {
+  /** The claim as the judge sees it: de-marked-down, citation markers removed. */
   text: string;
   indices: number[];
+  /**
+   * Half-open character range of the claim in the ORIGINAL answer string, i.e.
+   * `answer.slice(start, end)` is the untouched source text `text` was derived
+   * from. The grounding patch splices replacements by this range.
+   *
+   * `text` cannot be used to find the claim in the answer: it has had Markdown
+   * decoration and every `[^n]` marker stripped, and a claim only exists
+   * *because* it carries a marker — so a literal search for it in the draft can
+   * never match. Carrying the range is what makes a surgical repair possible.
+   */
+  start: number;
+  end: number;
 }
 
 export interface GradeResult {
@@ -101,11 +110,17 @@ export async function gradeDraft(
   }
 
   // One (claim, case) pair per cited index, capped.
-  const pairs: Array<{ id: number; claim: string; index: number }> = [];
+  const pairs: Array<{
+    id: number;
+    claim: string;
+    index: number;
+    span?: { start: number; end: number };
+  }> = [];
   for (const cl of claims) {
+    const span = cl.start >= 0 ? { start: cl.start, end: cl.end } : undefined;
     for (const idx of cl.indices) {
       if (!byIndex.has(idx)) continue;
-      pairs.push({ id: pairs.length + 1, claim: cl.text, index: idx });
+      pairs.push({ id: pairs.length + 1, claim: cl.text, index: idx, span });
       if (pairs.length >= MAX_CLAIMS) break;
     }
     if (pairs.length >= MAX_CLAIMS) break;
@@ -171,52 +186,63 @@ export function describeUnsupported(findings: FaithfulnessFinding[]): string {
     .join("\n");
 }
 
-/**
- * Verify that each cited sentence in `answer` is supported, appending a warning
- * footer for unsupported claims. Thin wrapper over gradeDraft — kept as a
- * post-hoc backstop in the route. Returns the (possibly-augmented) text.
- */
-export async function verifyFaithfulness(
-  answer: string,
-  cases: AssembledCase[]
-): Promise<FaithfulnessResult> {
-  const byIndex = new Map<number, AssembledCase>();
-  for (const c of cases) byIndex.set(c.index, c);
-
-  const grade = await gradeDraft(answer, cases);
-  if (!grade.ran || grade.unsupported.length === 0) {
-    return { text: answer, findings: grade.findings, checked: grade.checked, ran: grade.ran };
-  }
-  return {
-    text: answer + buildFooter(grade.unsupported, byIndex),
-    findings: grade.findings,
-    checked: grade.checked,
-    ran: grade.ran,
-  };
-}
-
 // Sentence boundary inside a single line of prose. The lookbehind treats the
 // boundary as sentence punctuation followed by any closing quotes/brackets and
 // any trailing citation markers — so a marker placed AFTER the period
 // ("…held X. [^3] Next…") or a closing quote ("…offences." Next…) stays with the
 // sentence it ends, and the split lands before the NEXT sentence. The lookahead
 // excludes `[` so a marker's own bracket never reads as a new sentence start.
-const SENTENCE_BOUNDARY_RE =
-  /(?<=[.!?](?:["'”’)\]]|\s*\[\^[^\]]*\])*)\s+(?=[A-Z("'“])/;
+/**
+ * Abbreviations whose trailing period does NOT end a sentence. This list is
+ * mostly Indian case-citation vocabulary, and it is not cosmetic: without the
+ * `v.` guard, EVERY case name splits mid-citation. "State of Punjab v. Joginder
+ * Singh held that…" became the claim "Joginder Singh held that…", which the
+ * judge then (correctly) could not verify, because it is a fragment rather than
+ * an assertion. On one production answer this manufactured five of the nine
+ * "unsupported" findings, each of which cost a full-answer rewrite and shipped
+ * a groundedness warning to the user about a sentence that was never wrong.
+ */
+const NON_TERMINAL_ABBREVS = [
+  "v", "vs", "Ors", "Anr", "No", "Nos", "Art", "Arts", "Sec", "Secs", "ss",
+  "Ltd", "Pvt", "Co", "Corp", "Hon", "JJ", "J", "CJ", "Mr", "Mrs", "Ms", "Dr",
+  "Smt", "Shri", "Sri", "cl", "para", "paras", "pp", "ed", "edn", "Ex", "Sch",
+  "Regn", "Cri", "LJ", "SCC", "AIR", "SCR", "Cal", "Bom", "Mad", "All", "Del",
+];
+
+const SENTENCE_BOUNDARY_RE = new RegExp(
+  // Not immediately after a known abbreviation ("… v.") …
+  `(?<!\\b(?:${NON_TERMINAL_ABBREVS.join("|")})\\.)` +
+    // … nor after a bare initial ("A. B. Smith", "Subba Rao, J.").
+    `(?<![A-Z]\\.)` +
+    // Original rule: after a terminator, optionally trailed by closing
+    // punctuation or a citation marker, split on whitespace before a capital.
+    `(?<=[.!?](?:["'”’)\\]]|\\s*\\[\\^[^\\]]*\\])*)\\s+(?=[A-Z("'“])`
+);
+
+/** A Markdown table separator row (`|---|:--:|`), which carries no assertion. */
+const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 
 /**
- * Strip Markdown decoration from one line so a claim reads as plain prose: drop
- * leading block markers (blockquote, heading, list bullet, ordered-list number),
- * unwrap emphasis/code/links, and discard horizontal rules. Citation markers
- * (`[^n]`, `[^n, ¶p]`) are preserved — the link rule only unwraps `[text](url)`,
- * whose text never starts with `^`.
+ * Split a line into its leading block marker and the remainder. Returned
+ * separately (rather than simply dropped) so callers can keep the remainder's
+ * offset within the original answer — `lead.length` is exactly how far the
+ * content start moved. `rest: null` means the line carries no claim at all
+ * (horizontal rule).
  */
-function stripMarkdown(line: string): string {
-  let s = line.replace(/^\s*>+\s?/, ""); // blockquote
-  s = s.replace(/^\s*#{1,6}\s+/, ""); // heading
-  s = s.replace(/^\s*\d+\.\s+/, ""); // ordered list
-  s = s.replace(/^\s*[-*+]\s+/, ""); // bullet
-  if (/^\s*([-*_])\1{2,}\s*$/.test(s)) return ""; // horizontal rule
+function splitLeadMarker(line: string): { lead: string; rest: string | null } {
+  const m =
+    /^\s*>+\s?/.exec(line) ?? // blockquote
+    /^\s*#{1,6}\s+/.exec(line) ?? // heading
+    /^\s*\d+\.\s+/.exec(line) ?? // ordered list
+    /^\s*[-*+]\s+/.exec(line); // bullet
+  const lead = m ? m[0] : "";
+  const rest = line.slice(lead.length);
+  if (/^\s*([-*_])\1{2,}\s*$/.test(rest)) return { lead, rest: null }; // horizontal rule
+  return { lead, rest };
+}
+
+/** Inline de-decoration only — never touches leading block markers. */
+function stripInline(s: string): string {
   s = s.replace(/\[([^^\]][^\]]*)\]\([^)]*\)/g, "$1"); // [text](url) → text
   s = s.replace(/`([^`]+)`/g, "$1"); // inline code
   s = s.replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, (_m, a, b) => a ?? b); // bold
@@ -236,29 +262,101 @@ function stripMarkdown(line: string): string {
  */
 export function extractClaims(text: string): Claim[] {
   const claims: Claim[] = [];
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = stripMarkdown(rawLine);
-    if (!line) continue;
-    for (const sentence of line.split(SENTENCE_BOUNDARY_RE)) {
-      const indices = new Set<number>();
-      MARKER_RE.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = MARKER_RE.exec(sentence)) !== null) {
-        indices.add(parseInt(m[1], 10));
-      }
-      if (indices.size === 0) continue;
+  let lineStart = 0;
 
-      const cleaned = sentence.replace(MARKER_RE, "").replace(/\s+/g, " ").trim();
+  for (const rawLine of text.split(/\r?\n/)) {
+    // Advance past this line regardless of which branch consumes it.
+    const thisLineStart = lineStart;
+    lineStart += rawLine.length + 1; // +1 for the newline the split removed
+
+    // A Markdown table row is not prose: its proposition and its citation live
+    // in DIFFERENT cells, so sentence-splitting it yields fragments like
+    // `Joginder Singh ; Ram Lal Wadhwa |` — which the judge duly reports as
+    // unsupported. Join the cells so the row is graded as one assertion that
+    // carries its own citation, and mark it unsplicable: replacing a table row
+    // with prose would wreck the table.
+    if (/^\s*\|.*\|\s*$/.test(rawLine)) {
+      if (TABLE_SEPARATOR_RE.test(rawLine)) continue;
+      const cells = rawLine
+        .trim()
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((c) => stripInline(c))
+        .filter(Boolean);
+      const joined = cells.join(" — ");
+      const indices = markerIndices(joined);
+      if (indices.length === 0) continue;
+      const cleaned = tidy(joined);
+      if (cleaned.length < MIN_CLAIM_CHARS) continue;
+      claims.push({ text: cleaned, indices, start: -1, end: -1 });
+      continue;
+    }
+
+    const { lead, rest } = splitLeadMarker(rawLine);
+    if (rest === null || !rest.trim()) continue;
+
+    // Split the RAW remainder, so every sentence keeps its offset. (Splitting
+    // the de-decorated line instead would make the offsets meaningless — which
+    // is why the patch could never locate a claim.)
+    let cursor = thisLineStart + lead.length;
+    for (const rawSentence of rest.split(SENTENCE_BOUNDARY_RE)) {
+      const start = cursor;
+      cursor += rawSentence.length;
+      // `split` consumed the whitespace between sentences; re-find the next
+      // sentence's true start rather than assuming a single space.
+      const nextNonSpace = text.slice(cursor).search(/\S/);
+      if (nextNonSpace > 0) cursor += nextNonSpace;
+
+      const indices = markerIndices(rawSentence);
+      if (indices.length === 0) continue;
+
+      const cleaned = tidy(stripInline(rawSentence));
       if (cleaned.length < MIN_CLAIM_CHARS) continue;
 
-      claims.push({ text: cleaned, indices: Array.from(indices) });
+      // Trim the recorded span to the sentence's own non-space extent so a
+      // splice cannot swallow the whitespace that separates it from the next.
+      const lead2 = rawSentence.length - rawSentence.trimStart().length;
+      const trail = rawSentence.length - rawSentence.trimEnd().length;
+      claims.push({
+        text: cleaned,
+        indices,
+        start: start + lead2,
+        end: start + rawSentence.length - trail,
+      });
     }
   }
   return claims;
 }
 
+/**
+ * Render a sentence as the judge should read it: citation markers removed, and
+ * the space they leave in front of the punctuation they preceded closed up, so
+ * a claim reads `… delay.` rather than `… delay .`.
+ */
+function tidy(s: string): string {
+  return s
+    .replace(MARKER_RE, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .trim();
+}
+
+/** Distinct case indices cited by `s`, in first-seen order. */
+function markerIndices(s: string): number[] {
+  const indices = new Set<number>();
+  MARKER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = MARKER_RE.exec(s)) !== null) indices.add(parseInt(m[1], 10));
+  return Array.from(indices);
+}
+
 async function runJudge(
-  pairs: Array<{ id: number; claim: string; index: number }>,
+  pairs: Array<{
+    id: number;
+    claim: string;
+    index: number;
+    span?: { start: number; end: number };
+  }>,
   citedIndices: number[],
   byIndex: Map<number, AssembledCase>
 ): Promise<FaithfulnessFinding[]> {
@@ -316,6 +414,7 @@ async function runJudge(
       verdict,
       reason: v?.reason ?? "no verdict returned",
       ...(quote ? { quote } : {}),
+      ...(p.span ? { span: p.span } : {}),
     });
   }
   return findings;

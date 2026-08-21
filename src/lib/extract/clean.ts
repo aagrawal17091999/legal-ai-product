@@ -170,11 +170,6 @@ function stripJunkLines(text: string): string {
     .join("\n");
 }
 
-/** Clean a single block of extracted text (line + pattern passes). */
-export function cleanText(text: string): string {
-  return stripPatterns(stripJunkLines(text || ""));
-}
-
 /**
  * Clean per-page extracted text before chunking: drop running headers/footers
  * (cross-page), drop known junk lines, then strip inline stamp/footer patterns.

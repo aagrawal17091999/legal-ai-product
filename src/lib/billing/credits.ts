@@ -123,7 +123,16 @@ export async function debit(
   return { charged: credits, remaining, wentNegative: remaining < 0 };
 }
 
-type GrantType = "signup_grant" | "monthly_reset" | "topup" | "refund";
+type GrantType =
+  | "signup_grant"
+  | "monthly_reset"
+  | "topup"
+  | "refund"
+  /** Staff-issued credits (admin console). Lands in topup_credits like a purchase,
+   *  but with amount_inr NULL so it never inflates revenue figures. */
+  | "admin_grant"
+  /** Staff claw-back of credits. Stored with a NEGATIVE `credits` value. */
+  | "admin_revoke";
 
 /**
  * Add credits and record the transaction. `monthly_reset` SETS plan_credits to
@@ -233,14 +242,77 @@ export async function refund(
   return grant({ userId, type: "refund", credits: rounded, amountInr });
 }
 
-/** One-time free allowance for a brand-new user (no-op if already granted). */
+/**
+ * Staff adjustment of a user's wallet from the admin console.
+ *
+ * Adds to (or, for a negative amount, removes from) `topup_credits` — the
+ * persistent bucket — so a grant survives the next billing-cycle reset, which is
+ * what "give this user extra credits" means in every case we actually issue it
+ * for (support gesture, comped trial, correcting a mis-metered job).
+ *
+ * A claw-back is clamped to the balance on hand: an admin typo must not push a
+ * user into a negative wallet, which would silently block them AND withhold any
+ * async outputs they had already paid for. The clamped figure is returned so the
+ * caller can record what really happened rather than what was asked for.
+ */
+export async function adminAdjustCredits(opts: {
+  userId: number;
+  /** Positive to grant, negative to revoke. Rounded to a whole credit. */
+  credits: number;
+}): Promise<{ applied: number; remaining: number }> {
+  const requested = Math.round(opts.credits);
+  if (requested === 0) {
+    return { applied: 0, remaining: await getRemaining(opts.userId) };
+  }
+
+  let applied = requested;
+  if (requested < 0) {
+    const remaining = await getRemaining(opts.userId);
+    // Nothing left to take back.
+    if (remaining <= 0) return { applied: 0, remaining };
+    applied = -Math.min(-requested, remaining);
+  }
+
+  await grant({
+    userId: opts.userId,
+    type: applied > 0 ? "admin_grant" : "admin_revoke",
+    credits: applied,
+  });
+
+  // A grant can lift a user out of a negative balance, which is exactly when
+  // their finished-but-withheld jobs should be released.
+  if (applied > 0) await unlockOutputs(opts.userId);
+
+  return { applied, remaining: await getRemaining(opts.userId) };
+}
+
+/**
+ * One-time free allowance for a brand-new user (no-op if already granted).
+ *
+ * The ledger pre-check alone is NOT enough: it is a check-then-act race, and
+ * auth.ts calls this on every upsert. A first login that fans out into several
+ * concurrent requests had every one of them read an empty ledger and then insert
+ * its own grant — which is how users ended up with 200 and 300 free credits
+ * instead of 100. The `signup:<id>` idempotency key puts the guard in the
+ * database instead: it lands in razorpay_payment_id, which carries a partial
+ * unique index, so concurrent callers race on an INSERT that only one can win
+ * and grant() maps the losers' 23505 to a no-op.
+ *
+ * The pre-check stays because it also covers grants made before this key
+ * existed, whose rows have a NULL key and so are invisible to the index.
+ */
 export async function grantSignupCredits(userId: number): Promise<void> {
   const existing = await pool.query(
     `SELECT 1 FROM credit_transactions WHERE user_id = $1 LIMIT 1`,
     [userId]
   );
   if (existing.rows.length > 0) return;
-  await grant({ userId, type: "signup_grant", credits: PLAN_CREDITS.freeLifetime });
+  await grant({
+    userId,
+    type: "signup_grant",
+    credits: PLAN_CREDITS.freeLifetime,
+    idempotencyKey: `signup:${userId}`,
+  });
 }
 
 /** Re-open any locked async outputs after a top-up restores a positive balance. */

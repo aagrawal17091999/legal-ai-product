@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { deleteFromR2 } from "@/lib/r2";
+import { expireStaleDocuments } from "@/lib/docchat/expire";
 import { logError } from "@/lib/error-logger";
 
 async function ownWorkspace(userId: number, workspaceId: string): Promise<boolean> {
@@ -23,6 +24,10 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     if (!(await ownWorkspace(user.id, id))) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
+
+    // Settle any document whose ingestion died with the process, so this read
+    // returns a terminal `failed` state instead of a permanent "Processing".
+    await expireStaleDocuments(id);
 
     const [ws, docs, convs] = await Promise.all([
       pool.query(`SELECT id, title, created_at, updated_at FROM workspaces WHERE id = $1`, [id]),

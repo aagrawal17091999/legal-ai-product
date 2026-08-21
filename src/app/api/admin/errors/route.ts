@@ -1,24 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth, getRequestUser } from "@/lib/auth";
+import { requireStaff } from "@/lib/admin";
 import pool from "@/lib/db";
 import type { ErrorLog } from "@/types";
-
-/**
- * Resolve the caller and require staff. Returns the same 404 used by the trace
- * route for non-staff so we don't even confirm the admin surface exists. Any
- * authenticated-but-non-staff user (i.e. every normal customer) is rejected.
- */
-async function requireStaff(request: NextRequest) {
-  const decoded = await verifyAuth(request);
-  if (!decoded) {
-    return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  }
-  const user = await getRequestUser(decoded);
-  if (!user.is_staff) {
-    return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
-  }
-  return { user };
-}
 
 // GET /api/admin/errors — Query error logs with filters
 export async function GET(request: NextRequest) {
@@ -29,6 +12,8 @@ export async function GET(request: NextRequest) {
   const category = searchParams.get("category");
   const severity = searchParams.get("severity");
   const resolved = searchParams.get("resolved");
+  const userId = searchParams.get("userId");
+  const email = (searchParams.get("email") ?? "").trim();
   const from = searchParams.get("from");
   const to = searchParams.get("to");
   const limit = Math.min(parseInt(searchParams.get("limit") || "50"), 200);
@@ -45,6 +30,24 @@ export async function GET(request: NextRequest) {
   if (severity) {
     clauses.push(`severity = $${paramIndex++}`);
     params.push(severity);
+  }
+  // Per-user view (the admin user profile). A non-numeric value would otherwise
+  // reach Postgres and blow up the whole query, so drop it rather than 400 —
+  // this is a filter, and an unparseable filter is best treated as absent.
+  if (userId && Number.isInteger(Number(userId))) {
+    clauses.push(`user_id = $${paramIndex++}`);
+    params.push(Number(userId));
+  }
+  // Support requests arrive as an email address, not an internal id. Resolved
+  // in the subquery rather than a second round-trip; `idx_users_email_lower`
+  // (migration 029) makes the LOWER() comparison an index hit. An address that
+  // matches no user yields no rows, which is the honest answer — better than
+  // silently dropping the filter and showing everyone else's errors.
+  if (email) {
+    clauses.push(
+      `user_id = (SELECT id FROM users WHERE LOWER(email) = LOWER($${paramIndex++}))`
+    );
+    params.push(email);
   }
   if (resolved !== null && resolved !== undefined && resolved !== "") {
     clauses.push(`resolved = $${paramIndex++}`);

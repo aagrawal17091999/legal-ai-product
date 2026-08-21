@@ -1,0 +1,178 @@
+// Grafana Alloy — ships this box's logs to Grafana Cloud Loki.
+//
+// Install with scripts/install-alloy.sh, which renders the two secrets below
+// from .env.production.local and writes the result to /etc/alloy/config.alloy.
+//
+// Sources:
+//   1. pm2 stdout/stderr for the Next.js app  — structured JSON from src/lib/logger.ts
+//   2. nginx access + error logs              — request-level view, incl. traffic the app never saw
+//   3. journald                               — the systemd timers (backups, canary, watchdogs)
+//
+// ## Labels vs structured metadata — the thing to get right
+//
+// Every distinct combination of LABEL values creates a separate Loki stream.
+// Putting `userId` or `requestId` in a label would mint one stream per user per
+// request: that is the classic cardinality explosion, and on the free tier it
+// will get the ingester to start rejecting writes.
+//
+// So labels stay low-cardinality and bounded (job, host, level, category), and
+// the high-cardinality identifiers go into STRUCTURED METADATA, which Loki
+// indexes separately and which is still directly queryable:
+//
+//   {job="nyayasearch"} | userId=`937`
+//   {job="nyayasearch"} | requestId=`3f2a…`
+//
+// That is what answers "everything for this account in this window" without
+// making the free tier fall over.
+
+logging {
+  level  = "warn"          // Alloy's own logs; "info" is chatty enough to be noise
+  format = "logfmt"
+}
+
+// ---------------------------------------------------------------------------
+// 1. The Next.js app, via pm2.
+//
+// pm2 writes <app>-out.log and <app>-error.log. The glob covers both, and both
+// production and staging if staging is ever actually created on the box.
+// ---------------------------------------------------------------------------
+local.file_match "pm2" {
+  path_targets = [
+    {
+      __path__ = "/root/.pm2/logs/nyayasearch*.log",
+      job      = "nyayasearch",
+      host     = env("HOSTNAME"),
+    },
+  ]
+}
+
+loki.source.file "pm2" {
+  targets    = local.file_match.pm2.targets
+  forward_to = [loki.process.app.receiver]
+  // Start at the END of the file on FIRST sight of it. pm2 writes one
+  // ever-growing file until pm2-logrotate is installed, so the existing
+  // nyayasearch-out.log may be very large — tailing it from byte 0 would ship
+  // months of backlog in one burst and could eat a serious fraction of the
+  // 50GB/month free tier before anyone noticed.
+  //
+  // This only affects files Alloy has never seen. Once a file is in the
+  // positions file it resumes from its recorded offset, so a restart does NOT
+  // skip lines written while Alloy was down.
+  tail_from_end = true
+}
+
+loki.process "app" {
+  forward_to = [loki.write.grafana_cloud.receiver]
+
+  // Our JSON lines. Anything that isn't JSON — Next.js boot banners, stack
+  // traces printed by a library, pm2's own noise — fails this stage and passes
+  // through with no extracted fields, which is what we want: it still reaches
+  // Loki, just without structure. drop_malformed would silently lose it.
+  stage.json {
+    expressions = {
+      ts       = "ts",
+      level    = "level",
+      category = "category",
+      severity = "severity",
+      userId   = "userId",
+      reqId    = "requestId",
+      endpoint = "endpoint",
+      method   = "method",
+    }
+    drop_malformed = false
+  }
+
+  // Use the app's own timestamp so a shipping backlog doesn't bunch every line
+  // at the recovery moment. "fudge" nudges duplicate timestamps by 1ns instead
+  // of dropping the line — two lines in the same millisecond are common.
+  stage.timestamp {
+    source                        = "ts"
+    format                        = "RFC3339Nano"
+    action_on_failure             = "skip"
+    action_on_duplicate_timestamp = "fudge"
+  }
+
+  // Bounded value sets only. level: 4 values. category: the 9 in the
+  // error_category enum. severity: 3.
+  stage.labels {
+    values = {
+      level    = "level",
+      category = "category",
+      severity = "severity",
+    }
+  }
+
+  // Unbounded — one value per user / per request / per route. Never labels.
+  stage.structured_metadata {
+    values = {
+      userId    = "userId",
+      requestId = "reqId",
+      endpoint  = "endpoint",
+      method    = "method",
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. nginx. Catches what never reached the app at all — TLS failures, 502s
+//    while pm2 is reloading, bot traffic — which is precisely the class of
+//    problem the app's own logs cannot show you.
+// ---------------------------------------------------------------------------
+local.file_match "nginx" {
+  path_targets = [
+    {
+      __path__ = "/var/log/nginx/*.log",
+      job      = "nginx",
+      host     = env("HOSTNAME"),
+    },
+  ]
+}
+
+loki.source.file "nginx" {
+  targets    = local.file_match.nginx.targets
+  forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+// ---------------------------------------------------------------------------
+// 3. journald — the systemd timers in deploy/systemd/. Without this, a backup
+//    or canary failure is only visible by SSH-ing in and running journalctl.
+// ---------------------------------------------------------------------------
+loki.source.journal "systemd" {
+  forward_to    = [loki.write.grafana_cloud.receiver]
+  labels        = { job = "systemd", host = env("HOSTNAME") }
+  relabel_rules = loki.relabel.journal.rules
+  max_age       = "12h"
+}
+
+loki.relabel "journal" {
+  forward_to = []
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Destination.
+// ---------------------------------------------------------------------------
+loki.write "grafana_cloud" {
+  endpoint {
+    url = env("LOKI_URL")
+    basic_auth {
+      username = env("LOKI_USER")
+      password = env("LOKI_PASSWORD")
+    }
+  }
+  // Keep a local buffer so a Grafana Cloud blip or a network drop doesn't lose
+  // lines. Capped, because this disk is shared with Postgres — see the disk
+  // watchdog; an unbounded log buffer is its own outage.
+  //
+  // NOTE: the wal block is marked EXPERIMENTAL upstream and its arguments are
+  // explicitly subject to breaking changes. If an Alloy upgrade ever fails
+  // `alloy validate`, this block is the first thing to check — drop it and
+  // Alloy still ships, it just loses in-flight lines across a restart.
+  wal {
+    enabled         = true
+    max_segment_age = "1h"
+  }
+}

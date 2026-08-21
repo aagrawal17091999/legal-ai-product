@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
-import { loadRazorpay } from "@/lib/loadRazorpay";
+import { openRazorpayCheckout } from "@/lib/razorpay-checkout";
+import { reportError } from "@/lib/report-error";
 import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import { trackClick } from "@/lib/analytics/client";
 import { EVENTS } from "@/lib/analytics/events";
@@ -63,7 +64,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
             }) => {
               try {
                 const verifyToken = await getToken();
-                await fetch("/api/payments/verify-subscription", {
+                const verifyRes = await fetch("/api/payments/verify-subscription", {
                   method: "POST",
                   headers: {
                     "Content-Type": "application/json",
@@ -71,16 +72,44 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
                   },
                   body: JSON.stringify(response),
                 });
-              } finally {
-                onClose();
+                // A failed verify was previously swallowed and the modal closed
+                // as if the upgrade had worked. Keep it open and say so instead.
+                if (!verifyRes.ok) {
+                  setError(
+                    "We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com."
+                  );
+                  router.refresh();
+                  return;
+                }
+              } catch {
+                setError(
+                  "We couldn't verify your payment. If you were charged, contact ansh@getlegalbrain.com."
+                );
                 router.refresh();
+                return;
               }
+              onClose();
+              router.refresh();
             },
           };
-          await loadRazorpay();
-          const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
-          rzp.open();
+          await openRazorpayCheckout({
+            options,
+            onFailure: setError,
+            context: { flow: "subscription_upgrade", plan },
+          });
+        } else {
+          // No publishable key at build time — checkout can never open, so tell
+          // the user rather than leaving the button inert.
+          setError("Payments aren't configured right now. Please try again later.");
         }
+      } else {
+        // 200 with no subscription id: nothing opens and nothing is said. The
+        // button just goes back to idle, which reads as a dead control.
+        setError("We couldn't start checkout. Please try again.");
+        reportError("Subscription checkout returned no subscription_id", {
+          component: "UpgradeModal",
+          plan,
+        });
       }
     } catch {
       setError("Something went wrong starting checkout. Please try again.");
@@ -111,7 +140,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
             className="w-full"
             disabled={subscribing}
           >
-            {subscribing ? "Processing…" : "₹2,000 / month →"}
+            {subscribing ? "Processing…" : "₹2,500 / month →"}
           </Button>
         )}
         {canYearly && (
@@ -121,7 +150,7 @@ export default function UpgradeModal({ isOpen, onClose }: UpgradeModalProps) {
             className="w-full"
             disabled={subscribing}
           >
-            ₹20,000 / year — save ₹4,000
+            ₹25,000 / year — save ₹5,000
           </Button>
         )}
       </div>

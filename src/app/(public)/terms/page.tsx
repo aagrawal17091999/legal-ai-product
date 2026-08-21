@@ -83,7 +83,7 @@ export default function TermsPage() {
                 processing it requires.
               </li>
               <li>
-                A free account receives a one-time allowance of 100 credits. It
+                A free account receives a one-time allowance of 200 credits. It
                 does not reset.
               </li>
               <li>

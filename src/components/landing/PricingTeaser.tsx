@@ -7,17 +7,17 @@ import Button from "@/components/ui/Button";
 import { loadRazorpay } from "@/lib/loadRazorpay";
 
 const plans = {
-  monthly: { price: "2,000", period: "/month", planKey: "monthly" as const },
+  monthly: { price: "2,500", period: "/month", planKey: "monthly" as const },
   yearly: {
-    price: "20,000",
+    price: "25,000",
     period: "/year",
-    savings: "Save ₹4,000",
+    savings: "Save ₹5,000",
     planKey: "yearly" as const,
   },
 };
 
 const freeFeatures = [
-  "100 free credits (one-time, no monthly reset)",
+  "200 free credits (one-time, no monthly reset)",
   "Spend them across research, workspaces, translation & OCR",
   "Streaming, cited answers",
   "Supreme Court and High Court coverage",
@@ -46,7 +46,7 @@ const pricingFaqs = [
   },
   {
     q: "Can I try Pro before committing?",
-    a: "The free plan gives you a genuine sense of how Legal Brain works: 100 credits, one time, shared across case-law research, document workspaces, translation, and OCR — with the same answer quality as Pro. The difference is volume and access: Pro adds 1,000 credits a month and unlocks every tool and pre-filter.",
+    a: "The free plan gives you a genuine sense of how Legal Brain works: 200 credits, one time, shared across case-law research, document workspaces, translation, and OCR — with the same answer quality as Pro. The difference is volume and access: Pro adds 1,000 credits a month and unlocks every tool and pre-filter.",
   },
   {
     q: "What happens if I run out of credits?",
@@ -58,7 +58,7 @@ const pricingFaqs = [
   },
   {
     q: "Can I switch between monthly and annual billing?",
-    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹20,000 for the year and save ₹4,000 compared to monthly billing. Either way you receive 1,000 credits every month.",
+    a: "Yes. You can switch from monthly to annual billing at any time from your account settings. When switching to annual, you will be billed ₹25,000 for the year and save ₹5,000 compared to monthly billing. Either way you receive 1,000 credits every month.",
   },
   {
     q: "What happens if I cancel?",
@@ -174,7 +174,7 @@ export default function PricingTeaser() {
             serious research.
           </h2>
           <p className="mt-6 max-w-xl mx-auto text-[17px] text-charcoal-600 leading-relaxed">
-            Start free with 100 credits — across research, workspaces,
+            Start free with 200 credits — across research, workspaces,
             translation, and OCR. Upgrade to Pro for 1,000 credits a month of
             citation-backed work, and top up whenever you need more.
           </p>
@@ -201,7 +201,7 @@ export default function PricingTeaser() {
             >
               Annual
               <span className={`ml-2 text-[12px] ${billing === "yearly" ? "text-gold-400" : "text-gold-600"}`}>
-                Save ₹3,000
+                Save ₹5,000
               </span>
             </button>
           </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
@@ -51,6 +52,16 @@ export default function AdminErrorsPage() {
   const [category, setCategory] = useState("");
   const [severity, setSeverity] = useState("");
   const [resolved, setResolved] = useState("false");
+  // Free-text account identifier: an email address or an internal user id,
+  // whichever the support request happened to arrive with. `accountInput` is
+  // what the operator is typing; `account` is the debounced value the query
+  // actually uses, so typing an address doesn't fire a request per keystroke.
+  const [accountInput, setAccountInput] = useState("");
+  const [account, setAccount] = useState("");
+  // `datetime-local` values ("2026-08-21T14:30"), i.e. local wall-clock with no
+  // zone. Converted to a real instant before they reach the API — see below.
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [expanded, setExpanded] = useState<number | null>(null);
   const [resolving, setResolving] = useState(false);
@@ -64,6 +75,15 @@ export default function AdminErrorsPage() {
       if (category) qs.set("category", category);
       if (severity) qs.set("severity", severity);
       if (resolved) qs.set("resolved", resolved);
+      // Digits mean an internal id; anything else is treated as an email.
+      const acct = account.trim();
+      if (acct) qs.set(/^\d+$/.test(acct) ? "userId" : "email", acct);
+      // created_at is TIMESTAMPTZ. Sending the bare "2026-08-21T14:30" string
+      // would have Postgres read it in the SERVER's zone (UTC on the box) while
+      // the operator typed it in theirs — a silently wrong window, off by the
+      // UTC offset. toISOString() pins the instant the operator actually meant.
+      if (from) qs.set("from", new Date(from).toISOString());
+      if (to) qs.set("to", new Date(to).toISOString());
 
       const res = await fetch(`/api/admin/errors?${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -87,7 +107,12 @@ export default function AdminErrorsPage() {
     } finally {
       setLoading(false);
     }
-  }, [getToken, offset, category, severity, resolved]);
+  }, [getToken, offset, category, severity, resolved, account, from, to]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setAccount(accountInput), 350);
+    return () => clearTimeout(t);
+  }, [accountInput]);
 
   useEffect(() => {
     load();
@@ -96,7 +121,7 @@ export default function AdminErrorsPage() {
   // Any filter change invalidates the current page offset.
   useEffect(() => {
     setOffset(0);
-  }, [category, severity, resolved]);
+  }, [category, severity, resolved, account, from, to]);
 
   const resolveSelected = async () => {
     if (selected.size === 0) return;
@@ -160,6 +185,9 @@ export default function AdminErrorsPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Link href="/admin/users">
+              <Button variant="ghost">Users →</Button>
+            </Link>
             <Button variant="outline" onClick={load} disabled={loading}>
               Refresh
             </Button>
@@ -208,6 +236,46 @@ export default function AdminErrorsPage() {
               </option>
             ))}
           </select>
+          <input
+            type="search"
+            value={accountInput}
+            onChange={(e) => setAccountInput(e.target.value)}
+            placeholder="Account — email or user id"
+            aria-label="Filter by account (email or user id)"
+            className="min-w-[15rem] rounded-lg border border-ivory-200 bg-ivory-100 px-3 py-2 text-[14px] text-charcoal-900 placeholder:text-charcoal-400"
+          />
+          <label className="flex items-center gap-2 text-[13px] text-charcoal-600">
+            From
+            <input
+              type="datetime-local"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="rounded-lg border border-ivory-200 bg-ivory-100 px-3 py-2 text-[14px] text-charcoal-900"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-[13px] text-charcoal-600">
+            To
+            <input
+              type="datetime-local"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="rounded-lg border border-ivory-200 bg-ivory-100 px-3 py-2 text-[14px] text-charcoal-900"
+            />
+          </label>
+          {(accountInput || from || to || category || severity) && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAccountInput("");
+                setFrom("");
+                setTo("");
+                setCategory("");
+                setSeverity("");
+              }}
+            >
+              Clear
+            </Button>
+          )}
         </div>
 
         {loadError && (
@@ -351,7 +419,17 @@ function ErrorRow({
           {log.method ? `${log.method} ` : ""}
           {log.endpoint ?? "—"}
         </td>
-        <td className="px-3 py-2.5 text-charcoal-600 tabular-nums">{log.user_id ?? "—"}</td>
+        <td className="px-3 py-2.5 text-charcoal-600 tabular-nums">
+          {log.user_id ? (
+            // The user id alone was a dead end — this is the jump to the account
+            // it happened to, where the plan and wallet explain most of them.
+            <Link href={`/admin/users/${log.user_id}`} className="text-gold-700 hover:underline">
+              {log.user_id}
+            </Link>
+          ) : (
+            "—"
+          )}
+        </td>
       </tr>
       {expanded && hasDetail && (
         <tr className="border-b border-ivory-200 bg-ivory-100/70">

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { reportError } from "@/lib/report-error";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 
@@ -21,6 +22,10 @@ export default function WorkspaceListPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Failures from an action (create/rename/delete) rather than the initial load.
+  // Kept separate from `error`, which replaces the entire list with a retry
+  // panel — blanking the list because a delete failed would be wrong.
+  const [actionError, setActionError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -82,7 +87,20 @@ export default function WorkspaceListPage() {
           prev.map((w) => (w.id === id ? { ...w, title: data.title ?? null } : w))
         );
         setEditingId(null);
+        setActionError(null);
+      } else {
+        // Previously silent: the field just stayed in edit mode as though the
+        // save had never been clicked.
+        setActionError("Couldn't rename this workspace. Please try again.");
+        reportError("Failed to rename workspace", {
+          page: "workspace_list",
+          workspaceId: id,
+          http_status: res.status,
+        });
       }
+    } catch (err) {
+      setActionError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to rename workspace", { page: "workspace_list", workspaceId: id }, err);
     } finally {
       setSavingId(null);
     }
@@ -102,7 +120,22 @@ export default function WorkspaceListPage() {
         method: "DELETE",
         headers: await authHeaders(),
       });
-      if (res.ok) setWorkspaces((prev) => prev.filter((w) => w.id !== ws.id));
+      if (res.ok) {
+        setWorkspaces((prev) => prev.filter((w) => w.id !== ws.id));
+        setActionError(null);
+      } else {
+        // Previously silent: the row stayed put and the user had no way to tell
+        // whether the delete had been rejected or simply not registered.
+        setActionError(`Couldn't delete "${label}". Please try again.`);
+        reportError("Failed to delete workspace", {
+          page: "workspace_list",
+          workspaceId: ws.id,
+          http_status: res.status,
+        });
+      }
+    } catch (err) {
+      setActionError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to delete workspace", { page: "workspace_list", workspaceId: ws.id }, err);
     } finally {
       setDeletingId(null);
     }
@@ -118,8 +151,25 @@ export default function WorkspaceListPage() {
       });
       if (res.ok) {
         const ws = await res.json();
+        setActionError(null);
         router.push(`/workspace/${ws.id}`);
+        return;
       }
+      // Previously silent: "New workspace" spun briefly and then did nothing at
+      // all, with no indication that anything had gone wrong.
+      const data = await res.json().catch(() => ({} as Record<string, unknown>));
+      setActionError(
+        typeof data.error === "string"
+          ? data.error
+          : "Couldn't create a workspace. Please try again."
+      );
+      reportError("Failed to create workspace", {
+        page: "workspace_list",
+        http_status: res.status,
+      });
+    } catch (err) {
+      setActionError("Couldn't reach the server. Check your connection and try again.");
+      reportError("Failed to create workspace", { page: "workspace_list" }, err);
     } finally {
       setCreating(false);
     }
@@ -141,6 +191,34 @@ export default function WorkspaceListPage() {
             {creating ? <Spinner /> : "New workspace"}
           </Button>
         </div>
+
+        {actionError && (
+          <div className="mb-5 flex items-start gap-2 rounded-lg border border-burgundy-700/30 bg-burgundy-100 px-4 py-3">
+            <svg
+              className="w-4 h-4 text-burgundy-700 mt-0.5 flex-shrink-0"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+            <p className="flex-1 text-[13px] text-burgundy-700 leading-relaxed">{actionError}</p>
+            <button
+              onClick={() => setActionError(null)}
+              className="text-burgundy-700/60 hover:text-burgundy-700 flex-shrink-0"
+              title="Dismiss"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-20">

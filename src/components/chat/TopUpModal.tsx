@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
-import { loadRazorpay } from "@/lib/loadRazorpay";
+import { openRazorpayCheckout } from "@/lib/razorpay-checkout";
 import { trackClick } from "@/lib/analytics/client";
 import { EVENTS } from "@/lib/analytics/events";
 import type { TopupTierView } from "@/hooks/useCredits";
@@ -103,11 +103,11 @@ export default function TopUpModal({
         },
       };
 
-      await loadRazorpay();
-      const rzp = new (
-        window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }
-      ).Razorpay(options);
-      rzp.open();
+      await openRazorpayCheckout({
+        options,
+        onFailure: setError,
+        context: { flow: "credits_topup", tier_id: tier.id, credits: tier.credits },
+      });
     } catch {
       setError("Something went wrong starting checkout. Please try again.");
     } finally {

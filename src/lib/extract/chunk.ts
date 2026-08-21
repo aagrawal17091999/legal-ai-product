@@ -107,18 +107,6 @@ export function chunkText(
   return chunks;
 }
 
-/**
- * Convenience wrapper: flatten pages and chunk in one call. Equivalent to
- * chunkText(flattenPages(pages)).
- */
-export function chunkPages(
-  pages: SourcePage[],
-  chunkSize = CHUNK_SIZE,
-  overlap = CHUNK_OVERLAP
-): DocChunk[] {
-  return chunkText(flattenPages(pages), chunkSize, overlap);
-}
-
 // Pull a chunk's end back from the hard character limit to the nearest natural
 // boundary — paragraph break first, then sentence end — so chunks don't slice
 // through words/sentences (which both hurts embeddings and shows broken quotes

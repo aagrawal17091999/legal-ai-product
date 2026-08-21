@@ -2,9 +2,10 @@
 # ample, and the job is idempotent per boundary so an extra run costs nothing.
 #
 # Persistent=true: if the box was down at 04:00 the refill fires on next boot
-# rather than leaving a paying subscriber short for a day.
+# rather than leaving a paying subscriber short for a day — or leaving an expired
+# comped plan still active.
 [Unit]
-Description=Daily NyayaSearch credit refill for yearly subscribers
+Description=Daily NyayaSearch credit refill (yearly + comped plans)
 
 [Timer]
 OnCalendar=*-*-* 04:00:00

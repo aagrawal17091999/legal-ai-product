@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import { requireCredits, OutOfCreditsError } from "@/lib/billing/credits";
-import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
 import pool from "@/lib/db";
-import { runDocChat, type DocChatTurn, type DocCitation } from "@/lib/docchat/answer";
+import {
+  startDocTurn,
+  streamNewTurn,
+  reapStaleTurns,
+  SSE_HEADERS,
+} from "@/lib/docchat/turnRunner";
 import { logError } from "@/lib/error-logger";
 import { track } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
-
-export const maxDuration = 120;
 
 // GET /api/workspace/[id]/conversations/[cid]/messages — message history for one chat
 export async function GET(
@@ -33,8 +35,15 @@ export async function GET(
       return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
+    // Fail any turn whose runner died (deploy, crash) and left the row stuck
+    // 'pending' — otherwise the client would reattach to it and spin forever.
+    await reapStaleTurns(conversationId).catch(() => 0);
+
+    // A 'pending' assistant row is a turn still being written by a detached
+    // runner; the client reattaches to it via the turns/stream endpoint instead
+    // of treating it as a finished (empty) answer.
     const { rows } = await pool.query(
-      `SELECT id, role, content, citations, status, created_at
+      `SELECT id, role, content, citations, status, error, created_at
          FROM workspace_messages
         WHERE conversation_id = $1 ORDER BY created_at ASC`,
       [conversationId]
@@ -56,11 +65,21 @@ export async function GET(
 /**
  * POST /api/workspace/[id]/conversations/[cid]/messages
  *
+ * Starts a doc-chat turn and streams it. The turn is NOT owned by this request
+ * — see lib/docchat/turnRunner.ts. Dropping this connection (refresh, closed
+ * laptop, proxy timeout) detaches the client and nothing more; the answer keeps
+ * being written into a `status='pending'` row that the client reattaches to via
+ * GET .../conversations/[cid]/turns/[mid]/stream.
+ *
  * Streams an SSE response (same framing as the case-law chat):
- *   - "status"    : { phase: "retrieving" | "verifying" }
+ *   - "turn"      : { message_id } — sent first, before any work, so the client
+ *                   can reattach or Stop
+ *   - "status"    : { phase: "retrieving" | "reading" | "answering" | "verifying" }
  *   - "token"     : { delta }
  *   - "citations" : DocCitation[]
- *   - "done"      : { message_id, status, content }
+ *   - "done"      : { message_id, status, error, content } — `status` is
+ *                   "success" | "degraded" | "error"; `error` carries the reason
+ *                   so the client can show the failure on this very turn
  *   - "error"     : { message }
  */
 export async function POST(
@@ -120,174 +139,70 @@ export async function POST(
     );
   }
 
-  const { rows: historyRows } = await pool.query(
-    `SELECT role, content FROM workspace_messages
-      WHERE conversation_id = $1 ORDER BY created_at ASC`,
-    [conversationId]
-  );
-  const history: DocChatTurn[] = historyRows.map((r) => ({ role: r.role, content: r.content }));
+  // Clear out any turn whose runner died before taking the lock, so a stale
+  // 'pending' row can't leave this conversation looking permanently busy.
+  await reapStaleTurns(conversationId).catch(() => 0);
 
-  await pool.query(
-    `INSERT INTO workspace_messages (workspace_id, conversation_id, role, content)
-     VALUES ($1, $2, 'user', $3)`,
-    [workspaceId, conversationId, userMessage]
-  );
-
-  // Auto-title an untitled conversation from its first user message.
-  if (!conversationTitle && history.length === 0) {
-    await pool.query(
-      `UPDATE workspace_conversations SET title = $2 WHERE id = $1 AND title IS NULL`,
-      [conversationId, userMessage.trim().slice(0, 80)]
+  // Serialize turns within a conversation. Two messages fired concurrently
+  // (double-click, two tabs) would otherwise both read the same history, both
+  // insert a user row, and interleave. A conversation-scoped advisory lock
+  // (held on a dedicated connection for the life of the turn) makes the second
+  // caller wait its turn. The lock auto-releases if the process is killed.
+  const lockClient = await pool.connect();
+  let lockHeld = false;
+  try {
+    const { rows: lockRows } = await lockClient.query<{ locked: boolean }>(
+      `SELECT pg_try_advisory_lock(hashtext($1)) AS locked`,
+      [`ws_conversation:${conversationId}`]
+    );
+    lockHeld = lockRows[0]?.locked === true;
+  } catch {
+    /* lock probe failed — fall through and release below */
+  }
+  if (!lockHeld) {
+    lockClient.release();
+    return NextResponse.json(
+      { error: "A message is already being processed in this chat. Please wait." },
+      { status: 409 }
     );
   }
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      let closed = false;
-      const send = (event: string, data: unknown) => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        } catch {
-          closed = true;
-        }
-      };
-      request.signal.addEventListener("abort", () => {
-        closed = true;
-      });
+  // Ownership of `lockClient` transfers to the runner here: the turn outlives
+  // this request, so this request must not release the lock.
+  let messageId: string;
+  try {
+    ({ messageId } = await startDocTurn({
+      userId: user.id,
+      workspaceId,
+      conversationId,
+      userMessage,
+      needsTitle: !conversationTitle,
+      lockClient,
+    }));
+  } catch (err) {
+    lockClient.release();
+    logError({
+      category: "database",
+      message: `failed to start doc chat turn: ${err instanceof Error ? err.message : String(err)}`,
+      error: err,
+      severity: "critical",
+      userId: user.id,
+      endpoint: "/api/workspace/[id]/conversations/[cid]/messages",
+      method: "POST",
+      metadata: { workspaceId, conversationId },
+    });
+    return NextResponse.json(
+      { error: "Couldn't start this answer. Please try again." },
+      { status: 500 }
+    );
+  }
 
-      const tStart = Date.now();
-      let assistantContent = "";
-      let citations: DocCitation[] = [];
-      let status: "success" | "error" = "success";
-      let errorMsg: string | null = null;
-      let model: string | null = null;
-      let inputTokens: number | null = null;
-      let outputTokens: number | null = null;
+  const stream = streamNewTurn(messageId);
+  if (!stream) {
+    // The turn finished (or was evicted) between starting and subscribing —
+    // vanishingly unlikely, but the client can just read the row.
+    return NextResponse.json({ message_id: messageId, streaming: false });
+  }
 
-      track(EVENTS.DOCCHAT_ASKED, {
-        userId: user.id,
-        properties: { message_length: userMessage.length, history_turns: history.length },
-      });
-
-      try {
-        // Meter the whole doc-chat turn (analyze + retrieve/embed/rerank + the
-        // streamed answer + citation verify) and debit when it finalizes.
-        const { result, meter: turnMeter } = await withMeter(
-          { userId: user.id, feature: "workspace_chat" },
-          async () => {
-            const r = await runDocChat({
-              workspaceId,
-              userMessage,
-              history,
-              onTextDelta: (delta) => send("token", { delta }),
-              onStatus: (s) => send("status", s),
-            });
-            // Don't bill a turn that produced no usable answer (empty stream /
-            // aborted mid-flight) — the user got nothing back. withMeter already
-            // auto-skips the charge when runDocChat throws.
-            if (!r.assistantContent || !r.assistantContent.trim()) {
-              markMeterUnbillable();
-            }
-            return r;
-          }
-        );
-        assistantContent = result.assistantContent;
-        citations = result.citations;
-        model = result.model;
-        inputTokens = result.tokens.input;
-        outputTokens = result.tokens.output;
-        track(EVENTS.DOCCHAT_ANSWERED, {
-          userId: user.id,
-          properties: {
-            response_time_ms: Date.now() - tStart,
-            citations: citations.length,
-            credits_charged: turnMeter?.credits ?? 0,
-            answered: Boolean(assistantContent?.trim()),
-          },
-        });
-        send("citations", citations);
-      } catch (err) {
-        status = "error";
-        errorMsg = err instanceof Error ? err.message : String(err);
-        assistantContent =
-          assistantContent || "Sorry, I encountered an error answering from your documents. Please try again.";
-        logError({
-          category: "chat",
-          message: `Doc chat failed: ${errorMsg}`,
-          error: err,
-          userId: user.id,
-          endpoint: "/api/workspace/[id]/conversations/[cid]/messages",
-          method: "POST",
-          metadata: { workspaceId, conversationId },
-        });
-        send("error", { message: errorMsg });
-      }
-
-      const responseTimeMs = Date.now() - tStart;
-      let assistantId: string | null = null;
-      try {
-        const { rows } = await pool.query(
-          `INSERT INTO workspace_messages
-             (workspace_id, conversation_id, role, content, citations, model, token_usage, response_time_ms, status, error)
-           VALUES ($1, $2, 'assistant', $3, $4, $5, $6, $7, $8, $9)
-           RETURNING id`,
-          [
-            workspaceId,
-            conversationId,
-            assistantContent,
-            JSON.stringify(citations),
-            model,
-            inputTokens !== null && outputTokens !== null
-              ? JSON.stringify({ input_tokens: inputTokens, output_tokens: outputTokens })
-              : null,
-            responseTimeMs,
-            status,
-            errorMsg,
-          ]
-        );
-        assistantId = rows[0]?.id ?? null;
-        await pool.query(
-          `UPDATE workspace_conversations SET updated_at = NOW() WHERE id = $1`,
-          [conversationId]
-        );
-        await pool.query(`UPDATE workspaces SET updated_at = NOW() WHERE id = $1`, [workspaceId]);
-        // Credits debited by withMeter() above — no per-question counter.
-      } catch (err) {
-        logError({
-          category: "database",
-          message: `failed to persist workspace message: ${err instanceof Error ? err.message : String(err)}`,
-          error: err,
-          severity: "critical",
-          userId: user.id,
-          endpoint: "/api/workspace/[id]/conversations/[cid]/messages",
-          metadata: { workspaceId, conversationId },
-        });
-      }
-
-      send("done", {
-        message_id: assistantId,
-        status,
-        response_time_ms: responseTimeMs,
-        content: assistantContent,
-      });
-      if (!closed) {
-        try {
-          controller.close();
-        } catch {
-          /* already closed */
-        }
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no",
-    },
-  });
+  return new Response(stream, { headers: SSE_HEADERS });
 }

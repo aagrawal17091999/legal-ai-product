@@ -19,14 +19,18 @@ import type { AssembledCase } from "./contextBuilder";
  * by the repair.
  *
  * Safety properties that keep the gate's guarantee intact:
- *   - A replacement is spliced only on an exact, unique match of the original
- *     sentence. Anything ambiguous is left alone rather than guessed at.
- *   - Returning `null` means "could not repair" and the caller falls back to the
- *     original full-rewrite path — the gate never silently gives up.
+ *   - A replacement is spliced at the exact character range the claim extractor
+ *     recorded for that sentence, so a repair can only ever touch the sentence
+ *     the judge flagged. Splices are applied right-to-left so earlier ranges
+ *     stay valid, and a claim with no recorded range is left alone.
+ *   - Returning `null` means "could not repair". The sequential caller falls
+ *     back to a full rewrite; the progressive caller leaves the sentence as
+ *     written and reports it in the groundedness footer. Either way the gate
+ *     never silently drops a finding.
  *   - Replacements are re-graded by the caller before the answer ships.
  */
 
-const PATCH_MODEL = process.env.GROUNDING_PATCH_MODEL?.trim() || "claude-sonnet-4-6";
+const PATCH_MODEL = process.env.GROUNDING_PATCH_MODEL?.trim() || "claude-sonnet-5";
 const MAX_EXCERPT_CHARS = 6000;
 const MAX_PATCH_CLAIMS = 12;
 
@@ -73,11 +77,17 @@ export async function patchUnsupported(params: {
   const { draft, unsupported, cases, abortSignal } = params;
   if (unsupported.length === 0) return null;
 
-  // Only sentences that appear exactly once in the draft are safely splice-able.
-  // A sentence repeated verbatim gives us no way to know which occurrence the
-  // judge meant, so it goes to the fallback path instead of being guessed at.
+  // Splice by the span the extractor recorded, not by searching for the claim
+  // text. The claim has had its Markdown and its `[^n]` markers stripped, and a
+  // sentence only becomes a claim BECAUSE it carries a marker — so the old
+  // `occurrences(draft, claim) === 1` test could never be satisfied by a real
+  // claim. It returned 0 every time, `targets` was always empty, and this
+  // function returned null in ~0ms on every production turn since it shipped:
+  // the "surgical" repair never once ran, and every grounding failure paid for
+  // a full-answer rewrite instead. Findings without a span (table rows) are
+  // still not splice-able and go to the caller's fallback.
   const targets = unsupported
-    .filter((f) => occurrences(draft, f.claim) === 1)
+    .filter((f) => isSpliceable(draft, f))
     .slice(0, MAX_PATCH_CLAIMS);
   if (targets.length === 0) return null;
 
@@ -130,33 +140,38 @@ export async function patchUnsupported(params: {
   const parsed = parseReplacements(raw);
   if (parsed.size === 0) return null;
 
-  let text = draft;
   const replacements: string[] = [];
   const patchedClaims: string[] = [];
   const unpatchedClaims: string[] = [];
 
-  for (let i = 0; i < targets.length; i++) {
-    const claim = targets[i].claim;
-    const replacement = parsed.get(i + 1);
-    if (replacement === undefined) {
-      unpatchedClaims.push(claim);
-      continue;
-    }
-    // Re-check uniqueness against the CURRENT text: an earlier splice could in
-    // principle have introduced a duplicate of a later target.
-    if (occurrences(text, claim) !== 1) {
-      unpatchedClaims.push(claim);
+  // Apply right-to-left so each splice leaves every earlier span's offsets
+  // valid. Two findings can share a span (one sentence citing two cases); the
+  // first replacement applied wins and the other is reported unpatched rather
+  // than spliced on top of already-rewritten text.
+  const ordered = targets
+    .map((t, i) => ({ target: t, replacement: parsed.get(i + 1) }))
+    .sort((a, b) => b.target.span!.start - a.target.span!.start);
+
+  let text = draft;
+  let lastStart = Number.POSITIVE_INFINITY;
+  for (const { target, replacement } of ordered) {
+    const { start, end } = target.span!;
+    if (replacement === undefined || end > lastStart) {
+      unpatchedClaims.push(target.claim);
       continue;
     }
     if (replacement.trim() === "") {
-      // Deletion: drop the sentence and tidy the double space it leaves behind.
-      text = text.replace(claim, "").replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n");
-      patchedClaims.push(claim);
-      continue;
+      // Deletion: drop the sentence and tidy the gap it leaves behind.
+      text =
+        text.slice(0, start).replace(/[ \t]+$/, "") +
+        (start > 0 && end < text.length ? " " : "") +
+        text.slice(end).replace(/^[ \t]+/, "");
+    } else {
+      text = text.slice(0, start) + replacement + text.slice(end);
+      replacements.push(replacement);
     }
-    text = text.replace(claim, replacement);
-    replacements.push(replacement);
-    patchedClaims.push(claim);
+    patchedClaims.push(target.claim);
+    lastStart = start;
   }
 
   if (patchedClaims.length === 0) return null;
@@ -171,6 +186,19 @@ export async function patchUnsupported(params: {
   }
 
   return { text, replacements, patchedClaims, unpatchedClaims };
+}
+
+/**
+ * Whether a finding can be repaired in place. Requires a recorded span that
+ * still lies inside the draft — a defensive check, since the span is only
+ * meaningful for the exact string that was graded. Table-row findings carry no
+ * span and are never spliced.
+ */
+function isSpliceable(draft: string, f: FaithfulnessFinding): boolean {
+  const s = f.span;
+  return (
+    !!s && s.start >= 0 && s.end > s.start && s.end <= draft.length
+  );
 }
 
 /** Count non-overlapping occurrences of `needle` in `haystack`. Exported for tests. */

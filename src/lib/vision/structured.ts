@@ -47,15 +47,6 @@ const DEFAULT_MODEL =
 // batch mid-document. Well under Sonnet 4.6's 64k output limit.
 const MAX_TOKENS = 32000;
 
-/** Output cap for a vision call, exported for Batch-API request construction. */
-export const VISION_MAX_TOKENS = MAX_TOKENS;
-
-/** Resolve the concrete model id for a pass (Batch-API requests need a real id,
- *  not the `undefined` "use default" the translation config passes). */
-export function resolveVisionModel(modelOverride?: string | null): string {
-  return modelOverride?.trim() || DEFAULT_MODEL;
-}
-
 // NOTE: structured outputs (output_config.format) is intentionally NOT used for
 // the block model. The full typed block schema is rejected by the API ("compiled
 // grammar too large"), and any loose-enough schema lets the model emit `runs` as
@@ -71,8 +62,6 @@ export function resolveVisionModel(modelOverride?: string | null): string {
 const PAGES_PER_BATCH = SARVAM_MAX_PAGES_PER_JOB;
 // Hard ceiling so a giant upload can't blow past the 300s function limit.
 const MAX_TOTAL_PAGES = 150;
-// Concurrent vision calls — cuts wall-clock without tripping rate limits.
-const CONCURRENCY = 5;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 2000;
 
@@ -260,16 +249,6 @@ function parseJsonObject(raw: string): ParsedBatch {
   } catch {
     return null;
   }
-}
-
-/** Parse a Batch-API result message into a ParsedBatch — the same text→JSON step
- *  callBatch does for synchronous responses, so both paths produce identical rows. */
-export function parseVisionMessage(message: Anthropic.Message): ParsedBatch {
-  const txt = message.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-  return parseJsonObject(txt);
 }
 
 // Run one vision/text call. Never throws — failures return null so the caller
@@ -476,38 +455,4 @@ export function assembleBlocks(
     blocks: dedupeRunningHeaders(blocks),
     ocrUsed: kind !== "text",
   };
-}
-
-/**
- * Run the vision-native structured pass over a source document.
- *
- * @param buildPrompt receives nothing and returns the full instruction string;
- *   the caller bakes in any feature-specific intent (translate vs. transcribe).
- * @param feature short label used in error logs ("translate" / "ocr").
- * @param modelOverride model id to use for this pass; falls back to DEFAULT_MODEL.
- * @param schema JSON schema to constrain output via structured outputs, or null.
- */
-export async function runStructuredVisionPass(
-  buffer: Buffer,
-  mime: string,
-  filename: string,
-  buildPrompt: () => string,
-  feature: string,
-  modelOverride?: string,
-  schema: Record<string, unknown> | null = null
-): Promise<StructuredVisionResult> {
-  const plan = await planBatches(buffer, mime, filename);
-  const prompt = buildPrompt();
-
-  // Run batches with bounded concurrency, preserving reading order.
-  const parsed: ParsedBatch[] = new Array(plan.batches.length);
-  for (let start = 0; start < plan.batches.length; start += CONCURRENCY) {
-    const slice = plan.batches.slice(start, start + CONCURRENCY);
-    const results = await Promise.all(
-      slice.map((b) => runBatch(buffer, mime, filename, b, prompt, feature, modelOverride, schema))
-    );
-    results.forEach((r, j) => (parsed[slice[j].index] = r));
-  }
-
-  return assembleBlocks(parsed, plan.kind);
 }

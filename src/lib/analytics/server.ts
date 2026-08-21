@@ -48,11 +48,6 @@ const client = TOKEN
     })
   : null;
 
-/** Analytics is optional: with no token configured every call is a no-op. */
-export function isAnalyticsEnabled(): boolean {
-  return client !== null;
-}
-
 export interface TrackOptions {
   /** Our internal users.id. Stable across devices and sessions. */
   userId: number | null;

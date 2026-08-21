@@ -76,6 +76,10 @@ export interface User {
   subscription_status: SubscriptionStatus;
   subscription_end_date: string | null;
   is_staff: boolean;
+  /** Plan granted by staff rather than paid for (migration 029). */
+  comped_plan: boolean;
+  /** Never metered, never gated (migration 025). */
+  unlimited_credits: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -117,8 +121,13 @@ export interface ChatMessage {
    * "degraded" — the request completed but the answer is a fallback (the agent
    *              produced no usable text even after forced synthesis). Surfaced
    *              so these don't masquerade as successes in analytics.
+   * "pending"  — the turn is still being written by a detached runner (see
+   *              lib/chat/turnRunner.ts). `content` is whatever has been
+   *              streamed so far; a client that loads a session and finds one
+   *              of these reattaches to the live stream rather than rendering
+   *              it as a finished answer.
    */
-  status: "success" | "error" | "degraded";
+  status: "success" | "error" | "degraded" | "pending";
   created_at: string;
 }
 
@@ -326,4 +335,91 @@ export interface ErrorLog {
   resolved: boolean;
   resolved_at: string | null;
   created_at: string;
+}
+
+// ============================================================
+// Admin Types
+// ============================================================
+
+export type AdminActionType =
+  | "grant_credits"
+  | "revoke_credits"
+  | "set_plan"
+  | "cancel_plan";
+
+/** A staff action taken against another user's account (migration 029). */
+export interface AdminAction {
+  id: number;
+  actor_email: string;
+  action: AdminActionType;
+  reason: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+/** One row of the staff user directory. */
+export interface AdminUserSummary {
+  id: number;
+  email: string;
+  display_name: string | null;
+  plan: UserPlan;
+  subscription_status: SubscriptionStatus;
+  subscription_end_date: string | null;
+  razorpay_subscription_id: string | null;
+  comped_plan: boolean;
+  unlimited_credits: boolean;
+  is_staff: boolean;
+  created_at: string;
+  plan_credits: number;
+  topup_credits: number;
+  remaining: number;
+}
+
+export interface AdminCreditTransaction {
+  id: string;
+  type: string;
+  credits: number;
+  amount_inr: number | null;
+  razorpay_payment_id: string | null;
+  created_at: string;
+}
+
+export interface AdminUsageEvent {
+  id: string;
+  feature: string;
+  ref_id: string | null;
+  cost_inr: number;
+  credits_charged: number;
+  enforced: boolean;
+  created_at: string;
+}
+
+/** Payload of GET /api/admin/users/[id]. */
+export interface AdminUserDetail {
+  user: {
+    id: number;
+    email: string;
+    display_name: string | null;
+    photo_url: string | null;
+    plan: UserPlan;
+    subscription_status: SubscriptionStatus;
+    subscription_end_date: string | null;
+    razorpay_customer_id: string | null;
+    razorpay_subscription_id: string | null;
+    comped_plan: boolean;
+    unlimited_credits: boolean;
+    is_staff: boolean;
+    created_at: string;
+  };
+  balance: {
+    planCredits: number;
+    topupCredits: number;
+    remaining: number;
+    periodStart: string | null;
+    periodEnd: string | null;
+  };
+  transactions: AdminCreditTransaction[];
+  usage: AdminUsageEvent[];
+  errors: { total: number; unresolved: number; critical: number; lastAt: string | null };
+  actions: AdminAction[];
 }

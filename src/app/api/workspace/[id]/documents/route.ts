@@ -3,6 +3,7 @@ import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { uploadToR2 } from "@/lib/r2";
 import { ingestDocument } from "@/lib/docchat/ingest";
+import { expireStaleDocuments } from "@/lib/docchat/expire";
 import { detectKind } from "@/lib/extract";
 import { logError } from "@/lib/error-logger";
 import { track } from "@/lib/analytics/server";
@@ -142,7 +143,36 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     after(async () => {
       for (const docId of documentIds) {
         const startedAt = Date.now();
-        await ingestDocument(docId);
+        // ingestDocument records failures on the row itself, but it can still
+        // throw if that very bookkeeping fails (DB down mid-ingest). Left
+        // unhandled, the document would sit on `processing` until the watchdog
+        // swept it 15 minutes later, so settle it here instead — the user sees
+        // the failure on their next poll rather than a stuck spinner.
+        try {
+          await ingestDocument(docId);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          logError({
+            category: "extraction",
+            message: `Document ingestion threw outside its own handler: ${message}`,
+            error: err,
+            severity: "critical",
+            userId: user.id,
+            endpoint: "/api/workspace/[id]/documents",
+            method: "POST",
+            metadata: { workspaceId, documentId: docId },
+          });
+          await pool
+            .query(
+              `UPDATE workspace_documents
+                  SET status = 'failed', error = $2, updated_at = NOW()
+                WHERE id = $1 AND status <> 'ready'`,
+              [docId, "Processing failed unexpectedly. Please try uploading this document again."]
+            )
+            .catch(() => {
+              /* the DB is the thing that failed — the watchdog is the backstop */
+            });
+        }
         // ingestDocument owns its own error handling and records the outcome on
         // the row, so read the settled status back rather than assuming success.
         try {
@@ -190,6 +220,11 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
   if (!(await ownWorkspace(user.id, workspaceId))) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+
+  // Settle documents whose ingestion died with the process before reporting
+  // status, so a poll that would otherwise spin on "Processing" forever returns
+  // a terminal `failed` with a reason attached.
+  await expireStaleDocuments(workspaceId);
 
   const { rows } = await pool.query(
     `SELECT id, filename, mime, status, page_count, ocr_used, char_count, chunk_count, error, created_at

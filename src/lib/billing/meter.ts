@@ -114,12 +114,6 @@ export function currentCostInr(): number {
   return summarize(ctx.lines).costInr;
 }
 
-/** Allow a deeper layer to set the ref id (e.g. once the message row exists). */
-export function setMeterRef(refId: string): void {
-  const ctx = als.getStore();
-  if (ctx) ctx.refId = refId;
-}
-
 /**
  * Mark the active metered action as unbillable. The usage is still recorded for
  * COGS analytics, but the wallet is not debited. Call this from a route's

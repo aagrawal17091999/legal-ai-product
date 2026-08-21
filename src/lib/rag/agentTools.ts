@@ -48,6 +48,27 @@ const numEnv = (name: string, fallback: number): number => {
 // breadth-oriented search_fresh. Prompt caching keeps re-reading this cheap.
 const LOAD_CASE_MAX_CHUNKS = numEnv("LOAD_CASE_MAX_CHUNKS", 60);
 const LOAD_CASE_PER_CASE_CHARS = numEnv("LOAD_CASE_PER_CASE_CHARS", 28_000);
+/**
+ * Total load_case text admitted in ONE agent round, shared across however many
+ * load_case calls the model issues in parallel.
+ *
+ * LOAD_CASE_PER_CASE_CHARS is applied per *invocation*, so it never bounded a
+ * batch: a "summarise all of these" follow-up fanned out to 7 parallel
+ * load_case calls and admitted 7 x 28,000 chars (~49k tokens) in a single
+ * round. Measured on one such turn that was 61% of a 44-credit question — for
+ * an answer that then truncated at max_tokens anyway. A round-level budget
+ * makes a 7-case request trade depth-per-case for breadth, which is what the
+ * request actually asks for; a 1-case deep read is unaffected (the share is
+ * clamped back up to the per-case cap).
+ */
+const LOAD_CASE_ROUND_CHARS = numEnv("LOAD_CASE_ROUND_CHARS", 60_000);
+/**
+ * Floor on a single case's share, whatever the batch size. A case the user
+ * explicitly asked about must never be reduced to a stub, so this deliberately
+ * wins over LOAD_CASE_ROUND_CHARS: 12 parallel calls overshoot the round budget
+ * rather than render 12 unusable excerpts.
+ */
+const LOAD_CASE_MIN_CHARS = numEnv("LOAD_CASE_MIN_CHARS", 6_000);
 const LOAD_CASE_RERANK_POOL = 80;
 const SEARCH_FRESH_POOL = 40;
 const SEARCH_FRESH_DEFAULT_LIMIT = 10;
@@ -129,6 +150,17 @@ export interface ToolCallRecord {
   data: Record<string, unknown>;
   /** First 500 chars of the tool result, for the audit log. */
   result_preview: string;
+}
+
+/**
+ * A single load_case call's char budget, given how many load_case calls share
+ * this round. One call gets the full per-case cap (unchanged behaviour); a
+ * batch splits the round budget, never dropping below LOAD_CASE_MIN_CHARS.
+ */
+export function loadCaseCharBudget(siblingLoadCases: number): number {
+  const n = Math.max(1, siblingLoadCases);
+  const share = Math.floor(LOAD_CASE_ROUND_CHARS / n);
+  return Math.min(LOAD_CASE_PER_CASE_CHARS, Math.max(LOAD_CASE_MIN_CHARS, share));
 }
 
 export interface ToolContext {
@@ -272,7 +304,9 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
-  ctx: ToolContext
+  ctx: ToolContext,
+  /** How many load_case calls share this round; they split the round budget. */
+  opts: { siblingLoadCases?: number } = {}
 ): Promise<string> {
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
@@ -290,7 +324,11 @@ export async function executeTool(
         break;
       }
       case "load_case": {
-        const out = await executeLoadCase(ctx, input as unknown as LoadCaseInput);
+        const out = await executeLoadCase(
+          ctx,
+          input as unknown as LoadCaseInput,
+          loadCaseCharBudget(opts.siblingLoadCases ?? 1)
+        );
         result = out.text;
         auditData = out.audit;
         break;
@@ -390,7 +428,8 @@ interface LoadCaseInput {
 
 async function executeLoadCase(
   ctx: ToolContext,
-  input: LoadCaseInput
+  input: LoadCaseInput,
+  charBudget: number = LOAD_CASE_PER_CASE_CHARS
 ): Promise<{ text: string; audit: Record<string, unknown> }> {
   if (!input.source_table || typeof input.source_id !== "number") {
     throw new Error("source_table and source_id are required");
@@ -426,13 +465,38 @@ async function executeLoadCase(
       pool.map((c) => c.chunk_text),
       LOAD_CASE_MAX_CHUNKS
     );
-    selected = results
-      .map((r) => pool[r.index])
-      .sort((a, b) => a.chunk_index - b.chunk_index);
     rerankScores = results.map((r) => ({
       chunk_id: pool[r.index].chunk_id,
       score: r.score,
     }));
+
+    // Trim to the char budget by RELEVANCE, then restore document order.
+    //
+    // mergeChunks() fills its budget walking chunks in chunk_index order, so
+    // handing it an over-budget set keeps the OPENING of the judgment and
+    // silently discards the end — which in a judgment is usually where the
+    // holding and the ratio sit. Deciding which paragraphs survive by rerank
+    // score first means a tighter budget drops the least on-point paragraphs
+    // wherever they fall, rather than lopping off the conclusion.
+    //
+    // Deliberately not a relevance FLOOR: load_case operates on a case the user
+    // has already chosen, so "is this case relevant" is settled. On the turn
+    // that prompted this, every chunk of 2 of the 7 cases scored below
+    // search_fresh's 0.3 floor — applying one here would have deleted two of
+    // the seven summaries the user asked for.
+    const byScore = results
+      .map((r) => ({ chunk: pool[r.index], score: r.score }))
+      .sort((a, b) => b.score - a.score);
+    const kept: RetrievedChunk[] = [];
+    let used = 0;
+    for (const { chunk } of byScore) {
+      const len = chunk.chunk_text?.length ?? 0;
+      // Always keep the top-scoring chunk, so a case can never render empty.
+      if (kept.length > 0 && used + len > charBudget) continue;
+      kept.push(chunk);
+      used += len;
+    }
+    selected = kept.sort((a, b) => a.chunk_index - b.chunk_index);
   } else {
     selected = allChunks.slice(0, LOAD_CASE_MAX_CHUNKS);
   }
@@ -440,7 +504,7 @@ async function executeLoadCase(
   const text = await renderChunksForAgent(
     selected,
     ctx.registry,
-    { perCaseCharBudget: LOAD_CASE_PER_CASE_CHARS },
+    { perCaseCharBudget: charBudget },
     ctx.emittedChunkIds
   );
   return {
@@ -452,6 +516,13 @@ async function executeLoadCase(
       total_chunks_in_case: allChunks.length,
       selected_chunks: selected.length,
       reranked,
+      // Recorded so a turn's trace shows whether the round budget actually bound
+      // and by how much — the 44-credit turn was only diagnosable because the
+      // audit already carried selected_chunks vs total_chunks_in_case.
+      char_budget: charBudget,
+      chunks_dropped_budget: reranked
+        ? Math.min(allChunks.length, LOAD_CASE_MAX_CHUNKS) - selected.length
+        : 0,
       rerank_scores: rerankScores?.slice(0, 20),
     },
   };

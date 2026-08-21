@@ -47,7 +47,7 @@ export default function Hero() {
 
             {/* Trust line */}
             <p className="mt-8 text-sm text-charcoal-400">
-              Free plan includes 100 credits. No credit card required.
+              Free plan includes 200 credits. No credit card required.
             </p>
           </div>
 

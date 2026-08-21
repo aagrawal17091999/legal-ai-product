@@ -1,0 +1,22 @@
+# Daily archive of rotated pm2 + nginx logs to R2. Install with its .timer:
+#   sudo cp deploy/systemd/nyayasearch-log-archive.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nyayasearch-log-archive.timer
+#   systemctl list-timers | grep log-archive
+#
+# Runs as root, unlike nyayasearch-backup.service: pm2's logs live under
+# /root/.pm2/logs (mode 700) and nginx's under /var/log/nginx, neither of which
+# the deploy user can read or unlink.
+[Unit]
+Description=NyayaSearch rotated-log archive to R2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+# --prune reclaims the disk this box shares with Postgres, and only ever deletes
+# a file whose upload was confirmed with a HEAD request.
+ExecStart=/bin/bash scripts/archive-logs.sh --upload --prune

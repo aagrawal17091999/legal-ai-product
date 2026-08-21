@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { addOneMonth, creditPeriodEnd, withGst, PLAN_CREDITS } from "../cost";
+import {
+  addOneMonth,
+  creditPeriodEnd,
+  compedPlanEnd,
+  withGst,
+  PLAN_CREDITS,
+} from "../cost";
 
 /**
  * The Pro allowance is per MONTH, but Razorpay's `subscription.charged` fires
@@ -86,4 +92,55 @@ test("GST rounds to whole rupees so Razorpay never sees a fractional paise", () 
   const total = withGst(1900);
   assert.strictEqual(total, 2242); // 1900 * 1.18 = 2242
   assert.strictEqual(Number.isInteger(total), true);
+});
+
+/**
+ * A comped plan (admin console, migration 029) has no Razorpay object to tell us
+ * when it ends, so its expiry is pure date maths — and the same day-of-month
+ * trap as the refill boundaries above. Plain `setMonth` on 31 January silently
+ * hands out an extra day or two per month comped.
+ */
+test("a comped plan clamps the day of month instead of rolling into the next", () => {
+  assert.deepStrictEqual(
+    compedPlanEnd(new Date("2026-01-31T00:00:00Z"), 1),
+    new Date("2026-02-28T00:00:00Z")
+  );
+});
+
+test("comping several months walks month by month, not one big jump", () => {
+  // Jan 31 -> Feb 28 -> Mar 28: the clamp sticks once applied, which is what
+  // keeps every subsequent refill boundary on the same day.
+  assert.deepStrictEqual(
+    compedPlanEnd(new Date("2026-01-31T00:00:00Z"), 2),
+    new Date("2026-03-28T00:00:00Z")
+  );
+});
+
+test("a twelve-month comp lands on the same date a year later", () => {
+  assert.deepStrictEqual(
+    compedPlanEnd(new Date("2026-08-21T00:00:00Z"), 12),
+    new Date("2027-08-21T00:00:00Z")
+  );
+});
+
+// ── every model the app can actually call must have a billing rate ──────────
+// A model id with no RATES row (and no prefix match) meters as ZERO, silently.
+// `claude-sonnet-5` does not share a prefix with `claude-sonnet-4-6`, so the
+// Sonnet 5 swap would have billed every chat turn as free without this guard.
+test("configured models all resolve to a billing rate", async () => {
+  const { rateKeyFor, claudeCostInr } = await import("../cost.ts");
+  const configured = [
+    process.env.CHAT_MODEL?.trim() || "claude-sonnet-5",
+    process.env.GROUNDING_PATCH_MODEL?.trim() || "claude-sonnet-5",
+    process.env.FAITHFULNESS_MODEL?.trim() || "claude-haiku-4-5-20251001",
+    process.env.DECOMPOSE_MODEL?.trim() || "claude-haiku-4-5-20251001",
+    process.env.REFLECT_MODEL?.trim() || "claude-haiku-4-5-20251001",
+  ];
+  for (const m of configured) {
+    assert.ok(rateKeyFor(m), `no billing rate for configured model "${m}"`);
+    assert.ok(
+      claudeCostInr(m, { input_tokens: 1000, output_tokens: 1000 }) > 0,
+      `model "${m}" meters as free`
+    );
+  }
 });

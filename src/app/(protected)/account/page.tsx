@@ -6,7 +6,8 @@ import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
-import { loadRazorpay } from "@/lib/loadRazorpay";
+import { openRazorpayCheckout } from "@/lib/razorpay-checkout";
+import { reportError } from "@/lib/report-error";
 
 interface UserData {
   id: number;
@@ -192,9 +193,18 @@ export default function AccountPage() {
             }
           },
         };
-        await loadRazorpay();
-        const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
-        rzp.open();
+        await openRazorpayCheckout({
+          options,
+          onFailure: setBillingError,
+          context: { flow: "subscription_change_plan", plan: newPlan },
+        });
+      } else {
+        // 200 with no subscription id — nothing opens, nothing is said.
+        setBillingError("We couldn't start checkout. Please try again.");
+        reportError("Change-plan checkout returned no subscription_id", {
+          page: "account",
+          plan: newPlan,
+        });
       }
     } catch {
       setBillingError("Something went wrong starting checkout. Please try again.");
@@ -263,9 +273,18 @@ export default function AccountPage() {
             }
           },
         };
-        await loadRazorpay();
-        const rzp = new (window as unknown as { Razorpay: new (opts: typeof options) => { open: () => void } }).Razorpay(options);
-        rzp.open();
+        await openRazorpayCheckout({
+          options,
+          onFailure: setBillingError,
+          context: { flow: "subscription_upgrade", plan },
+        });
+      } else {
+        // 200 with no subscription id — nothing opens, nothing is said.
+        setBillingError("We couldn't start checkout. Please try again.");
+        reportError("Upgrade checkout returned no subscription_id", {
+          page: "account",
+          plan,
+        });
       }
     } catch {
       setBillingError("Something went wrong starting checkout. Please try again.");
@@ -501,7 +520,7 @@ export default function AccountPage() {
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-serif text-xl text-charcoal-900">Pro Monthly</h4>
               <span className="font-serif text-2xl text-charcoal-900">
-                ₹1,500<span className="text-[13px] font-sans text-charcoal-600">/mo</span>
+                ₹2,500<span className="text-[13px] font-sans text-charcoal-600">/mo</span>
               </span>
             </div>
             <ul className="space-y-1.5 mb-5">
@@ -534,11 +553,11 @@ export default function AccountPage() {
             <div className="flex items-center justify-between mb-3">
               <h4 className="font-serif text-xl text-charcoal-900">Pro Annual</h4>
               <span className="font-serif text-2xl text-charcoal-900">
-                ₹15,000<span className="text-[13px] font-sans text-charcoal-600">/yr</span>
+                ₹25,000<span className="text-[13px] font-sans text-charcoal-600">/yr</span>
               </span>
             </div>
             <ul className="space-y-1.5 mb-5">
-              {["Unlimited chats", "Workspaces, translation & OCR", "All courts & filters", "Full judgment access", "Save ₹3,000 vs monthly"].map((f) => (
+              {["Unlimited chats", "Workspaces, translation & OCR", "All courts & filters", "Full judgment access", "Save ₹5,000 vs monthly"].map((f) => (
                 <li key={f} className="flex items-center gap-2 text-[13px] text-charcoal-600">
                   <svg className="w-3.5 h-3.5 text-gold-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />

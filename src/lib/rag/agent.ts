@@ -17,6 +17,7 @@ import { decomposeQuestion } from "./decompose";
 import { reflectSufficiency } from "./reflect";
 import { gradeDraft, describeUnsupported, buildGroundingFooter, buildSupportByCase, type GradeResult } from "./faithfulness";
 import { patchUnsupported } from "./groundingPatch";
+import { ProgressiveGate } from "./progressiveGate";
 import { PhaseTimer, phaseStepRecords, type PhaseRecord } from "./phaseTimer";
 import { normalizeCitations } from "./citationNormalizer";
 import type { SessionDocumentStore } from "./sessionStore";
@@ -36,12 +37,20 @@ import type { ChatMessage, SearchFilters, CitedCase } from "@/types";
  * The returned promise resolves with the final trace + usage + cited cases.
  */
 
-const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || "claude-sonnet-4-6";
+const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || "claude-sonnet-5";
 // Budget for tool-calling rounds. Legal synthesis often loads many cases, so
 // this must be comfortably above the worst-case "one load per case" count.
 // Parallel tool calls (handled below) usually keep the real count far lower.
 const MAX_AGENT_STEPS = 10;
-const MAX_TOKENS_PER_STEP = 4096;
+/**
+ * Output cap per round. Raised from 4096 because multi-case answers were
+ * silently truncating: a 7-case "summarise these with relevant paragraphs"
+ * turn stopped at `max_tokens` mid-sentence after billing the user 44 credits
+ * for the input side. This is a ceiling, not a target — a short answer still
+ * costs what it costs, so the only turns that pay more are the ones that were
+ * being cut off. Env-tunable to allow tightening without a deploy.
+ */
+const MAX_TOKENS_PER_STEP = numEnv("AGENT_MAX_TOKENS", 8192);
 const HISTORY_TURNS = 10;
 // Below this length a question is treated as a short follow-up and skips the
 // decomposition Haiku call (#2). Balanced: avoid per-turn cost on simple asks.
@@ -52,6 +61,34 @@ const MAX_RESEARCHES = numEnv("MAX_RESEARCH_RESEARCHES", 2);
 const REFLECT_WEAK_THRESHOLD = 0.45;
 // #5 How many times a draft may be sent back for grounding revision.
 const GROUNDING_REVISIONS = numEnv("GROUNDING_MAX_REVISIONS", 1);
+/**
+ * Verify and release the answer a paragraph at a time (see progressiveGate.ts)
+ * rather than generating it whole, grading it whole, then revealing it. Set
+ * PROGRESSIVE_GROUNDING=off to fall back to the sequential gate.
+ */
+const progressive = (process.env.PROGRESSIVE_GROUNDING?.trim() || "on") !== "off";
+/**
+ * Per-request model tuning, applied to every agent round.
+ *
+ * `thinking` is set EXPLICITLY rather than omitted. On Sonnet 4.6 omitting it
+ * meant no extended thinking; on Sonnet 5 omitting it runs adaptive thinking,
+ * so a bare model swap would have silently added reasoning tokens to the
+ * critical path and made the turn slower, not faster. Keeping it off preserves
+ * the behaviour these prompts were tuned against, and makes the model change a
+ * clean speed/capability upgrade rather than two changes at once. Turn it on
+ * deliberately, with AGENT_EFFORT, once there are numbers to compare.
+ */
+const EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+type Effort = (typeof EFFORT_LEVELS)[number];
+const AGENT_EFFORT = EFFORT_LEVELS.find(
+  (e) => e === process.env.AGENT_EFFORT?.trim()
+) as Effort | undefined;
+const MODEL_TUNING: Pick<
+  Anthropic.MessageCreateParams,
+  "thinking" | "output_config"
+> = AGENT_EFFORT
+  ? { thinking: { type: "adaptive" }, output_config: { effort: AGENT_EFFORT } }
+  : { thinking: { type: "disabled" } };
 /**
  * Per-question credit ceiling. Read live from the meter between steps, so a
  * pathological question winds down instead of walking every tool to the step
@@ -97,6 +134,11 @@ export interface AgentRunOptions {
   onStatus?: (status: {
     phase: "researching" | "verifying" | "writing" | "revising";
   }) => void;
+  /** Fires when the progressive gate has to retract text it already released
+   *  (the round turned out to be a tool call). The client must discard every
+   *  delta received for this assistant message so far. Rare — see
+   *  ProgressiveGateOptions.onRollback. */
+  onRollback?: () => void;
   /** Aborts the run when the client disconnects or hits Stop. Passed to every
    *  Anthropic stream so in-flight generation is cancelled, and checked between
    *  steps so no further model/tool work (or billing) happens after a cancel. */
@@ -129,6 +171,9 @@ export interface AgentRunResult {
   stepsUsed: number;
   /** True when the credit ceiling forced the loop to stop researching early. */
   budgetHit: boolean;
+  /** The ceiling that was in force, so `budgetHit` stays interpretable after a
+   *  RESEARCH_CREDIT_BUDGET change. */
+  creditBudget: number;
   /** In-loop grounding-gate outcome on the final answer (#5). Null if not run. */
   faithfulness: {
     ran: boolean;
@@ -219,6 +264,12 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   let lastGrade: GradeResult | null = null;
   let revised = false;
   let patched = false;
+  /**
+   * Characters of `assistantContent` already released to the client by the
+   * progressive gate. The final emit sends only what is left, so text is never
+   * sent twice — and the footer, appended after the loop, still reaches the UI.
+   */
+  let releasedChars = 0;
 
   const accUsage = (u: Anthropic.Messages.Usage) => {
     totalInputTokens += u.input_tokens;
@@ -238,6 +289,22 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     // so we don't keep spending on tool rounds / generation for an abandoned turn.
     if (opts.abortSignal?.aborted) throw new AgentAbortedError();
     stepsUsed = step + 1;
+    // Verify this round's prose a paragraph at a time, while it is still being
+    // written, and release each paragraph as it clears. `gate` stays null until
+    // text actually arrives, so a pure tool-calling round costs nothing.
+    //
+    // Releasing commits us to this answer, which rules out the reflect →
+    // re-search path below (it discards the draft and searches again). Whether
+    // reflect COULD fire is knowable before the round — it depends only on tool
+    // results already gathered — so decide up front rather than releasing and
+    // then suppressing the re-search. Measured 2026-08-21: suppressing it
+    // instead cost 39% of the cases a turn loads, i.e. materially less evidence
+    // behind the answer. Weak-retrieval rounds therefore fall back to the
+    // sequential gate; every other round gets the full progressive path.
+    const mayReflect =
+      researchBudget > 0 && retrievalIsWeak(toolTrace) && creditsSpent() < CREDIT_BUDGET;
+    const progressiveThisRound = progressive && !mayReflect;
+    let gate: ProgressiveGate | null = null;
     const finalMsg = await timer.time(
       "model_round",
       async () => {
@@ -248,6 +315,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
             system: cachedSystemPrompt,
             tools: TOOL_DEFINITIONS,
             messages: applyCacheBreakpoints(messages),
+            ...MODEL_TUNING,
           },
           { signal: opts.abortSignal }
         );
@@ -258,10 +326,40 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
         // first delta rather than guessing up front, so a round that turns out
         // to call more tools never briefly mislabels itself.
         let announcedWriting = false;
-        stream.on("text", () => {
-          if (announcedWriting) return;
-          announcedWriting = true;
-          opts.onStatus?.({ phase: "writing" });
+        stream.on("text", (delta: string) => {
+          if (!announcedWriting) {
+            announcedWriting = true;
+            opts.onStatus?.({ phase: "writing" });
+            if (progressiveThisRound) {
+              let sawSubstance = false;
+              gate = new ProgressiveGate({
+                cases: registry.list(),
+                transform: (part) => {
+                  // Drop a leading "Understood, I will…" preamble before it can
+                  // be released; once real content has arrived, stop checking.
+                  if (!sawSubstance) {
+                    if (isMetaParagraph(part.trim())) return null;
+                    sawSubstance = true;
+                  }
+                  // Bare [n] → [^n] must happen before grading: the judge only
+                  // matches caret markers, so an un-normalised paragraph would
+                  // be silently graded as having no claims at all.
+                  return normalizeCitations(part, registry.list().length).text;
+                },
+                onRelease: opts.onTextDelta,
+                onVerifying: () => opts.onStatus?.({ phase: "verifying" }),
+                onRollback: () => opts.onRollback?.(),
+                abortSignal: opts.abortSignal,
+              });
+            }
+          }
+          gate?.push(delta);
+        });
+        // The moment a tool call appears, this round's text was narration and
+        // not the answer — stop releasing it. The gate holds one paragraph
+        // behind the writer precisely so this cancellation lands in time.
+        stream.on("contentBlock", (block: Anthropic.ContentBlock) => {
+          if (block.type === "tool_use") gate?.cancelRelease();
         });
         stream.on("error", (err: unknown) => {
           logError({
@@ -287,6 +385,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     stopReason = finalMsg.stop_reason ?? null;
 
     if (finalMsg.stop_reason === "tool_use") {
+      (gate as ProgressiveGate | null)?.cancelRelease();
       const toolUseBlocks = finalMsg.content.filter(
         (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
       );
@@ -296,6 +395,10 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
 
       // Execute tools in parallel. Each executeTool call appends to toolTrace.
+      // load_case's char budget is per ROUND, not per call, so the tools need to
+      // know how many of them are sharing it — otherwise a fan-out of parallel
+      // load_case calls multiplies the per-case cap by the batch size.
+      const siblingLoadCases = toolUseBlocks.filter((b) => b.name === "load_case").length;
       const toolResultBlocks = await Promise.all(
         toolUseBlocks.map(async (tu) => {
           const startRecord: ToolCallRecord = {
@@ -312,7 +415,8 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
           const resultText = await executeTool(
             tu.name,
             tu.input as Record<string, unknown>,
-            ctx
+            ctx,
+            { siblingLoadCases }
           );
           const finalRecord = toolTrace[toolTrace.length - 1];
           opts.onToolEvent({ type: "end", step_index: step, record: finalRecord });
@@ -356,9 +460,16 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     const draft = normalizeCitations(textOf(finalMsg), registry.list().length).text;
     messages.push({ role: "assistant", content: finalMsg.content });
 
+    // Close the progressive gate for this round. Everything it released is
+    // already verified and already on the user's screen.
+    const gateResult = gate ? await (gate as ProgressiveGate).finish() : null;
+    const committed = gateResult !== null && gateResult.releasedChars > 0;
+
     // #1 Reflect → re-search. Only when the model actually searched and the
-    // results were weak, and there is re-search budget left.
-    if (researchBudget > 0 && retrievalIsWeak(toolTrace) && creditsSpent() < CREDIT_BUDGET) {
+    // results were weak, and there is re-search budget left. Skipped once text
+    // has been committed to the user: re-searching would produce a different
+    // answer, and the first paragraphs of the old one are already on screen.
+    if (!committed && researchBudget > 0 && retrievalIsWeak(toolTrace) && creditsSpent() < CREDIT_BUDGET) {
       opts.onStatus?.({ phase: "researching" });
       const r = await timer.time(
         "reflect",
@@ -379,8 +490,33 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
       }
     }
 
-    // #5 Grounding gate. Grade citation-bearing drafts; if claims are
-    // unsupported and revision budget remains, send it back to be fixed.
+    // #5a Progressive gate already graded and repaired this answer, paragraph by
+    // paragraph, while it was being written. Nothing further to do — and nothing
+    // further is *permitted*, since the text has been shown.
+    if (gateResult && gateResult.ran) {
+      lastGrade = {
+        findings: gateResult.findings,
+        unsupported: gateResult.unsupported,
+        checked: gateResult.checked,
+        ran: true,
+      };
+      revised = gateResult.patched;
+      patched = gateResult.patched;
+      releasedChars = gateResult.releasedChars;
+      assistantContent = gateResult.text;
+      break;
+    }
+    if (gateResult && !gateResult.ran) {
+      // Uncited prose (or the judge failed). Take the gate's text so the
+      // already-released characters and `assistantContent` cannot diverge.
+      releasedChars = gateResult.releasedChars;
+      assistantContent = gateResult.text;
+      break;
+    }
+
+    // #5b Sequential grounding gate — the pre-progressive path, still used when
+    // progressive release is disabled. Grade citation-bearing drafts; if claims
+    // are unsupported and revision budget remains, send it back to be fixed.
     if (/\[\^\d+/.test(draft)) {
       opts.onStatus?.({ phase: "verifying" });
       lastGrade = await timer.time(
@@ -515,7 +651,9 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
   // acknowledged an internal revision/reflection nudge ("Understood, I will…")
   // instead of starting with the answer. Conservative — only strips a short
   // leading line matching known openers when substantive content follows.
-  assistantContent = stripLeadingMeta(assistantContent);
+  // Skipped once text has been released: the gate already dropped preambles per
+  // paragraph, and re-stripping here would desynchronise `releasedChars`.
+  if (releasedChars === 0) assistantContent = stripLeadingMeta(assistantContent);
 
   // Append the groundedness footer for any claims still unsupported after the
   // revision budget was spent (the in-loop gate already tried to fix them).
@@ -523,12 +661,13 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     assistantContent += buildGroundingFooter(lastGrade.unsupported, registry.list());
   }
 
-  // Stream the accepted, verified answer to the client now. We deliberately
-  // verify-then-stream (the grounding gate must run before the user sees any
-  // claim), so the text is already complete here — but emit it in small chunks
-  // rather than one blob so the UI paints progressively instead of appearing to
-  // hang and then dumping the whole answer at once.
-  if (assistantContent) emitChunked(assistantContent, opts.onTextDelta);
+  // Emit whatever the progressive gate has not already released — the tail of
+  // the answer plus the groundedness footer. When progressive release is off
+  // (or the round never produced verified prose) `releasedChars` is 0 and this
+  // sends the whole answer, exactly as before: verified first, then streamed in
+  // small chunks so the UI paints progressively instead of dumping one blob.
+  const pending = assistantContent.slice(releasedChars);
+  if (pending) emitChunked(pending, opts.onTextDelta);
 
   const faithfulness = lastGrade
     ? {
@@ -576,6 +715,7 @@ export async function runAgent(opts: AgentRunOptions): Promise<AgentRunResult> {
     stopReason,
     stepsUsed,
     budgetHit,
+    creditBudget: CREDIT_BUDGET,
     contextDebug: JSON.stringify(
       { session_cases_count: opts.sessionStore.caseSummaries.length, history_turns: messages.length },
       null,

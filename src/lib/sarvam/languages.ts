@@ -72,3 +72,155 @@ export function languageName(code: string): string {
   const needle = (code || "").trim().toLowerCase();
   return SUPPORTED_LANGUAGES.find((l) => l.code.toLowerCase() === needle)?.name || code;
 }
+
+/**
+ * Writing system for each supported language.
+ *
+ * Used to tell whether a translation actually happened: `sarvam-translate:v1` is
+ * an instruction-tuned LLM, and when it drops out of "translate" mode it returns
+ * the input verbatim with HTTP 200. Absence and failure we already detect; a
+ * confident echo we did not. Comparing how much SOURCE-script text survived into
+ * the output catches it, and script is the cheapest reliable signal.
+ *
+ * Manipuri is written in both Bengali and Meetei Mayek; it is mapped to Bengali
+ * because that is what Sarvam emits. Where a script is unknown the check is
+ * skipped rather than guessed — a missed echo is recoverable, a false positive
+ * would push every job onto the expensive fallback.
+ */
+export type Script =
+  | "latin"
+  | "devanagari"
+  | "bengali"
+  | "gujarati"
+  | "gurmukhi"
+  | "kannada"
+  | "malayalam"
+  | "odia"
+  | "tamil"
+  | "telugu"
+  | "arabic"
+  | "olchiki";
+
+const SCRIPT_BY_CODE: Record<string, Script> = {
+  "en-IN": "latin",
+  "hi-IN": "devanagari",
+  "mr-IN": "devanagari",
+  "ne-IN": "devanagari",
+  "sa-IN": "devanagari",
+  "doi-IN": "devanagari",
+  "brx-IN": "devanagari",
+  "kok-IN": "devanagari",
+  "mai-IN": "devanagari",
+  "bn-IN": "bengali",
+  "as-IN": "bengali",
+  "mni-IN": "bengali",
+  "gu-IN": "gujarati",
+  "pa-IN": "gurmukhi",
+  "kn-IN": "kannada",
+  "ml-IN": "malayalam",
+  "od-IN": "odia",
+  "ta-IN": "tamil",
+  "te-IN": "telugu",
+  "ur-IN": "arabic",
+  "ks-IN": "arabic",
+  "sd-IN": "arabic",
+  "sat-IN": "olchiki",
+};
+
+/** Unicode range for each script, as a character class body. */
+const RANGE: Record<Script, string> = {
+  latin: "A-Za-z",
+  devanagari: "\\u0900-\\u097F",
+  bengali: "\\u0980-\\u09FF",
+  gujarati: "\\u0A80-\\u0AFF",
+  gurmukhi: "\\u0A00-\\u0A7F",
+  kannada: "\\u0C80-\\u0CFF",
+  malayalam: "\\u0D00-\\u0D7F",
+  odia: "\\u0B00-\\u0B7F",
+  tamil: "\\u0B80-\\u0BFF",
+  telugu: "\\u0C00-\\u0C7F",
+  arabic: "\\u0600-\\u06FF\\u0750-\\u077F",
+  olchiki: "\\u1C50-\\u1C7F",
+};
+
+/** The script a language is written in, or null when we don't know. */
+export function scriptOf(code: string): Script | null {
+  return SCRIPT_BY_CODE[(code || "").trim()] ?? null;
+}
+
+/** How many characters of `script` appear in `text`. */
+export function countScript(text: string, script: Script): number {
+  return (text.match(new RegExp(`[${RANGE[script]}]`, "g")) ?? []).length;
+}
+
+/** Letters that must be present before a script census means anything. */
+const MIN_LETTERS_TO_JUDGE = 50;
+
+/** Share of counted letters one script must hold to be called dominant. */
+const DOMINANT_SHARE = 0.6;
+
+/**
+ * The script `text` is predominantly written in, or null when there isn't enough
+ * evidence — too few letters, or a genuinely mixed document. Characters in
+ * scripts absent from RANGE simply aren't counted, so an unsupported writing
+ * system yields null rather than a wrong answer.
+ */
+export function dominantScript(text: string): Script | null {
+  let total = 0;
+  let best: Script | null = null;
+  let bestCount = 0;
+  for (const script of Object.keys(RANGE) as Script[]) {
+    const n = countScript(text, script);
+    total += n;
+    if (n > bestCount) {
+      bestCount = n;
+      best = script;
+    }
+  }
+  if (total < MIN_LETTERS_TO_JUDGE || !best) return null;
+  return bestCount / total >= DOMINANT_SHARE ? best : null;
+}
+
+/**
+ * Whether `text` is plausibly written in `code`'s language.
+ *
+ * This exists because Sarvam /text-lid reported `en-IN` for a page that was
+ * 96.6% Devanagari, and the pipeline believed it — with the target also English,
+ * the "already in the target language" short-circuit fired and the document was
+ * never translated at all. Script is a coarse signal (it cannot tell Hindi from
+ * Marathi) but it is decisive for exactly the failure that occurred: a detection
+ * naming a language written in a completely different script from the text.
+ *
+ * Returns true whenever there is genuine doubt, so the cheap Sarvam path is only
+ * abandoned on positive evidence that the detection is wrong.
+ */
+export function scriptMatchesLanguage(text: string, code: string): boolean {
+  const claimed = scriptOf(code);
+  const actual = dominantScript(text);
+  if (!claimed || !actual) return true;
+  return claimed === actual;
+}
+
+/**
+ * Share of `text`'s letters that are NOT in `code`'s script, or null when there
+ * isn't enough text to judge.
+ *
+ * This is the output-side counterpart to {@link scriptMatchesLanguage}: it asks
+ * "does this finished translation still look like the source?" rather than "what
+ * language is this input?". A real translation scores near zero — proper nouns
+ * are transliterated, not copied — so anything substantial means the model
+ * structured the text without translating it.
+ */
+export function foreignScriptShare(text: string, code: string): number | null {
+  const target = scriptOf(code);
+  if (!target) return null;
+  let total = 0;
+  let native = 0;
+  for (const script of Object.keys(RANGE) as Script[]) {
+    const n = countScript(text, script);
+    total += n;
+    if (script === target) native = n;
+  }
+  if (total < MIN_LETTERS_TO_JUDGE) return null;
+  return (total - native) / total;
+}

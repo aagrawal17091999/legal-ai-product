@@ -7,7 +7,9 @@
  * typed block model, which is what preserves the `flagged` illegible-span
  * markers, citation italics and kv/partyLabel/signature typing that Sarvam's
  * Markdown cannot express. Because Claude no longer reads OR translates, that
- * step runs on Haiku (see the model selection in ocr.ts / translate.ts).
+ * step runs on Haiku. Note the "no longer translates" is what buys the cheap
+ * tier: when a unit falls back to Claude translating, it goes back to the strong
+ * model (see the model selection in ocr.ts / translate.ts).
  *
  * Three background steps, run by the cron worker each tick:
  *
@@ -50,9 +52,10 @@ import {
   isTerminal,
   SarvamOutOfCreditsError,
   SarvamRateLimitError,
+  SarvamUntranslatedError,
   SARVAM_RATE_LIMIT_PER_MIN,
 } from "../sarvam/client";
-import { languageCode } from "../sarvam/languages";
+import { languageCode, scriptMatchesLanguage } from "../sarvam/languages";
 import { withMeter, addSarvamUsage, addSarvamTranslateUsage } from "../billing/meter";
 import { logError } from "../error-logger";
 
@@ -312,8 +315,30 @@ export async function runSarvamTranslations(): Promise<{ done: number; fellBack:
         continue;
       }
 
+      // /text-lid is not always right, and being wrong here is expensive: it
+      // reported `en-IN` for a page of 96.6% Devanagari, which (with an English
+      // target) made the equal-codes branch below skip translation entirely and
+      // ship raw Hindi to the user as the finished translation. A detection that
+      // names a language written in a different script from the text is not
+      // trustworthy enough to route on, so hand the unit to Claude, which
+      // identifies the source itself while translating.
+      if (!scriptMatchesLanguage(sourceText, sourceCode)) {
+        logError({
+          category: "extraction",
+          message:
+            `Sarvam detected ${sourceCode} but unit ${unit.id} is not written in that ` +
+            `script — falling back to Claude translation.`,
+          severity: "warning",
+          metadata: { feature: "sarvam_lid_mismatch", jobId: unit.job_id, sourceCode },
+        });
+        await fallbackToClaudeTranslation([unit.id], "Source language unclear; translating directly.");
+        fellBack++;
+        continue;
+      }
+
       // Already in the target language — nothing to translate, and paying to
-      // "translate" hi-IN→hi-IN would be waste. Pass the text straight through.
+      // "translate" hi-IN→hi-IN would be waste. Safe to trust only because the
+      // script check above has confirmed the text really is in this language.
       if (sourceCode === targetCode) {
         if (await completeXlate(unit.id, sourceText, sourceCode)) done++;
         continue;
@@ -340,6 +365,23 @@ export async function runSarvamTranslations(): Promise<{ done: number; fellBack:
       }
       if (err instanceof SarvamRateLimitError) {
         await requeueXlateUnits([unit.id], "Translation service busy; retrying.");
+        continue;
+      }
+      if (err instanceof SarvamUntranslatedError) {
+        // Sarvam answered 200 but handed a chunk back untranslated, and the
+        // in-place retry didn't help. Requeueing would just spend attempts on
+        // the same outcome, so hand the unit to Claude now. Logged as a warning
+        // rather than swallowed: a rising count here means /translate is
+        // degrading on a language pair or a document shape and we want to see it.
+        logError({
+          category: "extraction",
+          message: `Sarvam returned untranslated text for unit ${unit.id}: ${describe(err)}`,
+          error: err,
+          severity: "warning",
+          metadata: { feature: "sarvam_translate_echo", jobId: unit.job_id },
+        });
+        await fallbackToClaudeTranslation([unit.id], "Translation incomplete; retranslating.");
+        fellBack++;
         continue;
       }
       logError({

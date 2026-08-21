@@ -28,7 +28,7 @@ import {
 } from "@/lib/jobs/sarvam-ocr";
 import { isSarvamEnabled } from "@/lib/sarvam/client";
 import { ocrBatchConfig } from "@/lib/ocr/ocr";
-import { translateBatchConfig } from "@/lib/translate/translate";
+import { translateBatchConfig, batchLooksUntranslated } from "@/lib/translate/translate";
 import { assembleOcrJob } from "@/lib/ocr/process";
 import { assembleTranslationJob } from "@/lib/translate/process";
 import { mirrorJobStatus } from "@/lib/firebase-admin";
@@ -108,6 +108,9 @@ async function processOne(
   //   translated_text → Sarvam read AND translated; Claude only structures (Haiku)
   //   ocr_text        → Sarvam read; Claude translates + structures     (Haiku)
   //   neither         → Claude reads the pixels too                     (Sonnet)
+  // The two Haiku tiers are speculative: Haiku is cheap but does not reliably
+  // translate, so a translation batch whose output comes back in the source
+  // script is redone on the strong model below.
   const translatedText = batch.translated_text?.trim() || null;
   const ocrText = batch.ocr_text?.trim() || null;
   const claudeText = translatedText ?? ocrText;
@@ -125,17 +128,55 @@ async function processOne(
       refId: batch.job_id,
     },
     async () => {
-      const r = await runBatch(
+      const plan = {
+        index: batch.batch_index,
+        pageStart: batch.page_start,
+        pageEnd: batch.page_end,
+      };
+      let r = await runBatch(
         buffer,
         source.source_mime,
         source.source_filename,
-        { index: batch.batch_index, pageStart: batch.page_start, pageEnd: batch.page_end },
+        plan,
         cfg.prompt,
         cfg.feature,
         cfg.model,
         cfg.schema,
         claudeText
       );
+
+      // Haiku sometimes structures a page perfectly and translates none of it,
+      // which every other check in the pipeline would wave through as a success.
+      // Catch it on the output and redo the batch on the strong model. Both calls
+      // land in this one usage event, so an escalated batch is billed for what it
+      // actually cost.
+      if (
+        batch.job_kind === "translate" &&
+        cfg.model &&
+        batchLooksUntranslated(r, source.target_language ?? "")
+      ) {
+        logError({
+          category: "extraction",
+          message:
+            `Batch ${batch.id} came back untranslated on ${cfg.model} — ` +
+            `escalating to the strong model.`,
+          severity: "warning",
+          metadata: { feature: "translate_escalate", jobId: batch.job_id, model: cfg.model },
+        });
+        r =
+          (await runBatch(
+            buffer,
+            source.source_mime,
+            source.source_filename,
+            plan,
+            cfg.prompt,
+            cfg.feature,
+            undefined,
+            cfg.schema,
+            claudeText
+          )) ?? r;
+      }
+
       // A failed attempt may still have consumed some tokens before the call
       // errored/parsed empty. Don't bill the user for it — only a successful
       // batch is charged (and the retry that finally succeeds is charged once).

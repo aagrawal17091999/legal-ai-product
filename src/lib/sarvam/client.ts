@@ -19,6 +19,8 @@
  *     one cannot be bought around, so the queue rate-limits itself.
  */
 
+import { scriptOf, countScript } from "./languages";
+
 const BASE_URL = process.env.SARVAM_BASE_URL?.trim() || "https://api.sarvam.ai";
 
 /** Sarvam's per-job page cap. A batch unit must never exceed this. */
@@ -36,6 +38,19 @@ export const SARVAM_TRANSLATE_MAX_CHARS =
 /** Max input characters for /text-lid. */
 const LID_MAX_CHARS = 1000;
 
+/**
+ * The page markers {@link getDigitiseText} inserts between pages.
+ *
+ * They are ours, not the document's, and they are ASCII — which turned out to
+ * matter enormously. Sent to /text-lid at the head of the sample, the single
+ * leading "--- page 1 ---" was enough to make it answer `en-IN` for a page that
+ * is 96.6% Devanagari. With the marker stripped the same text identifies as
+ * `hi-IN`, as does every other sample from the same document. That one wrong
+ * answer is what made the pipeline skip translation and hand a user their own
+ * Hindi back as a finished English translation.
+ */
+const PAGE_MARKER = /^--- page \d+ ---$/gm;
+
 /** Out of Sarvam credits (HTTP 402). The whole pipeline falls back to Claude
  *  vision when this happens, and the worker logs a critical "top up" alarm. */
 export class SarvamOutOfCreditsError extends Error {
@@ -51,6 +66,23 @@ export class SarvamRateLimitError extends Error {
   constructor(message = "Sarvam rate limit exceeded") {
     super(message);
     this.name = "SarvamRateLimitError";
+  }
+}
+
+/**
+ * Sarvam answered 200 but did not translate — the output is the input echoed
+ * back, or still carries most of its source-script text.
+ *
+ * This is the failure mode that shipped a half-Hindi document to a user: every
+ * other guard in the pipeline tests for absence or an HTTP error, and an echo is
+ * neither. It is deliberately NOT retried, here or at the queue level: measured
+ * on real chunks, whether /translate engages is deterministic per chunk (5/5 or
+ * 0/5), so a retry only buys a second bill. The unit goes straight to Claude.
+ */
+export class SarvamUntranslatedError extends Error {
+  constructor(message = "Sarvam returned untranslated text") {
+    super(message);
+    this.name = "SarvamUntranslatedError";
   }
 }
 
@@ -193,8 +225,19 @@ export async function getJobStatus(jobId: string): Promise<SarvamStatus> {
  * translate — Urdu, Assamese, Santali and others are absent). A null return is a
  * signal to translate with Claude instead, not an error.
  */
+/**
+ * The sample sent to /text-lid. Exported so the marker-stripping that fixed a
+ * production misdetection is covered by a test without a live API call.
+ */
+export function lidSample(text: string): string {
+  return text.replace(PAGE_MARKER, "").trim().slice(0, LID_MAX_CHARS);
+}
+
 export async function identifyLanguage(text: string): Promise<string | null> {
-  const sample = text.trim().slice(0, LID_MAX_CHARS);
+  // Strip our own page markers first — see PAGE_MARKER. Sampling from the head
+  // of the text is otherwise the right choice; it is only the injected ASCII
+  // that misleads the detector.
+  const sample = lidSample(text);
   if (!sample) return null;
 
   const res = await fetch(`${BASE_URL}/text-lid`, {
@@ -278,8 +321,66 @@ export function chunkForTranslate(
   return pack(units, maxChars, "\n\n");
 }
 
-/** Translate one chunk (≤ SARVAM_TRANSLATE_MAX_CHARS). */
-async function translateChunk(
+/**
+ * Strip the conversational preamble `sarvam-translate:v1` sometimes prefixes.
+ *
+ * It is an instruction-tuned LLM, not a classical MT engine, so it occasionally
+ * answers in chat register — "Here is the translation of the Hindi text to
+ * English:" — and that line was landing verbatim in users' documents, because the
+ * downstream structuring pass is (correctly) forbidden from editing the
+ * translation of record. Only a leading line is stripped, and only when real
+ * content follows it, so a sentence that legitimately begins this way survives.
+ */
+export function stripPreamble(text: string): string {
+  const stripped = text.replace(
+    /^\s*(?:sure[,.!]?\s*)?(?:here(?:'s| is)|below is|this is)\b[^:\n]{0,80}\btranslat\w*[^:\n]{0,80}:[ \t]*\n?/i,
+    ""
+  );
+  return stripped.trim() ? stripped : text;
+}
+
+/**
+ * How much of a chunk's source-script text may survive translation before we
+ * call it untranslated. Proper nouns are transliterated rather than copied, so a
+ * genuine translation retains very little; a quarter is far above the noise
+ * floor and well below a partial echo.
+ */
+const UNTRANSLATED_RATIO = 0.25;
+
+/** Below this much source-script input the ratio isn't meaningful — a chunk that
+ *  is already mostly in the target language has nothing to measure. */
+const MIN_SOURCE_SCRIPT_CHARS = 40;
+
+/**
+ * Whether `output` looks like `input` that was never translated.
+ *
+ * Two signals, cheapest first: an exact echo (modulo whitespace), then how much
+ * source-script text survived. The script test is skipped when source and target
+ * share a script (Hindi→Marathi) or either script is unknown — there the echo
+ * test is all we have, and a missed detection is safer than falsely dumping
+ * every unit onto the expensive fallback path.
+ */
+export function isUntranslated(
+  input: string,
+  output: string,
+  sourceCode: string,
+  targetCode: string
+): boolean {
+  const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+  if (!norm(output)) return true;
+  if (norm(output) === norm(input)) return true;
+
+  const source = scriptOf(sourceCode);
+  const target = scriptOf(targetCode);
+  if (!source || !target || source === target) return false;
+
+  const before = countScript(input, source);
+  if (before < MIN_SOURCE_SCRIPT_CHARS) return false;
+  return countScript(output, source) / before > UNTRANSLATED_RATIO;
+}
+
+/** One POST to /translate. */
+async function postTranslate(
   input: string,
   sourceCode: string,
   targetCode: string
@@ -304,6 +405,31 @@ async function translateChunk(
 }
 
 /**
+ * Translate one chunk (≤ SARVAM_TRANSLATE_MAX_CHARS), verifying that it actually
+ * came back translated.
+ *
+ * A 200 response is not evidence of success here, so the output is checked. There
+ * is deliberately NO retry: measured on four real chunks from a Gazette of India
+ * page, five attempts each, every chunk was either translated 5/5 or echoed 5/5 —
+ * whether `sarvam-translate:v1` engages with a chunk is a property of the chunk,
+ * not of sampling. A retry would have salvaged none of those 20 attempts while
+ * doubling the Sarvam bill on exactly the chunks already heading for the fallback.
+ * Claude handles them from here.
+ */
+async function translateChunk(
+  input: string,
+  sourceCode: string,
+  targetCode: string
+): Promise<string> {
+  const text = stripPreamble(await postTranslate(input, sourceCode, targetCode));
+  if (!isUntranslated(input, text, sourceCode, targetCode)) return text;
+  throw new SarvamUntranslatedError(
+    `Chunk came back untranslated (${sourceCode}→${targetCode}, ${input.length} chars): ` +
+      `"${input.slice(0, 80).replace(/\s+/g, " ")}…"`
+  );
+}
+
+/**
  * Translate page-marked Markdown, preserving the "--- page N ---" markers.
  *
  * Markers are re-emitted untranslated and chunks never span a page, so the
@@ -319,7 +445,8 @@ export async function translatePageText(
 ): Promise<string> {
   const out: string[] = [];
 
-  // Split on the page markers this module's getDigitiseText() emits, keeping them.
+  // Split on the page markers this module's getDigitiseText() emits (see
+  // PAGE_MARKER), keeping them so the structuring pass can still see page breaks.
   const sections = text.split(/^(--- page \d+ ---)$/m);
   for (let i = 0; i < sections.length; i++) {
     const section = sections[i];

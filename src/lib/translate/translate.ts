@@ -27,6 +27,7 @@ import {
   countFlagged,
   flattenToSegments,
 } from "./model";
+import { languageCode, foreignScriptShare } from "../sarvam/languages";
 
 /**
  * How much work Claude still has to do for this unit, which depends on how far
@@ -53,8 +54,10 @@ function buildPrompt(targetLanguage: string, mode: TranslateMode): string {
     mode === "pretranslated"
       ? `You are given the text of a legal/official document that has ALREADY been translated into ${targetLanguage} by a machine translation system. The text was OCR'd from a scan first, so it may contain both OCR errors and translation artefacts. Lines of the form "--- page N ---" mark page boundaries; they are NOT document content.
 0. The OCR engine that produced the source sometimes DESCRIBED a picture instead of transcribing text (e.g. a sentence about "an image containing no text"). Such descriptions are not part of the document. OMIT them entirely.
-1. Do NOT re-translate, rewrite, improve, summarise or correct the wording. Reproduce the text as given — it is the translation of record.
-2. Your ONLY job is to reproduce the document's STRUCTURE as typed blocks, assigning each span of the existing text to the right block type.`
+1. Do NOT re-translate, rewrite, improve, summarise or correct wording that IS in ${targetLanguage}. Reproduce it as given — it is the translation of record.
+2. Your job is to reproduce the document's STRUCTURE as typed blocks, assigning each span of the existing text to the right block type.
+3. EXCEPTION — untranslated spans. The upstream translator sometimes returns a passage unchanged, so parts of the text may still be in the SOURCE language. Translate those spans into ${targetLanguage} yourself and set "flagged":true with a note saying the span was translated here because it arrived untranslated. This is the one case where you may change wording: a reviewer can check a flagged translation, but source-language text in the output is unusable.
+4. The upstream translator also sometimes prefixes a conversational line such as "Here is the translation of the Hindi text to English:". That is the machine talking, not document content. OMIT such lines entirely.`
       : mode === "text"
         ? `You are given the raw text of a legal/official document as produced by an OCR engine reading a scan or photo. It may contain OCR errors: garbled words, split or merged characters, mangled table layout, and fragments in the wrong order. Lines of the form "--- page N ---" mark page boundaries; they are NOT document content.
 0. The OCR engine sometimes DESCRIBES a picture instead of transcribing text — e.g. "This image contains no text. It is a black silhouette of an object…". Such descriptions are the engine talking about the page, not words printed on it. OMIT them entirely; never translate them as document content.
@@ -87,7 +90,7 @@ Rules:
 - Keep each paragraph's original number in "number" (e.g. "1.", "2."). Use null when a paragraph has no number.
 - ${
     mode === "pretranslated"
-      ? `If any span is garbled, nonsensical, truncated, or reads like a broken machine translation, set "flagged":true on that run and explain in "note". Do NOT repair it — copy it through as given and flag it. A flagged span the reviewer can check is far safer than a silent rewrite of legal wording.`
+      ? `If any span is garbled, nonsensical or truncated, set "flagged":true on that run and explain in "note". Do NOT repair garbled ${targetLanguage} — copy it through as given and flag it; a flagged span the reviewer can check is far safer than a silent rewrite of legal wording. Text still in the source language is the exception covered by rule 3: translate it, and flag it.`
       : mode === "text"
         ? `If any span is garbled, nonsensical, truncated, or otherwise looks like an OCR failure, set "flagged":true on that run and explain in "note". Give your best-effort translation but NEVER smooth over a corrupted span into plausible-looking prose — a flagged gap is far safer than a confident wrong translation.`
         : `If any span is illegible, ambiguous, cut off, or in a script you cannot confidently read, set "flagged":true on that run and explain in "note". Give your best-effort text but NEVER guess at unreadable content — a flagged gap is far safer than a confident wrong translation.`
@@ -101,18 +104,61 @@ Rules:
 }
 
 /**
- * Model for the Claude step, chosen by how much work is left.
+ * Model for the Claude step once Sarvam has pre-read the page.
  *
- * Vision keeps the strong model: reading faded typewriter ink and handwriting off
- * a scan is perception, and Haiku was measurably bad at it (empty-runs paragraphs
- * and malformed blocks on real legal scans). Once Sarvam has done the reading —
- * and, in `pretranslated` mode, the translating — what remains is parsing prose
- * into typed blocks, which is well within Haiku and ~5x cheaper on output tokens
- * (output dominates this workload). Both are env-overridable so the tiers can be
- * moved independently once real output is compared.
+ * Haiku is the default for both text modes because it is ~5x cheaper on output
+ * tokens and output dominates this workload. It is NOT reliably able to
+ * translate, though: on the Hindi bylaws scan that exposed this, Haiku in `text`
+ * mode returned all 2,434 Devanagari characters untranslated while dutifully
+ * structuring them, where Sonnet returned zero. So the cheap tier is used
+ * speculatively and its OUTPUT is checked — see `batchLooksUntranslated`, which
+ * escalates that batch to the strong model. Cheap when it works, correct when it
+ * doesn't; the vision path keeps the strong model outright, since reading faded
+ * ink is perception and Haiku was measurably bad at it.
  */
 const TRANSLATE_TEXT_MODEL =
   process.env.TRANSLATE_TEXT_MODEL?.trim() || "claude-haiku-4-5";
+
+/**
+ * Above this share of non-target-script letters, a batch's output is treated as
+ * untranslated. A genuine translation scores near zero (the verified Sonnet run
+ * on the bylaws page left 1 Devanagari character in ~3,000), so this sits far
+ * above the transliteration noise floor and far below a passthrough.
+ */
+const UNTRANSLATED_OUTPUT_SHARE = 0.15;
+
+/** Collect every human-readable string out of a raw parsed batch. */
+function collectText(value: unknown, out: string[]): void {
+  if (Array.isArray(value)) {
+    for (const v of value) collectText(v, out);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if ((key === "text" || key === "key") && typeof v === "string") out.push(v);
+    else collectText(v, out);
+  }
+}
+
+/**
+ * Whether a batch came back structured but not translated.
+ *
+ * Checked on the cheap tier's output so the pipeline can escalate to the strong
+ * model instead of shipping the source language to the user. Deliberately
+ * script-based: it needs no second model call, and the failure it catches is
+ * always a wholesale passthrough rather than a subtle mistranslation.
+ */
+export function batchLooksUntranslated(
+  parsed: ParsedBatch,
+  targetLanguage: string
+): boolean {
+  const code = languageCode(targetLanguage);
+  if (!parsed || !code) return false;
+  const out: string[] = [];
+  collectText(parsed, out);
+  const share = foreignScriptShare(out.join(" "), code);
+  return share != null && share > UNTRANSLATED_OUTPUT_SHARE;
+}
 
 /** Per-batch config for the durable-queue worker. No structured-output schema —
  *  the detailed prompt + robust parsing suffice (see vision/structured.ts).
@@ -129,7 +175,7 @@ export function translateBatchConfig(
 } {
   return {
     prompt: buildPrompt(targetLanguage, mode),
-    // undefined = the vision default (Sonnet) resolved in vision/structured.ts.
+    // undefined = the strong default (Sonnet) resolved in vision/structured.ts.
     model: mode === "vision" ? undefined : TRANSLATE_TEXT_MODEL,
     schema: null,
     feature: "translate",

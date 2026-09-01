@@ -7,12 +7,17 @@
  * formatter means the server check, the client pre-check and the label under
  * the file picker can never drift apart again.
  *
- * WHY 50 MB and not higher. The real ceiling on a document is pages, not bytes:
- * `MAX_TOTAL_PAGES = 150` in lib/vision/structured.ts. Scanned court filings run
- * 100–300 KB/page, so a full 150-page document is ~15–45 MB — 50 MB makes the
- * byte cap non-binding against the page cap, which is the point. Going much
- * beyond that buys nothing and costs a lot, because the upload path holds the
- * whole file in memory several times over:
+ * WHY 50 MB. The other ceiling is pages: `MAX_TOTAL_PAGES = 150` in
+ * lib/vision/structured.ts. Which of the two binds first depends entirely on
+ * scan density, and the one real document measured here is heavier than you
+ * would guess: a 50-page Mathura police case diary is 32.55 MB — one JPEG per
+ * page at ~3560×2416, averaging 666 KB/page, with no text layer at all.
+ *
+ * At that density 50 MB is ~75 pages, so for high-resolution scans the BYTE cap
+ * binds first and the page cap is never reached (150 such pages would need
+ * ~98 MB). Do not assume the page cap is the effective limit. Covering a full
+ * 150-page scan is not a matter of changing the number here, because the upload
+ * path holds the whole file in memory several times over:
  *
  *   1. `request.formData()` buffers the entire body,
  *   2. `Buffer.from(await file.arrayBuffer())` copies it again,

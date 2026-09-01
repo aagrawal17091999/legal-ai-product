@@ -12,12 +12,12 @@ import { mirrorJobStatus } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
 import { track } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
+import { MAX_FILE_BYTES, tooLargeMessage } from "@/lib/uploads";
 
 // Upload only splits the document into batch rows; the cron worker
 // (/api/cron/process-batches) runs the vision passes and assembles the result.
 export const maxDuration = 60;
 
-const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const ACCEPTED = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
     );
   }
   if (file.size > MAX_FILE_BYTES) {
-    return NextResponse.json({ error: "File exceeds the 25 MB limit." }, { status: 400 });
+    return NextResponse.json({ error: tooLargeMessage() }, { status: 400 });
   }
 
   try {

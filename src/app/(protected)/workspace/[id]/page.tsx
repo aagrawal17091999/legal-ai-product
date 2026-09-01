@@ -11,6 +11,7 @@ import { userFacingError } from "@/lib/user-error";
 import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Spinner from "@/components/ui/Spinner";
 import WorkspaceCitationPanel, { type DocCitation } from "@/components/workspace/CitationPanel";
+import { MAX_FILE_LABEL } from "@/lib/uploads";
 
 interface DocRow {
   id: string;
@@ -907,7 +908,7 @@ export default function WorkspaceDetailPage({
           >
             {uploading ? <Spinner size="sm" /> : "Upload documents"}
           </button>
-          <p className="text-[11px] text-charcoal-400 mt-2 text-center">PDF, DOCX, JPG, PNG · up to 25 MB</p>
+          <p className="text-[11px] text-charcoal-400 mt-2 text-center">PDF, DOCX, JPG, PNG · up to {MAX_FILE_LABEL}</p>
           {uploadError && (
             <p className="text-[12px] text-burgundy-700 mt-2 text-center">{uploadError}</p>
           )}

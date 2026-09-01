@@ -8,11 +8,11 @@ import { detectKind } from "@/lib/extract";
 import { logError } from "@/lib/error-logger";
 import { track } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
+import { MAX_FILE_BYTES, tooLargeMessage } from "@/lib/uploads";
 
 // Ingestion (OCR + embedding) runs in after(); give it room for multi-page scans.
 export const maxDuration = 300;
 
-const MAX_FILE_BYTES = 25 * 1024 * 1024; // 25 MB
 // Per-workspace ingestion quota. Caps storage + embedding cost per workspace and
 // stops a single workspace from monopolising the queue.
 const MAX_DOCS_PER_WORKSPACE = 50;
@@ -106,7 +106,7 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
       }
       if (file.size > MAX_FILE_BYTES) {
         return NextResponse.json(
-          { error: `${file.name} exceeds the 25 MB limit.` },
+          { error: tooLargeMessage(file.name) },
           { status: 400 }
         );
       }

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import { reportError } from "@/lib/report-error";
+import { MAX_FILE_BYTES, MAX_FILE_LABEL, tooLargeMessage } from "@/lib/uploads";
 import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import { useCreditsContext } from "@/components/credits/CreditsProvider";
 import Button from "@/components/ui/Button";
@@ -25,9 +26,9 @@ interface TranslationJob {
 }
 
 const ACCEPT = ".pdf,.docx,.jpg,.jpeg,.png,.webp";
-// Mirror the server limit (25 MB) and accepted extensions so we fail fast
-// client-side instead of uploading a file the server will reject.
-const MAX_FILE_BYTES = 25 * 1024 * 1024;
+// Size limit and accepted extensions are mirrored from the server so we fail
+// fast client-side instead of uploading a file the server will reject. The
+// limit itself comes from lib/uploads so the two can't drift.
 const ALLOWED_EXT = ["pdf", "docx", "jpg", "jpeg", "png", "webp"];
 
 function validateFile(file: File): string | null {
@@ -36,7 +37,7 @@ function validateFile(file: File): string | null {
     return "Unsupported file type. Use PDF, DOCX, JPG, PNG, or WEBP.";
   }
   if (file.size > MAX_FILE_BYTES) {
-    return "File exceeds the 25 MB limit.";
+    return tooLargeMessage();
   }
   return null;
 }
@@ -222,7 +223,7 @@ export default function TranslatePage() {
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 className="block w-full text-[13px] text-charcoal-700 file:mr-3 file:rounded-lg file:border-0 file:bg-navy-950 file:px-4 file:py-2 file:text-ivory-50 file:text-[13px] file:font-medium hover:file:bg-navy-800"
               />
-              <p className="text-[11px] text-charcoal-400 mt-1.5">PDF, DOCX, JPG, PNG · up to 25 MB</p>
+              <p className="text-[11px] text-charcoal-400 mt-1.5">PDF, DOCX, JPG, PNG · up to {MAX_FILE_LABEL}</p>
             </div>
             <div>
               <label className="block text-[13px] font-medium text-charcoal-700 mb-1.5">

@@ -10,7 +10,7 @@ import {
   findSettleableJobs,
   tryAcquireAssembly,
   failJob,
-  sweepStaleJobs,
+  failStalledJobs,
   queueDepth,
   jobTable,
   getJobSource,
@@ -58,9 +58,14 @@ export const maxDuration = 300;
 // can't overlap itself), so peak system-wide concurrency is this value ×
 // BATCH_MAX_LANES. Raise it as the first throughput lever when backlog grows.
 const WORKER_CONCURRENCY = Number(process.env.BATCH_WORKER_CONCURRENCY) || 5;
-// Keep draining waves until this wall-clock budget, leaving margin under the 300s
-// maxDuration for the final wave + assembly. A wave that overruns is harmless:
-// its batches keep their lease and get reclaimed by a later tick.
+// Keep draining waves until this wall-clock budget, leaving margin for the final
+// wave + assembly. A wave that overruns is harmless: its batches keep their lease
+// and get reclaimed by a later tick.
+//
+// This is the ONLY real time bound on a tick. `maxDuration` above is a Vercel
+// deployment directive and nothing enforces it here — the box runs `next start`
+// under pm2 — so if this budget is not honoured, the next thing to notice is
+// curl's --max-time in scripts/cron-tick.sh killing the request outright.
 const WORKER_BUDGET_MS = Number(process.env.BATCH_WORKER_BUDGET_MS) || 210_000;
 // Log a warning when the pending backlog exceeds this — the cue to scale.
 const BACKLOG_ALERT = Number(process.env.BATCH_BACKLOG_ALERT) || 200;
@@ -76,6 +81,15 @@ const MAX_LANES = Math.max(1, Number(process.env.BATCH_MAX_LANES) || 1);
 // Add one peer lane per this many pending batches (backlog-proportional), capped
 // at MAX_LANES. Keeps idle ticks from spawning peers that would find no work.
 const PENDING_PER_LANE = Number(process.env.BATCH_PENDING_PER_LANE) || 25;
+
+/** Resolves to "expired" after `ms` (immediately if already past). Unref'd so a
+ *  pending timer never holds the process open after the response is sent. */
+function expiresIn(ms: number): Promise<"expired"> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve("expired"), Math.max(0, ms));
+    t.unref?.();
+  });
+}
 
 /**
  * After a job is assembled, withhold its output if metering this user's batches
@@ -153,7 +167,7 @@ async function processOne(
       if (
         batch.job_kind === "translate" &&
         cfg.model &&
-        batchLooksUntranslated(r, source.target_language ?? "")
+        batchLooksUntranslated(r, source.target_language ?? "", claudeText)
       ) {
         logError({
           category: "extraction",
@@ -295,7 +309,7 @@ export async function GET(request: NextRequest) {
     let xlateFellBack = 0;
     if (!isPeer) {
       for (const kind of ["ocr", "translate"] as const) {
-        const stale = await sweepStaleJobs(kind);
+        const stale = await failStalledJobs(kind);
         for (const id of stale) {
           await mirrorJobStatus(kind, id, { status: "failed", error: STALE_JOB_MESSAGE });
           swept++;
@@ -380,6 +394,7 @@ export async function GET(request: NextRequest) {
     const buffers = new Map<string, Buffer>();
     let claimed = 0;
 
+    let budgetExpired = false;
     while (Date.now() < deadline) {
       const wave = await claimPendingBatches(WORKER_CONCURRENCY);
       if (wave.length === 0) break;
@@ -392,7 +407,7 @@ export async function GET(request: NextRequest) {
         if (src) buffers.set(b.job_id, await getR2Object(src.source_r2_key));
       }
 
-      await Promise.all(
+      const settled = Promise.all(
         wave.map(async (b) => {
           const src = sources.get(b.job_id);
           const buf = buffers.get(b.job_id);
@@ -411,7 +426,24 @@ export async function GET(request: NextRequest) {
             );
           }
         })
-      );
+      ).then(() => "settled" as const);
+
+      // Bound the wave by what is LEFT of the budget. Without this the deadline
+      // was only consulted between waves, so a wave slower than the whole budget
+      // ran unbounded: on a 50-page case diary whose batches each escalated to
+      // the strong model, one tick ran past 600s and cron-tick.sh's curl killed
+      // it with "0 bytes received", taking the in-flight work with it and
+      // blocking every other user's queue for ten minutes at a time.
+      //
+      // Nothing is cancelled or failed here — that is deliberate. The batches
+      // hold their lease, record their own rows if they finish after we return,
+      // and are reclaimed by a later tick if they do not. Killing them instead
+      // would burn a retry on work that is merely slow, which is the same
+      // mistake the age-based stale sweep used to make.
+      if ((await Promise.race([settled, expiresIn(deadline - Date.now())])) === "expired") {
+        budgetExpired = true;
+        break;
+      }
     }
 
     // Reconcile: settle every job whose batches are all done — independent of what
@@ -469,6 +501,7 @@ export async function GET(request: NextRequest) {
       assembled,
       failed,
       swept,
+      budgetExpired,
       sarvamSubmitted,
       sarvamDone,
       sarvamFellBack,

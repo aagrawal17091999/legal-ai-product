@@ -153,6 +153,61 @@ export function countScript(text: string, script: Script): number {
   return (text.match(new RegExp(`[${RANGE[script]}]`, "g")) ?? []).length;
 }
 
+/** Every script range except `target`, as a character-class body. */
+function foreignClass(target: Script): string {
+  return (Object.keys(RANGE) as Script[])
+    .filter((s) => s !== target)
+    .map((s) => RANGE[s])
+    .join("");
+}
+
+/** Punctuation and spacing that may sit inside a gloss without ending it. */
+const GLOSS_FILLER = "\\s\\u0964\\u0965.,;:'\"\\-–—/&%°";
+
+/**
+ * Remove bilingual GLOSSES — source-script text kept deliberately beside its
+ * target-language equivalent — so a script census measures translated content
+ * rather than preserved labels.
+ *
+ * This exists because of a 50-page Mathura police case diary. It is a
+ * pre-printed government form whose field labels are bilingual on the page, so a
+ * faithful English translation legitimately reads:
+ *
+ *   Case Diary Details / प्रकरण दैनिकी का विवरण
+ *   a) Date of Preparing the Case Diary (प्रकरण दैनिकी तैयार करने की दिनांक)
+ *
+ * Every character in those glosses counted as evidence of an untranslated page.
+ * Measured on that document's finished, human-verified output, the region the
+ * escalation check scores worst sat at 15.6% Devanagari against a 15% threshold —
+ * correct work, one rounding error away from being thrown out and redone on the
+ * expensive model. With glosses removed the same region scores 0.3%, while a
+ * genuinely untranslated page from the bylaws incident is untouched at 91.1%.
+ *
+ * Two patterns, both requiring the gloss to be INTRODUCED by target-script text:
+ * a parenthetical `English (देवनागरी)` and a slash pair `English / देवनागरी`.
+ * That precondition is what keeps this from eating a real passthrough — an
+ * untranslated page is source script with nothing introducing it, so nothing
+ * matches and its census is unchanged. Removal can therefore only ever LOWER a
+ * foreign-script score, never raise one, so it cannot manufacture a new failure.
+ */
+export function stripGlosses(text: string, target: Script): string {
+  const t = `[${RANGE[target]}]`;
+  const f = `[${foreignClass(target)}]`;
+  return (
+    text
+      // "English Label (देवनागरी)" → "English Label "
+      .replace(
+        new RegExp(`(${t}[^()\\n]{0,80}?)\\(([^()\\n]*${f}[^()\\n]*)\\)`, "g"),
+        "$1"
+      )
+      // "English Title / देवनागरी title" → "English Title / "
+      .replace(
+        new RegExp(`(${t}[^\\n]{0,80}?/\\s*)((?:${f}|[${GLOSS_FILLER}])+)`, "g"),
+        "$1"
+      )
+  );
+}
+
 /** Letters that must be present before a script census means anything. */
 const MIN_LETTERS_TO_JUDGE = 50;
 

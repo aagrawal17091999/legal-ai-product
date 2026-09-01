@@ -28,7 +28,16 @@ fi
 
 # -f fails the command on HTTP >=400 so systemd records the run as failed and
 # `systemctl status` / journald surface it. --max-time guards a hung request.
-curl -fsS --max-time 600 \
+#
+# MAX_TIME must stay ABOVE the endpoint's own budget and below anything that
+# would look like a hang. The batch worker drains waves up to
+# BATCH_WORKER_BUDGET_MS (~210s) and now enforces that bound mid-wave, so a
+# healthy tick returns well inside 300s. This used to be 600s, and when a wave
+# ran unbounded curl hit it and killed the request with "0 bytes received" —
+# losing the in-flight work and stalling the queue for a full ten minutes.
+MAX_TIME="${CRON_MAX_TIME:-300}"
+
+curl -fsS --max-time "${MAX_TIME}" \
   -H "Authorization: Bearer ${CRON_SECRET}" \
   "${BASE}${PATH_ARG}"
 echo   # newline after the JSON body in logs

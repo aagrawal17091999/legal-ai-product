@@ -27,7 +27,12 @@ import {
   countFlagged,
   flattenToSegments,
 } from "./model";
-import { languageCode, foreignScriptShare } from "../sarvam/languages";
+import {
+  languageCode,
+  foreignScriptShare,
+  scriptOf,
+  stripGlosses,
+} from "../sarvam/languages";
 
 /**
  * How much work Claude still has to do for this unit, which depends on how far
@@ -124,8 +129,25 @@ const TRANSLATE_TEXT_MODEL =
  * untranslated. A genuine translation scores near zero (the verified Sonnet run
  * on the bylaws page left 1 Devanagari character in ~3,000), so this sits far
  * above the transliteration noise floor and far below a passthrough.
+ *
+ * The census is taken AFTER {@link stripGlosses}, so bilingual field labels a
+ * faithful translation keeps ("Sections (धाराएं)") no longer count against it.
  */
 const UNTRANSLATED_OUTPUT_SHARE = 0.15;
+
+/**
+ * How much of the INPUT's foreign-script density may survive into the output
+ * before a batch that already tripped {@link UNTRANSLATED_OUTPUT_SHARE} is still
+ * called untranslated.
+ *
+ * This is the second opinion for documents that are inherently script-mixed, and
+ * it only ever RESCUES: a batch under the absolute threshold is never re-flagged
+ * by it. The failure being caught is wholesale passthrough, where output density
+ * matches input (ratio ≈ 1); a real translation collapses it toward zero. A
+ * half-translated page lands near 0.5 and must still be caught, so the bar sits
+ * below that, matching the chunk-level UNTRANSLATED_RATIO in sarvam/client.ts.
+ */
+const RETAINED_DENSITY_RATIO = 0.25;
 
 /** Collect every human-readable string out of a raw parsed batch. */
 function collectText(value: unknown, out: string[]): void {
@@ -147,17 +169,38 @@ function collectText(value: unknown, out: string[]): void {
  * model instead of shipping the source language to the user. Deliberately
  * script-based: it needs no second model call, and the failure it catches is
  * always a wholesale passthrough rather than a subtle mistranslation.
+ *
+ * `sourceText` is the text the model was given (Sarvam's OCR or its
+ * translation). When supplied it enables the relative check described at
+ * {@link RETAINED_DENSITY_RATIO}, which is what keeps heavily bilingual sources
+ * off the escalation path. It is optional so the vision mode, which has no text
+ * input, still gets the absolute check.
  */
 export function batchLooksUntranslated(
   parsed: ParsedBatch,
-  targetLanguage: string
+  targetLanguage: string,
+  sourceText?: string | null
 ): boolean {
   const code = languageCode(targetLanguage);
   if (!parsed || !code) return false;
+  const script = scriptOf(code);
+  if (!script) return false;
+
   const out: string[] = [];
   collectText(parsed, out);
-  const share = foreignScriptShare(out.join(" "), code);
-  return share != null && share > UNTRANSLATED_OUTPUT_SHARE;
+  const share = foreignScriptShare(stripGlosses(out.join(" "), script), code);
+  if (share == null || share <= UNTRANSLATED_OUTPUT_SHARE) return false;
+
+  // Over the absolute bar. If we know what went in, a big density drop still
+  // means the model did the work — the source was simply script-mixed to begin
+  // with. Comparing like with like: both sides are gloss-stripped.
+  if (sourceText) {
+    const inShare = foreignScriptShare(stripGlosses(sourceText, script), code);
+    if (inShare != null && inShare > 0) {
+      return share / inShare > RETAINED_DENSITY_RATIO;
+    }
+  }
+  return true;
 }
 
 /** Per-batch config for the durable-queue worker. No structured-output schema —

@@ -38,11 +38,31 @@ export const MAX_BATCH_ATTEMPTS = 3;
 export const BATCH_LEASE_MS = 6 * 60 * 1000;
 
 /**
- * How long a job may sit unfinished before the watchdog fails it. Raised well
- * above the old 10-minute single-shot timeout: under concurrent load a large
- * document legitimately waits in the queue and drains across many cron ticks.
+ * How long a job may make NO progress before the watchdog fails it.
+ *
+ * This replaced a flat 30-minute cap on age. A 50-page bilingual case diary took
+ * 21 minutes of honest work — Sarvam read it, three batches escalated to the
+ * strong model, and every batch finished — while the age rule was 9 minutes from
+ * discarding all of it, including the batches that had already completed and
+ * been billed. Age is not evidence of being stuck; silence is. A job whose
+ * batches are still ticking over is alive however long it has been running, and
+ * one whose batches have not moved in twenty minutes is dead however young.
+ *
+ * Twenty minutes is deliberately loose: a unit waiting on Sarvam Doc AI can sit
+ * quiet for a while, and a killed cron tick leaves its batches untouched until
+ * their lease expires. The cost of waiting too long is a spinner; the cost of
+ * being too eager is destroying finished work.
  */
-export const STALE_JOB_TIMEOUT_MS = 30 * 60 * 1000;
+export const NO_PROGRESS_TIMEOUT_MS =
+  Number(process.env.JOB_NO_PROGRESS_TIMEOUT_MS) || 20 * 60 * 1000;
+
+/**
+ * Absolute ceiling regardless of progress, so a job that somehow keeps nudging
+ * its batches forever still terminates. Nothing legitimate approaches this: the
+ * slowest real document on record finished in 21 minutes.
+ */
+export const ABSOLUTE_JOB_TIMEOUT_MS =
+  Number(process.env.JOB_ABSOLUTE_TIMEOUT_MS) || 6 * 60 * 60 * 1000;
 
 export const STALE_JOB_MESSAGE =
   "This document took too long to process — it may be very large or the service " +
@@ -311,22 +331,48 @@ export async function queueDepth(): Promise<{ pending: number; oldestCreatedAt: 
 }
 
 /**
- * Global watchdog: fail any job stuck `processing`/`assembling` past the timeout,
- * across all users. Run by the cron worker every tick so recovery doesn't depend
- * on a client hitting the list endpoint (the UI is now push-based). Returns the
- * ids that were flipped so the caller can mirror them to Firestore.
+ * Watchdog: fail jobs stuck `processing`/`assembling` that have stopped making
+ * progress. Returns the ids that were flipped so the caller can mirror them.
+ *
+ * A job counts as progressing while EITHER its own row or any of its batches has
+ * been updated inside {@link NO_PROGRESS_TIMEOUT_MS} — the job row moves during
+ * assembly, the batch rows move while the queue drains, and a healthy job is
+ * always doing one or the other. A job with no batches at all (enqueue died
+ * half-way) has nothing to move and ages out on the job row alone.
+ *
+ * `userId` scopes it to one owner for the per-user watchdog the list endpoints
+ * run; omit it for the global sweep the cron worker runs every tick, so recovery
+ * doesn't depend on a client loading a page.
  */
-export async function sweepStaleJobs(
+export async function failStalledJobs(
   kind: JobKind,
-  timeoutMs: number = STALE_JOB_TIMEOUT_MS
+  opts: { userId?: number } = {}
 ): Promise<string[]> {
   const { rows } = await pool.query<{ id: string }>(
     `UPDATE ${jobTable(kind)} j
         SET status = 'failed', error = $1, updated_at = NOW()
       WHERE j.status IN ('processing', 'assembling')
-        AND j.created_at < NOW() - ($2 * INTERVAL '1 millisecond')
+        AND ($2::int IS NULL OR j.user_id = $2::int)
+        AND (
+          j.created_at < NOW() - ($4 * INTERVAL '1 millisecond')
+          OR (
+            j.updated_at < NOW() - ($3 * INTERVAL '1 millisecond')
+            AND NOT EXISTS (
+              SELECT 1 FROM job_batches b
+               WHERE b.job_id = j.id
+                 AND b.job_kind = $5
+                 AND b.updated_at > NOW() - ($3 * INTERVAL '1 millisecond')
+            )
+          )
+        )
       RETURNING j.id`,
-    [STALE_JOB_MESSAGE, timeoutMs]
+    [
+      STALE_JOB_MESSAGE,
+      opts.userId ?? null,
+      NO_PROGRESS_TIMEOUT_MS,
+      ABSOLUTE_JOB_TIMEOUT_MS,
+      kind,
+    ]
   );
   return rows.map((r) => r.id);
 }

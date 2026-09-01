@@ -19,7 +19,7 @@
  *     one cannot be bought around, so the queue rate-limits itself.
  */
 
-import { scriptOf, countScript } from "./languages";
+import { scriptOf, countScript, stripGlosses } from "./languages";
 
 const BASE_URL = process.env.SARVAM_BASE_URL?.trim() || "https://api.sarvam.ai";
 
@@ -374,9 +374,16 @@ export function isUntranslated(
   const target = scriptOf(targetCode);
   if (!source || !target || source === target) return false;
 
-  const before = countScript(input, source);
+  // Bilingual glosses are removed from BOTH sides first. On a pre-printed
+  // bilingual form ("S.No. Evidence (क्र.सं.)"), a correct translation keeps
+  // every label, so the surviving-script ratio approached 1 and the chunk was
+  // declared an echo — which is how a 50-page case diary ended up doing three
+  // full translation passes over text that had been translated on the first.
+  // The verbatim-echo test above runs on the raw strings and is unaffected.
+  const strippedIn = stripGlosses(input, target);
+  const before = countScript(strippedIn, source);
   if (before < MIN_SOURCE_SCRIPT_CHARS) return false;
-  return countScript(output, source) / before > UNTRANSLATED_RATIO;
+  return countScript(stripGlosses(output, target), source) / before > UNTRANSLATED_RATIO;
 }
 
 /** One POST to /translate. */

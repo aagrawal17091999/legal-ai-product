@@ -28,10 +28,11 @@ User=deploy
 WorkingDirectory=/opt/legal-ai-product
 Environment=ENV_FILE=.env.production.local
 Environment=CRON_TARGET_BASE=http://127.0.0.1:3000
-# The endpoint drains waves up to BATCH_WORKER_BUDGET_MS (~210s) under a 300s
-# maxDuration, and cron-tick.sh caps the request at --max-time 600. Set the
-# start timeout explicitly to match, so systemd never kills a live worker
-# mid-wave (a killed wave is recoverable — its batches keep their lease and get
-# reclaimed — but it wastes the tokens already spent on that wave).
-TimeoutStartSec=600
+# The endpoint drains waves up to BATCH_WORKER_BUDGET_MS (~210s) and enforces
+# that bound mid-wave, so a healthy tick returns inside 300s; cron-tick.sh caps
+# the request at the same 300s. Set the start timeout a little above both so
+# systemd is the last thing to give up, never the first — a killed wave is
+# recoverable (its batches keep their lease and get reclaimed) but it wastes the
+# tokens already spent on it.
+TimeoutStartSec=330
 ExecStart=/bin/bash scripts/cron-tick.sh /api/cron/process-batches

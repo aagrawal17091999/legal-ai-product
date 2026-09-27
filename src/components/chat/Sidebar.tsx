@@ -5,6 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useAuth } from "@/hooks/useAuth";
 import type { ChatSession } from "@/types";
+import { TRANSLATION_ENABLED } from "@/lib/translate/enabled";
 
 interface SidebarProps {
   sessions: ChatSession[];
@@ -167,15 +168,30 @@ export default function Sidebar({
               </svg>
               Document Workspaces
             </Link>
-            <Link
-              href="/translate"
-              className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
-            >
-              <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
-              </svg>
-              Translate Document
-            </Link>
+            {TRANSLATION_ENABLED ? (
+              <Link
+                href="/translate"
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
+              >
+                <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
+                </svg>
+                Translate Document
+              </Link>
+            ) : (
+              <div
+                aria-disabled="true"
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-400 cursor-not-allowed"
+              >
+                <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" />
+                </svg>
+                Translate Document
+                <span className="ml-auto rounded-full bg-ivory-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-charcoal-500">
+                  Coming soon
+                </span>
+              </div>
+            )}
             <Link
               href="/ocr"
               className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"

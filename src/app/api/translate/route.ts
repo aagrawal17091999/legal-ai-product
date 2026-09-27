@@ -13,6 +13,7 @@ import { logError } from "@/lib/error-logger";
 import { track } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
 import { MAX_FILE_BYTES, tooLargeMessage } from "@/lib/uploads";
+import { TRANSLATION_ENABLED } from "@/lib/translate/enabled";
 
 // Upload only splits the document into batch rows; the cron worker
 // (/api/cron/process-batches) runs the vision passes and assembles the result.
@@ -36,6 +37,9 @@ function acceptedFile(name: string, type: string): boolean {
 export async function POST(request: NextRequest) {
   const decoded = await verifyAuth(request);
   if (!decoded) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!TRANSLATION_ENABLED) {
+    return NextResponse.json({ error: "Document translation is coming soon." }, { status: 403 });
+  }
 
   const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
 

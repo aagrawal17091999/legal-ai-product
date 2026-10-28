@@ -9,6 +9,7 @@ import CreditsProvider from "@/components/credits/CreditsProvider";
 import CreditMeter from "@/components/credits/CreditMeter";
 import LowBalanceBanner from "@/components/credits/LowBalanceBanner";
 import OnboardingModal from "@/components/OnboardingModal";
+import SupportChat from "@/components/SupportChat";
 import { useChat } from "@/hooks/useChat";
 import type { SearchFilters } from "@/types";
 
@@ -146,6 +147,7 @@ export default function ProtectedLayout({
         <ProtectedContent>{children}</ProtectedContent>
         {/* After the content so it stacks above the sidebar (same z-50). */}
         <OnboardingModal />
+        <SupportChat />
       </CreditsProvider>
     </AuthGuard>
   );

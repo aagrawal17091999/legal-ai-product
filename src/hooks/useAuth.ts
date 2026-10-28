@@ -121,6 +121,13 @@ export function useAuth() {
     } catch {
       /* ignore */
     }
+    // Drop the support chat's session so the next person on this browser
+    // doesn't see this user's conversation.
+    try {
+      window.$chatwoot?.reset();
+    } catch {
+      /* ignore */
+    }
     setState({ user: null, loading: false, token: null });
   }, []);
 

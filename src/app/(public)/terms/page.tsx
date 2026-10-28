@@ -129,8 +129,7 @@ export default function TermsPage() {
               <p>
                 You can share your referral link with as many people as you like.
               A referral counts when the person you referred signs up with your
-              code and their first Pro subscription payment has gone 7 days
-              without being refunded. Every 5 referrals that count earn you
+              code and makes their first Pro subscription payment. Every 5 referrals that count earn you
               2,000 credits, added to your account automatically. Referral
               credits don&apos;t expire, have no cash value and can&apos;t be
               transferred. Referring yourself, or referrals we reasonably

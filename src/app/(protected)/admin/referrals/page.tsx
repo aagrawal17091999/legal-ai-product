@@ -7,8 +7,7 @@ import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 
 /**
- * Staff overview of the referral program: totals, referrals still inside their
- * 7-day window, and the credit rewards paid. Rewards are paid automatically by
+ * Staff overview of the referral program: totals and the credit rewards paid. Rewards are paid automatically by
  * the hourly cron; anything to correct (a disqualification, a claw-back) is done
  * from the user's own admin page.
  */
@@ -23,20 +22,9 @@ interface RewardRow {
   applied_at: string | null;
 }
 
-interface PendingRow {
-  id: number;
-  referrer_user_id: number;
-  referrer_email: string;
-  referee_user_id: number;
-  referee_email: string;
-  first_paid_at: string;
-  qualifies_at: string;
-}
-
 interface Overview {
   enabled: boolean;
   rewards: RewardRow[];
-  pending: PendingRow[];
   totals: Record<string, number>;
 }
 
@@ -117,7 +105,7 @@ export default function AdminReferralsPage() {
             <span className="overline">Staff</span>
             <h1 className="mt-3 font-serif text-4xl text-charcoal-900 tracking-tight">Referrals.</h1>
             <p className="mt-2 text-[14px] text-charcoal-600">
-              {t.referrals} referred · {t.pending} confirming · {t.qualified} qualified ·{" "}
+              {t.referrals} referred · {t.qualified} paying ·{" "}
               {t.disqualified} disqualified · {t.rewards} rewards ·{" "}
               {t.credits.toLocaleString()} credits paid
             </p>
@@ -130,26 +118,6 @@ export default function AdminReferralsPage() {
             Refresh
           </Button>
         </div>
-
-        <Section title={`Confirming (${data.pending.length})`}>
-          {data.pending.length === 0 ? (
-            <Empty>No referrals inside their 7-day window.</Empty>
-          ) : (
-            <Table
-              head={["Referrer", "Referred", "First paid", "Counts from"]}
-              rows={data.pending.map((p) => [
-                <Link key="a" href={`/admin/users/${p.referrer_user_id}`} className="hover:underline">
-                  {p.referrer_email}
-                </Link>,
-                <Link key="b" href={`/admin/users/${p.referee_user_id}`} className="hover:underline">
-                  {p.referee_email}
-                </Link>,
-                day(p.first_paid_at),
-                day(p.qualifies_at),
-              ])}
-            />
-          )}
-        </Section>
 
         <Section title="Rewards paid">
           {data.rewards.length === 0 ? (

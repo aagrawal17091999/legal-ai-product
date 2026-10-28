@@ -189,7 +189,8 @@ export async function POST(request: NextRequest) {
                 last_subscription_payment_at: new Date(),
               });
             }
-            // A referred user's first charge starts their 7-day pending window.
+            // A referred user's first charge counts their referral, and pays the
+            // referrer 2,000 credits if it makes another 5.
             // Never fails the webhook: the subscriber's own grant above already
             // landed, and a retry would only repeat this same idempotent step.
             if (paidCount === 1) {

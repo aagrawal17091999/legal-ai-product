@@ -1,18 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { qualifyDueReferrals, settleBankedRewards } from "@/lib/referrals";
+import { settleBankedRewards } from "@/lib/referrals";
 import { logError } from "@/lib/error-logger";
 import { REFERRALS_ENABLED } from "@/lib/referrals/shared";
 
 /**
- * Referral program tick. Hourly (deploy/systemd/nyayasearch-referrals.timer).
+ * Referral program safety net. Hourly (deploy/systemd/nyayasearch-referrals.timer).
  *
- *   1. Settle pending referrals whose 7-day window has passed: qualified if the
- *      first payment still stands, disqualified if it was refunded. Every 5
- *      qualified pays the referrer 2,000 credits on the spot.
- *   2. Pay any reward an interrupted run left banked.
- *
- * Every step is idempotent, so extra or overlapping runs cost nothing. Hourly
- * only so a reward lands within the hour its window closes; daily would do.
+ * Rewards are paid inside the payment webhook, the moment a 5th referral pays.
+ * If that request dies between banking the reward and granting its credits,
+ * the reward sits 'banked'; this pays it. Idempotent, so extra runs cost nothing.
  */
 export const dynamic = "force-dynamic";
 
@@ -35,9 +31,8 @@ export async function GET(request: NextRequest) {
   if (!REFERRALS_ENABLED) return NextResponse.json({ status: "disabled" });
 
   try {
-    const qualification = await qualifyDueReferrals();
     const resettled = await settleBankedRewards();
-    return NextResponse.json({ status: "ok", ...qualification, resettled });
+    return NextResponse.json({ status: "ok", resettled });
   } catch (err) {
     logError({
       category: "payment",

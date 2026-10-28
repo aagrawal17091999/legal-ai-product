@@ -23,9 +23,6 @@ export const REFERRALS_PER_REWARD = 5;
  */
 export const REFERRAL_REWARD_CREDITS = PLAN_CREDITS.monthly;
 
-/** A first payment counts once it has gone this long without a refund. */
-export const REFERRAL_PENDING_DAYS = 7;
-
 /**
  * How long after signup a code can still be attached. Long enough for someone
  * who skipped the field to add it from the onboarding step on a later visit;
@@ -66,7 +63,7 @@ export const CLAIM_ERRORS: Record<string, string> = {
   already_paying: "Referral codes can only be added before your first payment.",
 };
 
-export type ReferralStatus = "signed_up" | "pending" | "qualified" | "disqualified";
+export type ReferralStatus = "signed_up" | "qualified" | "disqualified";
 
 /** GET /api/referrals — the referrer's own view. */
 export interface ReferralSummary {
@@ -74,7 +71,7 @@ export interface ReferralSummary {
   link: string;
   perReward: number;
   creditsPerReward: number;
-  counts: { signedUp: number; pending: number; qualified: number };
+  counts: { signedUp: number; qualified: number };
   /** Qualified referrals toward the next reward (0..perReward-1). */
   progress: number;
   rewards: { earned: number; credits: number };
@@ -84,6 +81,5 @@ export interface ReferralSummary {
     status: ReferralStatus;
     joinedAt: string;
     firstPaidAt: string | null;
-    qualifiesAt: string | null;
   }[];
 }

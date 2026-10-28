@@ -62,7 +62,7 @@ export async function GET(
       // People this user referred — all of them, the count is the reward.
       pool.query(
         `SELECT r.id, r.referee_user_id, u.email AS referee_email, r.status,
-                r.first_paid_at, r.qualifies_at, r.disqualified_reason, r.created_at
+                r.first_paid_at, r.disqualified_reason, r.created_at
            FROM referrals r JOIN users u ON u.id = r.referee_user_id
           WHERE r.referrer_user_id = $1
           ORDER BY r.created_at DESC`,

@@ -445,9 +445,8 @@ export interface AdminReferral {
   id: number;
   referee_user_id: number;
   referee_email: string;
-  status: "signed_up" | "pending" | "qualified" | "disqualified";
+  status: "signed_up" | "qualified" | "disqualified";
   first_paid_at: string | null;
-  qualifies_at: string | null;
   disqualified_reason: string | null;
   created_at: string;
 }

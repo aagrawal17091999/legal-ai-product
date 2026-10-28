@@ -79,8 +79,8 @@ export const EVENTS = {
   // property, so one person's funnel reads top to bottom in their timeline —
   // except REFERRAL_CLAIMED, which belongs to the new user who claimed it.
   REFERRAL_CLAIMED: "referral_claimed",
-  REFERRAL_FIRST_PAYMENT: "referral_first_payment",
-  REFERRAL_QUALIFIED: "referral_qualified",
+  /** A referred user paid: one per paying referral, on the referrer. */
+  REFERRAL_PAID: "referral_paid",
   REFERRAL_DISQUALIFIED: "referral_disqualified",
   REFERRAL_REWARD_EARNED: "referral_reward_earned",
 
@@ -96,6 +96,8 @@ export const EVENTS = {
   CITATION_OPENED: "citation_opened",
   OCR_RESULT_DOWNLOADED: "ocr_result_downloaded",
   TRANSLATION_RESULT_DOWNLOADED: "translation_result_downloaded",
+  REFERRAL_NAV_CLICKED: "referral_nav_clicked",
+  REFERRAL_CARD_VIEWED: "referral_card_viewed",
   REFERRAL_LINK_COPIED: "referral_link_copied",
   REFERRAL_LINK_SHARED: "referral_link_shared",
 } as const;
@@ -124,6 +126,8 @@ export const CLIENT_ALLOWED: ReadonlySet<string> = new Set<string>([
   EVENTS.CITATION_OPENED,
   EVENTS.OCR_RESULT_DOWNLOADED,
   EVENTS.TRANSLATION_RESULT_DOWNLOADED,
+  EVENTS.REFERRAL_NAV_CLICKED,
+  EVENTS.REFERRAL_CARD_VIEWED,
   EVENTS.REFERRAL_LINK_COPIED,
   EVENTS.REFERRAL_LINK_SHARED,
 ]);

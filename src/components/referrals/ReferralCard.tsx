@@ -9,16 +9,9 @@ import type { ReferralStatus, ReferralSummary } from "@/lib/referrals/shared";
 
 const STATUS_LABEL: Record<ReferralStatus, string> = {
   signed_up: "Signed up, not paying yet",
-  pending: "Paying — confirming",
   qualified: "Paying ✓",
   disqualified: "Didn't qualify",
 };
-
-function fmt(date: string | null): string {
-  return date
-    ? new Date(date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
-    : "—";
-}
 
 /**
  * "Refer & earn" on the account page: the user's link, progress toward the next
@@ -44,6 +37,13 @@ export default function ReferralCard() {
         const summary = (await res.json()) as ReferralSummary;
         if (cancelled) return;
         setData(summary);
+        trackClick(EVENTS.REFERRAL_CARD_VIEWED, {
+          code: summary.code,
+          referrals_signed_up: summary.counts.signedUp,
+          referrals_paid: summary.counts.qualified,
+          rewards_earned: summary.rewards.earned,
+          from_sidebar: window.location.hash === "#refer",
+        });
       } catch {
         if (!cancelled) setFailed(true);
       }
@@ -73,14 +73,16 @@ export default function ReferralCard() {
       await navigator.clipboard.writeText(data.link);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-      trackClick(EVENTS.REFERRAL_LINK_COPIED, { code: data.code });
+      trackClick(EVENTS.REFERRAL_LINK_COPIED, { code: data.code, progress: data.progress });
     } catch {
       /* Clipboard blocked: the link is on screen to select by hand. */
     }
   };
 
   const shared = (channel: string) => {
-    if (data) trackClick(EVENTS.REFERRAL_LINK_SHARED, { code: data.code, channel });
+    if (data) {
+      trackClick(EVENTS.REFERRAL_LINK_SHARED, { code: data.code, channel, progress: data.progress });
+    }
   };
 
   return (
@@ -144,8 +146,7 @@ export default function ReferralCard() {
               ))}
             </div>
             <p className="mt-3 text-[13px] text-charcoal-600">
-              {data.counts.signedUp} signed up · {data.counts.qualified} paying
-              {data.counts.pending > 0 ? ` · ${data.counts.pending} confirming` : ""} ·{" "}
+              {data.counts.signedUp} signed up · {data.counts.qualified} paying ·{" "}
               {data.rewards.credits.toLocaleString()} credits earned
             </p>
           </div>
@@ -159,18 +160,14 @@ export default function ReferralCard() {
                   </span>
                   <span className="text-charcoal-600">
                     {STATUS_LABEL[r.status]}
-                    {r.status === "pending" && r.qualifiesAt
-                      ? ` · counts from ${fmt(r.qualifiesAt)}`
-                      : ""}
                   </span>
                 </li>
               ))}
             </ul>
           )}
           <p className="mt-5 text-[12px] leading-relaxed text-charcoal-400">
-            A referral counts once their first Pro payment is 7 days old and hasn&apos;t been
-            refunded. Credits are added to your wallet automatically and aren&apos;t exchangeable
-            for cash.
+            A referral counts as soon as the person you referred makes their first Pro payment.
+            Credits are added to your wallet automatically and aren&apos;t exchangeable for cash.
           </p>
         </>
       )}

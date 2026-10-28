@@ -684,7 +684,6 @@ function ReferralsCard({
               </Link>
               <span className="flex items-baseline gap-3 text-charcoal-600">
                 {r.status.replace(/_/g, " ")}
-                {r.status === "pending" ? ` · counts ${day(r.qualifies_at)}` : ""}
                 {r.disqualified_reason ? ` · ${r.disqualified_reason}` : ""}
                 {r.status !== "disqualified" && (
                   <button

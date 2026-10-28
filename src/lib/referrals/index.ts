@@ -3,24 +3,21 @@
  *
  * The lifecycle of one referral:
  *   1. claimReferral()             a new user attaches a code    -> signed_up
- *   2. recordRefereeFirstCharge()  their first subscription charge -> pending
- *   3. qualifyDueReferrals()       7 days on, no refund           -> qualified
- *   4. syncRewards()               every 5 qualified = 2,000 credits in the
+ *   2. recordRefereeFirstCharge()  their first subscription charge -> qualified
+ *   3. syncRewards()               every 5 qualified = 2,000 credits in the
  *                                  referrer's wallet (top-up pool, never expire)
  */
 import crypto from "crypto";
 import pool from "@/lib/db";
-import { fetchPayment } from "@/lib/razorpay";
 import { grant } from "@/lib/billing/credits";
 import { normalizeIndianMobile } from "@/lib/onboarding";
 import { SITE_URL } from "@/lib/site";
-import { track } from "@/lib/analytics/server";
+import { track, identify, setOnce, increment } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
 import type { User } from "@/types";
 import {
   REFERRALS_PER_REWARD,
   REFERRAL_REWARD_CREDITS,
-  REFERRAL_PENDING_DAYS,
   REFERRAL_CLAIM_WINDOW_DAYS,
   normalizeReferralCode,
   type ReferralSummary,
@@ -67,7 +64,10 @@ export async function ensureReferralCode(
           RETURNING referral_code`,
         [candidate, user.id]
       );
-      if (rows[0]) return rows[0].referral_code;
+      if (rows[0]) {
+        identify(user.id, { referral_code: rows[0].referral_code });
+        return rows[0].referral_code;
+      }
       const existing = await pool.query<{ referral_code: string | null }>(
         `SELECT referral_code FROM users WHERE id = $1`,
         [user.id]
@@ -178,16 +178,30 @@ export async function claimReferral(referee: User, rawCode: string): Promise<Cla
   track(EVENTS.REFERRAL_CLAIMED, {
     userId: referee.id,
     insertId: `ref_claim:${referee.id}`,
-    properties: { referrer_user_id: referrer.id, referral_code: code },
+    properties: {
+      referral_code: code,
+      referrer_user_id: referrer.id,
+      referrer_email: referrer.email,
+    },
+  });
+  // First-touch facts on the referred user's profile: that they were referred,
+  // with which code, by whom. set_once, so nothing later can rewrite them.
+  setOnce(referee.id, {
+    referred: true,
+    referral_code_used: code,
+    referred_by_user_id: referrer.id,
+    referred_by_email: referrer.email,
+    referred_at: new Date(),
   });
   return { ok: true, referrerName: publicName(referrer.display_name) };
 }
 
 /**
  * Called from the subscription.charged webhook on a user's FIRST subscription
- * charge. Starts the 7-day pending window, or disqualifies outright when the
- * payment plainly came from the referrer (their phone or email on the payment).
- * A no-op for users who weren't referred, or whose referral already moved on.
+ * charge. The referral counts right there — no waiting window — and the
+ * referrer is paid on the spot if this makes another 5. Disqualified outright
+ * when the payment plainly came from the referrer (their phone or email on the
+ * payment). A no-op for users who weren't referred, or already counted.
  */
 export async function recordRefereeFirstCharge(opts: {
   refereeUserId: number;
@@ -201,9 +215,14 @@ export async function recordRefereeFirstCharge(opts: {
     referrer_user_id: number;
     referrer_email: string;
     referrer_phone: string | null;
+    code_used: string;
+    referee_email: string;
   }>(
-    `SELECT r.id, r.referrer_user_id, u.email AS referrer_email, u.phone AS referrer_phone
-       FROM referrals r JOIN users u ON u.id = r.referrer_user_id
+    `SELECT r.id, r.referrer_user_id, u.email AS referrer_email, u.phone AS referrer_phone,
+            r.code_used, e.email AS referee_email
+       FROM referrals r
+       JOIN users u ON u.id = r.referrer_user_id
+       JOIN users e ON e.id = r.referee_user_id
       WHERE r.referee_user_id = $1 AND r.status = 'signed_up'`,
     [opts.refereeUserId]
   );
@@ -227,107 +246,49 @@ export async function recordRefereeFirstCharge(opts: {
     track(EVENTS.REFERRAL_DISQUALIFIED, {
       userId: ref.referrer_user_id,
       insertId: `ref_dq:${ref.id}`,
-      properties: { referee_user_id: opts.refereeUserId, reason: "self_referral" },
+      properties: {
+        referee_user_id: opts.refereeUserId,
+        referee_email: ref.referee_email,
+        referral_code: ref.code_used,
+        reason: "self_referral",
+      },
     });
     return;
   }
 
   const updated = await pool.query(
-    `UPDATE referrals SET status = 'pending',
-            first_payment_id = $2, first_subscription_id = $3, first_paid_at = NOW(),
-            qualifies_at = NOW() + ($4 || ' days')::interval, updated_at = NOW()
+    `UPDATE referrals SET status = 'qualified',
+            first_payment_id = $2, first_subscription_id = $3,
+            first_paid_at = NOW(), qualified_at = NOW(), updated_at = NOW()
       WHERE id = $1 AND status = 'signed_up'`,
-    [ref.id, opts.paymentId, opts.subscriptionId, String(REFERRAL_PENDING_DAYS)]
+    [ref.id, opts.paymentId, opts.subscriptionId]
   );
-  if ((updated.rowCount ?? 0) > 0) {
-    track(EVENTS.REFERRAL_FIRST_PAYMENT, {
-      userId: ref.referrer_user_id,
-      insertId: `ref_paid:${ref.id}`,
-      properties: {
-        referee_user_id: opts.refereeUserId,
-        razorpay_payment_id: opts.paymentId,
-        razorpay_subscription_id: opts.subscriptionId,
-      },
-    });
-  }
-}
+  if ((updated.rowCount ?? 0) === 0) return;
 
-/**
- * Settle every pending referral whose window has passed: qualified if the
- * first payment still stands, disqualified if it was refunded. A payment we
- * can't fetch right now stays pending and is retried on the next run.
- */
-export async function qualifyDueReferrals(): Promise<{
-  qualified: number;
-  disqualified: number;
-  deferred: number;
-  rewardsEarned: number;
-}> {
-  const { rows } = await pool.query<{
-    id: number;
-    referrer_user_id: number;
-    referee_user_id: number;
-    first_payment_id: string | null;
-  }>(
-    `SELECT id, referrer_user_id, referee_user_id, first_payment_id
-       FROM referrals
-      WHERE status = 'pending' AND qualifies_at <= NOW()
-      ORDER BY qualifies_at
-      LIMIT 200`
+  // One event per paying referral, on the REFERRER's profile — five of these
+  // is what earns a reward.
+  const { rows: countRows } = await pool.query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM referrals
+      WHERE referrer_user_id = $1 AND status = 'qualified'`,
+    [ref.referrer_user_id]
   );
+  const paid = Number(countRows[0].n);
+  track(EVENTS.REFERRAL_PAID, {
+    userId: ref.referrer_user_id,
+    insertId: `ref_paid:${ref.id}`,
+    properties: {
+      referee_user_id: opts.refereeUserId,
+      referee_email: ref.referee_email,
+      referral_code: ref.code_used,
+      paid_referrals_total: paid,
+      toward_next_reward: paid % REFERRALS_PER_REWARD || REFERRALS_PER_REWARD,
+      razorpay_payment_id: opts.paymentId,
+      razorpay_subscription_id: opts.subscriptionId,
+    },
+  });
+  identify(ref.referrer_user_id, { referrals_paid: paid });
 
-  let qualified = 0;
-  let disqualified = 0;
-  let deferred = 0;
-  let rewardsEarned = 0;
-
-  for (const r of rows) {
-    let refunded = false;
-    if (r.first_payment_id) {
-      try {
-        const p = await fetchPayment(r.first_payment_id);
-        refunded = Number(p.amount_refunded) > 0 || p.status === "refunded";
-      } catch {
-        deferred++;
-        continue;
-      }
-    }
-
-    if (refunded) {
-      const res = await pool.query(
-        `UPDATE referrals SET status = 'disqualified', disqualified_reason = 'refunded',
-                updated_at = NOW()
-          WHERE id = $1 AND status = 'pending'`,
-        [r.id]
-      );
-      if ((res.rowCount ?? 0) > 0) {
-        disqualified++;
-        track(EVENTS.REFERRAL_DISQUALIFIED, {
-          userId: r.referrer_user_id,
-          insertId: `ref_dq:${r.id}`,
-          properties: { referee_user_id: r.referee_user_id, reason: "refunded" },
-        });
-      }
-      continue;
-    }
-
-    const res = await pool.query(
-      `UPDATE referrals SET status = 'qualified', qualified_at = NOW(), updated_at = NOW()
-        WHERE id = $1 AND status = 'pending'`,
-      [r.id]
-    );
-    if ((res.rowCount ?? 0) > 0) {
-      qualified++;
-      track(EVENTS.REFERRAL_QUALIFIED, {
-        userId: r.referrer_user_id,
-        insertId: `ref_ok:${r.id}`,
-        properties: { referee_user_id: r.referee_user_id },
-      });
-      rewardsEarned += await syncRewards(r.referrer_user_id);
-    }
-  }
-
-  return { qualified, disqualified, deferred, rewardsEarned };
+  await syncRewards(ref.referrer_user_id);
 }
 
 /**
@@ -391,6 +352,7 @@ async function payBankedRewards(referrerUserId: number): Promise<void> {
         insertId: `ref_reward:${r.id}`,
         properties: { reward_id: r.id, milestone: r.milestone, credits },
       });
+      increment(referrerUserId, { referral_rewards: 1, referral_credits_earned: credits });
     }
   }
 }
@@ -415,9 +377,8 @@ export async function getReferralSummary(user: User): Promise<ReferralSummary> {
       status: ReferralStatus;
       created_at: string;
       first_paid_at: string | null;
-      qualifies_at: string | null;
     }>(
-      `SELECT u.display_name, u.email, r.status, r.created_at, r.first_paid_at, r.qualifies_at
+      `SELECT u.display_name, u.email, r.status, r.created_at, r.first_paid_at
          FROM referrals r JOIN users u ON u.id = r.referee_user_id
         WHERE r.referrer_user_id = $1
         ORDER BY r.created_at DESC
@@ -431,10 +392,9 @@ export async function getReferralSummary(user: User): Promise<ReferralSummary> {
     ),
   ]);
 
-  const counts = { signedUp: 0, pending: 0, qualified: 0 };
+  const counts = { signedUp: 0, qualified: 0 };
   for (const r of refs.rows) {
-    if (r.status === "pending") counts.pending++;
-    else if (r.status === "qualified") counts.qualified++;
+    if (r.status === "qualified") counts.qualified++;
     if (r.status !== "disqualified") counts.signedUp++;
   }
 
@@ -455,7 +415,6 @@ export async function getReferralSummary(user: User): Promise<ReferralSummary> {
       status: r.status,
       joinedAt: r.created_at,
       firstPaidAt: r.first_paid_at,
-      qualifiesAt: r.qualifies_at,
     })),
   };
 }

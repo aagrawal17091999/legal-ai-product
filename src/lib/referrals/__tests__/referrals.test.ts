@@ -4,10 +4,10 @@ import { Pool } from "pg";
 
 /**
  * The referral program end to end against a real Postgres: claim -> first
- * charge -> 7-day window -> qualified -> 2,000 credits in the wallet. Razorpay
- * is stubbed; what's under test is our own bookkeeping, because its failure
- * mode is silent — a wrong transition doesn't throw, it pays a reward twice or
- * never.
+ * charge (counts at once) -> every 5th pays 2,000 credits into the wallet.
+ * Analytics is captured, not sent; what's under test is our own bookkeeping,
+ * because its failure mode is silent — a wrong transition doesn't throw, it
+ * pays a reward twice or never.
  *
  * Needs a THROWAWAY database (it creates tables): TEST_DATABASE_URL=...
  */
@@ -42,8 +42,9 @@ const DAY = 24 * 3600 * 1000;
 let pool: Pool;
 let referrals: typeof import("../index");
 
-// Razorpay stub state.
-let refundedPayments = new Set<string>();
+// Captured analytics.
+const events: { event: string; userId: number | null; properties?: Record<string, unknown> }[] = [];
+const profiles: { kind: string; userId: number; props: Record<string, unknown> }[] = [];
 
 async function migrations(): Promise<string[]> {
   const { readFile } = await import("node:fs/promises");
@@ -93,18 +94,19 @@ before(async () => {
   for (const sql of await migrations()) await pool.query(sql);
 
   mock.module("@/lib/db", { defaultExport: pool, namedExports: {} });
-  mock.module("@/lib/analytics/server", { namedExports: { track: () => {} } });
-  mock.module("@/lib/error-logger", { namedExports: { logError: () => {} } });
-  mock.module("@/lib/razorpay", {
+  mock.module("@/lib/analytics/server", {
     namedExports: {
-      fetchPayment: async (id: string) => ({
-        id,
-        status: refundedPayments.has(id) ? "refunded" : "captured",
-        amount_refunded: refundedPayments.has(id) ? 295000 : 0,
-      }),
+      track: (event: string, o: { userId: number | null; properties?: Record<string, unknown> }) =>
+        void events.push({ event, userId: o.userId, properties: o.properties }),
+      identify: (userId: number, props: Record<string, unknown>) =>
+        void profiles.push({ kind: "set", userId, props }),
+      setOnce: (userId: number, props: Record<string, unknown>) =>
+        void profiles.push({ kind: "set_once", userId, props }),
+      increment: (userId: number, props: Record<string, unknown>) =>
+        void profiles.push({ kind: "increment", userId, props }),
     },
   });
-
+  mock.module("@/lib/error-logger", { namedExports: { logError: () => {} } });
   referrals = await import("../index");
 });
 
@@ -112,9 +114,8 @@ after(async () => {
   if (pool) await pool.end();
 });
 
-/** Refer `n` fresh users to `referrerId`'s code and push them all to qualified. */
-async function qualifyReferees(code: string, prefix: string, n: number) {
-  const ids: number[] = [];
+/** Refer `n` fresh users to `code`, and have each make their first payment. */
+async function payingReferees(code: string, prefix: string, n: number) {
   for (let i = 0; i < n; i++) {
     const u = await makeUser(`${prefix}${i}@x.in`, { display_name: `Ref ${prefix}${i}` });
     const r = await referrals.claimReferral(u, code);
@@ -124,14 +125,7 @@ async function qualifyReferees(code: string, prefix: string, n: number) {
       paymentId: `pay_${prefix}${i}`,
       subscriptionId: `sub_${prefix}${i}`,
     });
-    ids.push(u.id);
   }
-  await pool.query(
-    `UPDATE referrals SET qualifies_at = NOW() - interval '1 minute'
-      WHERE referee_user_id = ANY($1::int[])`,
-    [ids]
-  );
-  return referrals.qualifyDueReferrals();
 }
 
 test("claims: valid, idempotent, and every refusal", { skip }, async () => {
@@ -198,17 +192,25 @@ async function walletOf(userId: number) {
   return rows[0] ? { plan: Number(rows[0].plan_credits), topup: Number(rows[0].topup_credits) } : null;
 }
 
-test("5 qualified = 2,000 credits; a refund inside the window doesn't count", { skip }, async () => {
+test("the 5th paying referral pays 2,000 credits at once, exactly once", { skip }, async () => {
   const k = await makeUser("k@x.in", { display_name: "Kavya" });
   const code = await referrals.ensureReferralCode(k);
 
-  refundedPayments = new Set(["pay_k5"]);
-  // Six referees; one refunded inside the window -> 5 qualified -> 1 reward.
-  const res = await qualifyReferees(code, "k", 6);
-  assert.deepEqual(res, { qualified: 5, disqualified: 1, deferred: 0, rewardsEarned: 1 });
+  await payingReferees(code, "k", 4);
+  assert.equal(await walletOf(k.id), null, "nothing before the 5th");
+  await payingReferees(code, "k4_", 1);
   assert.deepEqual(await walletOf(k.id), { plan: 0, topup: 2000 }, "lands in the persistent pool");
 
-  // Re-running pays nothing more.
+  // A retried webhook for an already-counted payer changes nothing.
+  const { rows: one } = await pool.query(
+    `SELECT referee_user_id FROM referrals WHERE referrer_user_id = $1 LIMIT 1`,
+    [k.id]
+  );
+  await referrals.recordRefereeFirstCharge({
+    refereeUserId: one[0].referee_user_id,
+    paymentId: "pay_retry",
+    subscriptionId: "sub_retry",
+  });
   assert.equal(await referrals.syncRewards(k.id), 0);
   assert.equal(await referrals.settleBankedRewards(), 0);
   assert.deepEqual(await walletOf(k.id), { plan: 0, topup: 2000 });
@@ -220,22 +222,59 @@ test("5 qualified = 2,000 credits; a refund inside the window doesn't count", { 
   assert.deepEqual(ledger, [{ type: "referral_grant", credits: "2000", amount_inr: null }]);
 
   const summary = await referrals.getReferralSummary({ ...k, referral_code: code });
-  assert.equal(summary.counts.qualified, 5);
+  assert.deepEqual(summary.counts, { signedUp: 5, qualified: 5 });
   assert.equal(summary.progress, 0);
   assert.deepEqual(summary.rewards, { earned: 1, credits: 2000 });
-  assert.equal(summary.referrals.length, 6);
   assert.match(summary.referrals[0].email, /^k\*\*\*@x\.in$/);
+});
+
+test("Mixpanel: 5 paid events on the referrer, referred-by facts on the referee", { skip }, async () => {
+  events.length = 0;
+  profiles.length = 0;
+  const m = await makeUser("mx@x.in", { display_name: "Mira" });
+  const code = await referrals.ensureReferralCode(m);
+  assert.deepEqual(
+    profiles.find((p) => p.userId === m.id && p.kind === "set")?.props,
+    { referral_code: code },
+    "referrer's own code on their profile"
+  );
+
+  await payingReferees(code, "mx", 5);
+
+  const paid = events.filter((e) => e.event === "referral_paid");
+  assert.equal(paid.length, 5);
+  assert.ok(paid.every((e) => e.userId === m.id), "all five on the referrer");
+  assert.deepEqual(
+    paid.map((e) => e.properties?.paid_referrals_total),
+    [1, 2, 3, 4, 5]
+  );
+  assert.equal(paid[4].properties?.referral_code, code);
+  assert.match(String(paid[0].properties?.referee_email), /@x\.in$/);
+
+  const earned = events.filter((e) => e.event === "referral_reward_earned");
+  assert.equal(earned.length, 1);
+  assert.equal(earned[0].properties?.credits, 2000);
+
+  const claimed = events.filter((e) => e.event === "referral_claimed");
+  assert.equal(claimed.length, 5);
+  const referee = claimed[0].userId!;
+  assert.deepEqual(claimed[0].properties?.referral_code, code);
+  const once = profiles.find((p) => p.userId === referee && p.kind === "set_once")!.props;
+  assert.equal(once.referred, true);
+  assert.equal(once.referral_code_used, code);
+  assert.equal(once.referred_by_user_id, m.id);
+  assert.equal(once.referred_by_email, "mx@x.in");
 });
 
 test("ten qualified pay twice; four pay nothing", { skip }, async () => {
   const t = await makeUser("t@x.in", { display_name: "Tara" });
   const tCode = await referrals.ensureReferralCode(t);
-  await qualifyReferees(tCode, "t", 10);
+  await payingReferees(tCode, "t", 10);
   assert.deepEqual(await walletOf(t.id), { plan: 0, topup: 4000 });
 
   const f = await makeUser("f4@x.in", { display_name: "Four" });
   const fCode = await referrals.ensureReferralCode(f);
-  await qualifyReferees(fCode, "f4_", 4);
+  await payingReferees(fCode, "f4_", 4);
   assert.equal(await walletOf(f.id), null);
   const summary = await referrals.getReferralSummary({ ...f, referral_code: fCode });
   assert.equal(summary.progress, 4);

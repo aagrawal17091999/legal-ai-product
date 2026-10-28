@@ -211,12 +211,6 @@ export async function fetchSubscription(subscriptionId: string) {
   return await client.subscriptions.fetch(subscriptionId);
 }
 
-/** Fetch a payment — the referral program checks a first payment wasn't refunded. */
-export async function fetchPayment(paymentId: string) {
-  const client = getClient();
-  return await client.payments.fetch(paymentId);
-}
-
 /**
  * Map a Razorpay plan_id back to our internal plan type by matching against
  * the configured env vars. Using an explicit map avoids fragile string matching

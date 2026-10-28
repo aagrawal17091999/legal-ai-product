@@ -36,7 +36,7 @@ export default function TrustSection() {
             <p>
               Legal Brain is architecturally different. Every answer is generated
               through retrieval-augmented generation: the system first searches a
-              curated database of real Supreme Court and High Court judgments,
+              curated database of real Supreme Court judgments,
               retrieves the relevant passages, and only then generates a response
               grounded in those actual sources. If the database does not contain
               a relevant judgment, the system says so.

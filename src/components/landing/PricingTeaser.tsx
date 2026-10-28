@@ -20,7 +20,7 @@ const freeFeatures = [
   "200 free credits (one-time, no monthly reset)",
   "Spend them across research, workspaces, translation & OCR",
   "Streaming, cited answers",
-  "Supreme Court and High Court coverage",
+  "Supreme Court coverage",
   "Inline citations linked to source judgments",
   "PDF downloads of cited judgments",
   "Basic search filters (court, year range)",

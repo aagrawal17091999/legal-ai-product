@@ -193,8 +193,8 @@ export default function JudgmentsPage() {
             Judgment Library.
           </h1>
           <p className="mt-4 max-w-2xl text-[15px] text-charcoal-600 leading-relaxed">
-            Browse and search the full database of Supreme Court and High Court
-            judgments indexed by Legal Brain. Filter by court, year, judge, act,
+            Browse and search the full database of Supreme Court judgments
+            indexed by Legal Brain. Filter by court, year, judge, act,
             or party name.
           </p>
         </div>

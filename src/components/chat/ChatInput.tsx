@@ -82,7 +82,10 @@ export default function ChatInput({ onSend, onStop, isLoading, disabled }: ChatI
           )}
         </div>
         <p className="mt-3 text-center text-[12px] text-charcoal-400">
-          Press Enter to send · Shift+Enter for a new line
+          <span className="text-gold-600">
+            Searching Supreme Court judgments · High Court judgments coming soon
+          </span>
+          <span className="hidden sm:inline"> · Press Enter to send · Shift+Enter for a new line</span>
         </p>
       </div>
     </div>

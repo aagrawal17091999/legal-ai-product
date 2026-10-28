@@ -98,6 +98,10 @@ export default function ChatArea({
             Ask any question about Indian case law. Every answer will cite the
             source judgment.
           </p>
+          <p className="mt-5 inline-flex items-center gap-2 rounded-full border border-gold-400 bg-gold-100 px-3.5 py-1.5 text-[13px] text-charcoal-900">
+            <span className="h-1.5 w-1.5 rounded-full bg-gold-500" />
+            Supreme Court judgments only for now — High Court data is coming soon.
+          </p>
 
           <div className="mt-10 space-y-2.5 text-left">
             {SUGGESTIONS.map((suggestion) => (

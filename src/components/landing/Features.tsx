@@ -2,7 +2,7 @@ const features = [
   {
     title: "Case-law research, grounded in judgments",
     description:
-      "Ask a legal question in plain English and get a synthesised answer drawn from real Supreme Court and High Court judgments. Inline citations — [^1], [^2], [^3] — link to the exact passage in the source judgment. No invented case names; trace every statement back to the original text.",
+      "Ask a legal question in plain English and get a synthesised answer drawn from real Supreme Court judgments. Inline citations — [^1], [^2], [^3] — link to the exact passage in the source judgment. No invented case names; trace every statement back to the original text.",
   },
   {
     title: "Document Workspaces — chat with your own files",

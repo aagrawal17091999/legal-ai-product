@@ -9,11 +9,11 @@ const faqs = [
   },
   {
     q: "How is this different from asking ChatGPT a legal question?",
-    a: "ChatGPT and similar general-purpose AI tools have no verified legal database. They generate responses from patterns in training data, which frequently results in invented case names, fabricated holdings, and citations to judgments that do not exist. Legal Brain searches a curated database of actual Supreme Court and High Court judgments first, then generates an answer grounded exclusively in those real documents. Every cited judgment is downloadable as a PDF.",
+    a: "ChatGPT and similar general-purpose AI tools have no verified legal database. They generate responses from patterns in training data, which frequently results in invented case names, fabricated holdings, and citations to judgments that do not exist. Legal Brain searches a curated database of actual Supreme Court judgments first, then generates an answer grounded exclusively in those real documents. Every cited judgment is downloadable as a PDF.",
   },
   {
     q: "Which courts does Legal Brain cover?",
-    a: "Legal Brain currently indexes judgments from the Supreme Court of India and High Courts across Indian states. Coverage is continuously expanding. If you need judgments from a specific High Court, contact us and we can confirm current coverage for that jurisdiction.",
+    a: "Legal Brain currently indexes judgments from the Supreme Court of India. High Court judgments are being added next. If you need judgments from a specific High Court, contact us and we can tell you when that jurisdiction will be available.",
   },
   {
     q: "Is my research data private? Do you train AI models on my queries?",

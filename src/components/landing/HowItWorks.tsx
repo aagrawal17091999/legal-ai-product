@@ -9,7 +9,7 @@ const steps = [
     number: "02",
     title: "Legal Brain grounds itself in the source",
     description:
-      "For research, it searches a curated database of real Supreme Court and High Court judgments. For your documents, it reads only what you uploaded — using vision AI to handle scans, faded ink, and handwriting. It works from the actual source, not from memory.",
+      "For research, it searches a curated database of real Supreme Court judgments. For your documents, it reads only what you uploaded — using vision AI to handle scans, faded ink, and handwriting. It works from the actual source, not from memory.",
   },
   {
     number: "03",

@@ -25,8 +25,8 @@ export default function Hero() {
             {/* Subheadline */}
             <p className="mt-8 max-w-xl text-lg text-charcoal-400 leading-relaxed">
               The AI workspace for Indian lawyers. Ask any question about Indian
-              case law and get cited, verifiable answers from Supreme Court and
-              High Court judgments — then chat with your own case files, and
+              case law and get cited, verifiable answers from Supreme Court
+              judgments — then chat with your own case files, and
               translate or OCR scanned documents into court-ready Word and PDF.
             </p>
 

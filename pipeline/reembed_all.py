@@ -39,13 +39,21 @@ from chunk_utils import (
 EMBED_MODEL = "voyage-law-2"
 
 
-def fetch_pending_cases(cur, source_table: str, court_filter: str | None):
-    """Return list of dicts for cases that still need embedding."""
+def fetch_pending_cases(cur, source_table: str, court_filter: str | None,
+                        years: list[int] | None = None):
+    """Return list of dicts for cases that still need embedding.
+
+    `years` scopes the scan (used by sync_sc.py so an incremental run never
+    sweeps up unrelated backlog elsewhere in the corpus).
+    """
     params: list = []
     where_court = ""
     if source_table == "high_court_cases" and court_filter:
         where_court = " AND c.court_name = %s"
         params.append(court_filter)
+    if years:
+        where_court += " AND c.year = ANY(%s)"
+        params.append(list(years))
 
     if source_table == "supreme_court_cases":
         meta_cols = SC_METADATA_COLUMNS

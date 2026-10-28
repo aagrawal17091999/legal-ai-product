@@ -1,0 +1,13 @@
+# Daily at 04:15, after the 02:30 backup and 03:00 retention jobs. Upstream
+# publishes every 1-2 weeks, so daily keeps lag under a day at almost no cost:
+# runs with nothing new only fetch a <= 1 MB parquet. Persistent=true re-fires a
+# run missed while the box was down.
+[Unit]
+Description=Daily NyayaSearch Supreme Court judgment sync
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

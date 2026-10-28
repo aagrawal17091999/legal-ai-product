@@ -171,6 +171,74 @@ def embed_and_store_chunks(conn, source_table: str, source_id: int, text: str, v
     return count
 
 
+def sc_case_exists(cur, cnr: str, path: str) -> bool:
+    """Dedup check for an SC parquet row (only match on non-empty values)."""
+    conditions = []
+    params_dedup = []
+    if cnr:
+        conditions.append('cnr = %s')
+        params_dedup.append(cnr)
+    if path:
+        conditions.append('path = %s')
+        params_dedup.append(path)
+    if not conditions:
+        return False
+    cur.execute(
+        f'SELECT id FROM supreme_court_cases WHERE {" OR ".join(conditions)}',
+        params_dedup
+    )
+    return cur.fetchone() is not None
+
+
+def insert_sc_case(cur, row, year: int, pdf_file: str | None, r2_client,
+                   require_r2: bool = False) -> int:
+    """Extract the PDF's text, upload it to R2, and INSERT one SC row.
+
+    Returns the new id. The caller commits. With require_r2 an upload failure
+    raises instead of inserting a row whose PDF download would 404; pass
+    r2_client=None to skip the upload entirely (local test runs).
+    """
+    cnr = row.get('cnr', '') or ''
+    path = row.get('path', '') or ''
+    pdf_year = _sc_year_from_path(path, year)
+
+    judgment_text = ''
+    if pdf_file:
+        judgment_text = extract_text_from_pdf(pdf_file)
+        # Upload to R2 so contextBuilder can presign on read. SC no
+        # longer stores the URL in the DB — the key is rebuilt from
+        # (year, path) at query time. Must match the layout consumed
+        # by src/lib/rag/contextBuilder.ts and
+        # src/app/api/judgments/download/route.ts.
+        r2_key = f'supreme-court/{pdf_year}/{path}_EN.pdf'
+        if r2_client is not None:
+            try:
+                upload_to_r2(r2_client, pdf_file, r2_key)
+            except Exception as e:
+                if require_r2:
+                    raise
+                print(f'  R2 upload failed: {e}')
+
+    cur.execute(
+        """INSERT INTO supreme_court_cases
+           (title, petitioner, respondent, description, judge, author_judge,
+            citation, case_id, cnr, decision_date, disposal_nature, court,
+            available_languages, path, nc_display, year, judgment_text)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           RETURNING id""",
+        (
+            row.get('title'), row.get('petitioner'), row.get('respondent'),
+            row.get('description'), row.get('judge'), row.get('author_judge'),
+            row.get('citation'), row.get('case_id'), cnr,
+            row.get('decision_date'), row.get('disposal_nature'),
+            'Supreme Court of India', row.get('available_languages'),
+            path, row.get('nc_display'), pdf_year,
+            judgment_text if judgment_text else None,
+        )
+    )
+    return cur.fetchone()[0]
+
+
 def process_supreme_court(year: int):
     year_dir = os.path.join(SC_DATA_DIR, f'year={year}')
     metadata_path = os.path.join(year_dir, 'metadata.parquet')
@@ -212,64 +280,14 @@ def process_supreme_court(year: int):
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc=f'SC {year}'):
         try:
-            # Check for duplicates (only match on non-empty values)
             cnr = row.get('cnr', '') or ''
             path = row.get('path', '') or ''
-            if cnr or path:
-                conditions = []
-                params_dedup = []
-                if cnr:
-                    conditions.append('cnr = %s')
-                    params_dedup.append(cnr)
-                if path:
-                    conditions.append('path = %s')
-                    params_dedup.append(path)
-                cur.execute(
-                    f'SELECT id FROM supreme_court_cases WHERE {" OR ".join(conditions)}',
-                    params_dedup
-                )
-                if cur.fetchone():
-                    skipped += 1
-                    continue
-
-            # Extract text from PDF if available
-            judgment_text = ''
-
-            pdf_year = _sc_year_from_path(path, year)
+            if sc_case_exists(cur, cnr, path):
+                skipped += 1
+                continue
 
             pdf_file = find_pdf_in_dir(pdfs_dir, path)
-            if pdf_file:
-                judgment_text = extract_text_from_pdf(pdf_file)
-                # Upload to R2 so contextBuilder can presign on read. SC no
-                # longer stores the URL in the DB — the key is rebuilt from
-                # (year, path) at query time. Must match the layout consumed
-                # by src/lib/rag/contextBuilder.ts and
-                # src/app/api/judgments/download/route.ts.
-                r2_key = f'supreme-court/{pdf_year}/{path}_EN.pdf'
-                try:
-                    upload_to_r2(r2_client, pdf_file, r2_key)
-                except Exception as e:
-                    print(f'  R2 upload failed: {e}')
-
-            # Insert into database
-            cur.execute(
-                """INSERT INTO supreme_court_cases
-                   (title, petitioner, respondent, description, judge, author_judge,
-                    citation, case_id, cnr, decision_date, disposal_nature, court,
-                    available_languages, path, nc_display, year, judgment_text)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   RETURNING id""",
-                (
-                    row.get('title'), row.get('petitioner'), row.get('respondent'),
-                    row.get('description'), row.get('judge'), row.get('author_judge'),
-                    row.get('citation'), row.get('case_id'), cnr,
-                    row.get('decision_date'), row.get('disposal_nature'),
-                    'Supreme Court of India', row.get('available_languages'),
-                    path, row.get('nc_display'), pdf_year,
-                    judgment_text if judgment_text else None,
-                )
-            )
-            result = cur.fetchone()
+            insert_sc_case(cur, row, year, pdf_file, r2_client)
             conn.commit()
 
             # Embedding is intentionally skipped here — reembed_all.py is the

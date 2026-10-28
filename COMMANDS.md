@@ -321,8 +321,8 @@ python pipeline/run_all.py --source all --start-year 2020 --end-year 2024
 python pipeline/run_all.py --source sc --skip-download --skip-extract
 ```
 
-Weekly corpus refresh cron: `bash pipeline/cron_setup.sh`
-(Sundays 02:00 → `/var/log/nyayasearch-pipeline.log`).
+Daily SC sync (new judgments → searchable): `ENV_FILE=.env.production.local bash scripts/sync-sc.sh [--dry-run]`
+(`nyayasearch-sync-sc.timer`, 04:15 daily → `journalctl -u nyayasearch-sync-sc`). See pipeline/PIPELINE.md, "Cron / Automation".
 
 ---
 

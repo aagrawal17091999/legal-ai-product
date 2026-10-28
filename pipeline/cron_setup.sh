@@ -1,12 +1,15 @@
 #!/bin/bash
-# Set up weekly cron job to download and process new judgments
-# Runs every Sunday at 2 AM
+# RETIRED. This used to install a weekly crontab entry running
+# download_sc.py + process_and_load.py for the current year. It never picked up
+# anything new: download_sc.py skips a year whose files are already on disk, and
+# upstream rewrites those same files in place. It also stopped before extraction
+# and embedding, so even a loaded row never became searchable.
+#
+# The replacement is the nyayasearch-sync-sc systemd timer (pipeline/sync_sc.py
+# via scripts/sync-sc.sh). See pipeline/PIPELINE.md, "Cron / Automation".
+#
+# If you installed the old entry, remove it: crontab -e, delete the download_sc line.
 
-PIPELINE_DIR="$(cd "$(dirname "$0")" && pwd)"
-CURRENT_YEAR=$(date +%Y)
-
-# Add cron job
-(crontab -l 2>/dev/null; echo "0 2 * * 0 cd $PIPELINE_DIR && python3 download_sc.py --year $CURRENT_YEAR && python3 process_and_load.py --source sc --year $CURRENT_YEAR >> /var/log/nyayasearch-pipeline.log 2>&1") | crontab -
-
-echo "Cron job installed. It will run every Sunday at 2 AM."
-echo "Check logs at /var/log/nyayasearch-pipeline.log"
+echo "pipeline/cron_setup.sh is retired; install deploy/systemd/nyayasearch-sync-sc.* instead." >&2
+echo "See pipeline/PIPELINE.md, 'Cron / Automation'." >&2
+exit 1

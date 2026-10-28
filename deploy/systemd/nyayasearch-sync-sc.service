@@ -1,0 +1,28 @@
+# Daily incremental Supreme Court sync (pipeline/sync_sc.py via scripts/sync-sc.sh).
+# Install with its .timer:
+#   sudo cp deploy/systemd/nyayasearch-sync-sc.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nyayasearch-sync-sc.timer
+#   systemctl list-timers | grep sync-sc
+# Run by hand / inspect:
+#   sudo systemctl start nyayasearch-sync-sc.service
+#   journalctl -u nyayasearch-sync-sc -n 100 | grep SYNC_SUMMARY
+#
+# Writes to the reference tables in prod, which the R2 reference dump does not
+# know about — re-run scripts/dump-reference-data.sh after a large catch-up if
+# other environments should get the new judgments.
+[Unit]
+Description=NyayaSearch incremental Supreme Court judgment sync
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+ExecStart=/bin/bash scripts/sync-sc.sh
+# A normal day is a parquet diff (seconds); a drop of ~20 judgments takes a few
+# minutes. The first catch-up (~150 judgments) is the long one, ~30-60 min.
+TimeoutStartSec=3h
+Nice=10

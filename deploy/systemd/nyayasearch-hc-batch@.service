@@ -1,6 +1,9 @@
 # One High Court ingestion batch of %i documents (newest not yet loaded).
 # Runs detached under systemd, so it keeps going after you log out.
-#   sudo cp deploy/systemd/nyayasearch-hc-batch@.service /etc/systemd/system/
+# Install (User= must match the box's run user: root on the Hetzner box, there
+# is no deploy user — the same rewrite bootstrap-box.sh does):
+#   sed "s#^User=.*#User=root#" deploy/systemd/nyayasearch-hc-batch@.service \
+#     | sudo tee /etc/systemd/system/nyayasearch-hc-batch@.service >/dev/null
 #   sudo systemctl daemon-reload
 #   sudo systemctl start nyayasearch-hc-batch@1000      # next 1,000
 #   journalctl -u nyayasearch-hc-batch@1000 -f           # watch it

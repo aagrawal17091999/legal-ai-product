@@ -60,13 +60,16 @@ Nothing is visible to users until `HC_SEARCH_ENABLED=on` (see below).
 ```bash
 # as root
 apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin tesseract-ocr-kan tesseract-ocr-tam tesseract-ocr-tel tesseract-ocr-mal tesseract-ocr-ben tesseract-ocr-guj tesseract-ocr-mar tesseract-ocr-ori tesseract-ocr-pan tesseract-ocr-urd tesseract-ocr-asm tesseract-ocr-nep
-cd /opt/legal-ai-product && git pull         # after the deploy that ships migration 037
-for f in nyayasearch-hc-batch@.service nyayasearch-sync-hc.service nyayasearch-sync-hc.timer; do
-  cp deploy/systemd/$f /etc/systemd/system/
+cd /opt/legal-ai-product      # after scripts/deploy.sh has shipped migration 037
+# User= in the shipped units is rewritten to root, the box's run user (there is
+# no deploy user), exactly as bootstrap-box.sh does for every other unit.
+for f in nyayasearch-hc-batch@.service nyayasearch-sync-hc.service; do
+  sed "s#^User=.*#User=root#" deploy/systemd/$f > /etc/systemd/system/$f
 done
+cp deploy/systemd/nyayasearch-sync-hc.timer /etc/systemd/system/
 systemctl daemon-reload
 
-# as deploy: build the manifest once (28 min on a laptop before the bulk-load
+# build the manifest once (28 min on a laptop before the bulk-load
 # speedups; expect 15-40 min on the box; ~2.4 GB on disk)
 cd /opt/legal-ai-product && ENV_FILE=.env.production.local bash scripts/hc-ingest.sh manifest
 # optional: measure free-OCR accuracy on this box (~5 min, writes nothing)
@@ -81,15 +84,15 @@ journalctl -u nyayasearch-hc-batch@1000 -f                # watch
 journalctl -u nyayasearch-hc-batch@1000 | grep -A10 '=== HC batch'   # its cost report
 
 # overall picture: loaded, flagged, spent, projection for the whole corpus
-sudo -u deploy bash -c 'cd /opt/legal-ai-product && ENV_FILE=.env.production.local bash scripts/hc-ingest.sh status'
+cd /opt/legal-ai-product && ENV_FILE=.env.production.local bash scripts/hc-ingest.sh status
 # a batch's report plus 5 random OCR'd excerpts to eyeball
-sudo -u deploy bash -c 'cd /opt/legal-ai-product && ENV_FILE=.env.production.local bash scripts/hc-ingest.sh report --samples 5'
+ENV_FILE=.env.production.local bash scripts/hc-ingest.sh report --samples 5
 ```
 
 The unit name carries the size: `@500`, `@5000` work too. One run at a time:
 a second start (or the weekly sync) exits with "lock held".
 
-Other selections, run by hand as `deploy`:
+Other selections, run by hand from `/opt/legal-ai-product` with `ENV_FILE=.env.production.local`:
 
 ```bash
 bash scripts/hc-ingest.sh batch --size 200 --court 29_3       # Karnataka only

@@ -2,7 +2,9 @@
 # refresh the upstream file list, then load judgments decided in the last 120
 # days that are not loaded yet, newest first, at most 40,000 per run.
 # Install with its .timer — but enable it only once a few manual batches look right:
-#   sudo cp deploy/systemd/nyayasearch-sync-hc.* /etc/systemd/system/
+#   sed "s#^User=.*#User=root#" deploy/systemd/nyayasearch-sync-hc.service \
+#     | sudo tee /etc/systemd/system/nyayasearch-sync-hc.service >/dev/null    # root: no deploy user on the box
+#   sudo cp deploy/systemd/nyayasearch-sync-hc.timer /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now nyayasearch-sync-hc.timer
 # Run by hand / inspect:

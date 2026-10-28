@@ -7,36 +7,19 @@ import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 
 /**
- * Staff queue for referral free months.
- *
- * "Due now" is the exact list the cron acts on. With REFERRAL_REWARDS_AUTO off
- * it is the to-do list, worked through with the buttons here; with it on, a row
- * that stays here means the cron keeps failing on it (see the error log).
+ * Staff overview of the referral program: totals, referrals still inside their
+ * 7-day window, and the credit rewards paid. Rewards are paid automatically by
+ * the hourly cron; anything to correct (a disqualification, a claw-back) is done
+ * from the user's own admin page.
  */
-
-interface DueRow {
-  reward_id: number;
-  user_id: number;
-  email: string;
-  plan: string;
-  milestone: number;
-  due_at: string | null;
-}
 
 interface RewardRow {
   id: number;
   user_id: number;
   email: string;
-  plan: string;
-  subscription_status: string;
   milestone: number;
   status: string;
-  method: string | null;
-  cycle_start: string | null;
-  cycle_end: string | null;
-  actor: string | null;
-  note: string | null;
-  earned_at: string;
+  credits: number | null;
   applied_at: string | null;
 }
 
@@ -50,10 +33,8 @@ interface PendingRow {
   qualifies_at: string;
 }
 
-interface QueueData {
-  auto: boolean;
-  method: "pause" | "refund";
-  due: { toSchedule: DueRow[]; toComplete: DueRow[] };
+interface Overview {
+  enabled: boolean;
   rewards: RewardRow[];
   pending: PendingRow[];
   totals: Record<string, number>;
@@ -63,71 +44,38 @@ const day = (d: string | null) => (d ? new Date(d).toLocaleDateString() : "—")
 
 export default function AdminReferralsPage() {
   const { getToken } = useAuth();
-  const [data, setData] = useState<QueueData | null>(null);
+  const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
-
-  const authed = useCallback(
-    async (url: string, init?: RequestInit) => {
-      const token = await getToken();
-      return fetch(url, {
-        ...init,
-        headers: {
-          ...(init?.body ? { "Content-Type": "application/json" } : {}),
-          Authorization: `Bearer ${token}`,
-        },
-      });
-    },
-    [getToken]
-  );
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setFailed(false);
     try {
-      const res = await authed("/api/admin/referrals");
+      const token = await getToken();
+      const res = await fetch("/api/admin/referrals", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (res.status === 401 || res.status === 404) {
         setDenied(true);
         return;
       }
       if (!res.ok) {
-        setNotice({ kind: "bad", text: "Couldn't load the referral queue." });
+        setFailed(true);
         return;
       }
       setData(await res.json());
     } catch {
-      setNotice({ kind: "bad", text: "Couldn't reach the server." });
+      setFailed(true);
     } finally {
       setLoading(false);
     }
-  }, [authed]);
+  }, [getToken]);
 
   useEffect(() => {
     load();
   }, [load]);
-
-  const act = async (rewardId: number, action: "apply" | "complete") => {
-    setBusy(true);
-    setNotice(null);
-    try {
-      const res = await authed(`/api/admin/referral-rewards/${rewardId}`, {
-        method: "POST",
-        body: JSON.stringify({ action }),
-      });
-      const r = await res.json().catch(() => ({}));
-      setNotice(
-        res.ok
-          ? { kind: "ok", text: `Reward ${rewardId}: ${String(r.status)}.` }
-          : { kind: "bad", text: r.error || "That didn't work." }
-      );
-      await load();
-    } catch {
-      setNotice({ kind: "bad", text: "Couldn't reach the server." });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   if (denied) {
     return (
@@ -145,10 +93,22 @@ export default function AdminReferralsPage() {
       </div>
     );
   }
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div className="flex-1 overflow-y-auto bg-ivory-50">
+        <div className="max-w-2xl mx-auto px-6 py-24 text-center">
+          <p className="text-[15px] text-charcoal-600">
+            {failed ? "Couldn't load the referral overview." : ""}
+          </p>
+          <Button variant="outline" className="mt-6" onClick={load}>
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
-  const dueCount = data.due.toSchedule.length + data.due.toComplete.length;
-
+  const t = data.totals;
   return (
     <div className="flex-1 overflow-y-auto bg-ivory-50">
       <div className="max-w-5xl mx-auto px-6 py-10">
@@ -157,81 +117,19 @@ export default function AdminReferralsPage() {
             <span className="overline">Staff</span>
             <h1 className="mt-3 font-serif text-4xl text-charcoal-900 tracking-tight">Referrals.</h1>
             <p className="mt-2 text-[14px] text-charcoal-600">
-              {data.totals.referrals} referred · {data.totals.pending} confirming ·{" "}
-              {data.totals.qualified} qualified · {data.totals.months_earned} free months earned ·{" "}
-              {data.totals.months_applied} given
+              {t.referrals} referred · {t.pending} confirming · {t.qualified} qualified ·{" "}
+              {t.disqualified} disqualified · {t.rewards} rewards ·{" "}
+              {t.credits.toLocaleString()} credits paid
             </p>
             <p className="mt-1 text-[13px] text-charcoal-600">
-              Automation is <strong>{data.auto ? "ON" : "OFF"}</strong> (REFERRAL_REWARDS_AUTO) ·
-              method <strong>{data.method}</strong>
-              {data.auto ? "" : " — months below are only applied when you press the button."}
+              Program is <strong>{data.enabled ? "ON" : "OFF"}</strong> for users
+              (NEXT_PUBLIC_REFERRALS_ENABLED).
             </p>
           </div>
-          <Button variant="outline" onClick={load} disabled={loading || busy}>
+          <Button variant="outline" onClick={load} disabled={loading}>
             Refresh
           </Button>
         </div>
-
-        {notice && (
-          <p
-            className={`mt-6 rounded-lg border px-4 py-3 text-[13px] ${
-              notice.kind === "ok"
-                ? "border-gold-400 bg-gold-100 text-charcoal-700"
-                : "border-red-300 bg-red-50 text-red-700"
-            }`}
-          >
-            {notice.text}
-          </p>
-        )}
-
-        <Section title={`Due now (${dueCount})`}>
-          {dueCount === 0 ? (
-            <Empty>Nothing to do.</Empty>
-          ) : (
-            <ul className="space-y-2 text-[13px]">
-              {data.due.toComplete.map((d) => (
-                <DueItem
-                  key={`c${d.reward_id}`}
-                  row={d}
-                  label={`Free month ending ${day(d.due_at)} — resume billing (or chain the next month)`}
-                  button="Finish month"
-                  busy={busy}
-                  onClick={() => act(d.reward_id, "complete")}
-                />
-              ))}
-              {data.due.toSchedule.map((d) => (
-                <DueItem
-                  key={`s${d.reward_id}`}
-                  row={d}
-                  label={`Renews ${day(d.due_at)} — skip it with banked month #${d.milestone}`}
-                  button={data.method === "refund" && d.plan === "monthly" ? "Book refund" : "Pause"}
-                  busy={busy}
-                  onClick={() => act(d.reward_id, "apply")}
-                />
-              ))}
-            </ul>
-          )}
-        </Section>
-
-        <Section title="Free months">
-          {data.rewards.length === 0 ? (
-            <Empty>None earned yet.</Empty>
-          ) : (
-            <Table
-              head={["User", "Month", "Status", "Skips", "By", "Earned"]}
-              rows={data.rewards.map((r) => [
-                <Link key="u" href={`/admin/users/${r.user_id}`} className="hover:underline">
-                  {r.email}
-                </Link>,
-                `#${r.milestone} · ${r.plan}`,
-                `${r.status}${r.method ? ` (${r.method})` : ""}`,
-                r.cycle_start ? `${day(r.cycle_start)} → ${day(r.cycle_end)}` : "—",
-                r.actor ?? "—",
-                day(r.earned_at),
-              ])}
-            />
-          )}
-        </Section>
 
         <Section title={`Confirming (${data.pending.length})`}>
           {data.pending.length === 0 ? (
@@ -252,36 +150,27 @@ export default function AdminReferralsPage() {
             />
           )}
         </Section>
+
+        <Section title="Rewards paid">
+          {data.rewards.length === 0 ? (
+            <Empty>None yet.</Empty>
+          ) : (
+            <Table
+              head={["User", "Reward", "Credits", "Status", "Paid"]}
+              rows={data.rewards.map((r) => [
+                <Link key="u" href={`/admin/users/${r.user_id}`} className="hover:underline">
+                  {r.email}
+                </Link>,
+                `#${r.milestone}`,
+                (r.credits ?? 0).toLocaleString(),
+                r.status,
+                day(r.applied_at),
+              ])}
+            />
+          )}
+        </Section>
       </div>
     </div>
-  );
-}
-
-function DueItem({
-  row,
-  label,
-  button,
-  busy,
-  onClick,
-}: {
-  row: DueRow;
-  label: string;
-  button: string;
-  busy: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <li className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ivory-200 bg-ivory-100/60 px-4 py-3">
-      <span className="text-charcoal-900">
-        <Link href={`/admin/users/${row.user_id}`} className="hover:underline">
-          {row.email}
-        </Link>{" "}
-        <span className="text-charcoal-600">({row.plan}) · {label}</span>
-      </span>
-      <Button size="sm" variant="primary" disabled={busy} onClick={onClick}>
-        {button}
-      </Button>
-    </li>
   );
 }
 

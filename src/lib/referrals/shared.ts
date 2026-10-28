@@ -1,8 +1,8 @@
 /**
  * Referral program constants and helpers that are safe in the browser. The
- * server-only logic lives in ./index.ts (attribution, qualification) and
- * ./rewards.ts (turning earned months into skipped renewals).
+ * server-only logic (attribution, qualification, rewards) lives in ./index.ts.
  */
+import { PLAN_CREDITS } from "@/lib/billing/cost";
 
 /**
  * Master switch for everything a user can see or reach: the "Refer & earn"
@@ -14,8 +14,14 @@
  */
 export const REFERRALS_ENABLED = process.env.NEXT_PUBLIC_REFERRALS_ENABLED === "on";
 
-/** Qualified referrals per free month. */
-export const REFERRALS_PER_FREE_MONTH = 5;
+/** Qualified referrals per reward. */
+export const REFERRALS_PER_REWARD = 5;
+
+/**
+ * Credits per reward: one month of the Pro allowance, added to the persistent
+ * top-up pool so they never expire and survive plan resets and cancellation.
+ */
+export const REFERRAL_REWARD_CREDITS = PLAN_CREDITS.monthly;
 
 /** A first payment counts once it has gone this long without a refund. */
 export const REFERRAL_PENDING_DAYS = 7;
@@ -61,19 +67,17 @@ export const CLAIM_ERRORS: Record<string, string> = {
 };
 
 export type ReferralStatus = "signed_up" | "pending" | "qualified" | "disqualified";
-export type RewardStatus = "banked" | "scheduled" | "applied" | "revoked" | "forfeited";
 
 /** GET /api/referrals — the referrer's own view. */
 export interface ReferralSummary {
   code: string;
   link: string;
-  perFreeMonth: number;
+  perReward: number;
+  creditsPerReward: number;
   counts: { signedUp: number; pending: number; qualified: number };
-  /** Qualified referrals toward the next free month (0..perFreeMonth-1). */
+  /** Qualified referrals toward the next reward (0..perReward-1). */
   progress: number;
-  months: { earned: number; banked: number; applied: number };
-  /** The free month in progress or booked, if any. */
-  current: { start: string | null; end: string | null } | null;
+  rewards: { earned: number; credits: number };
   referrals: {
     name: string;
     email: string;

@@ -6,8 +6,8 @@ import { logError } from "@/lib/error-logger";
 /**
  * POST /api/admin/referrals/[id] { action: "disqualify", reason } — strike one
  * referral from a referrer's count (self-referral the automatic checks missed,
- * a chargeback). Months already earned are not clawed back here; revoke the
- * banked month separately if it shouldn't stand.
+ * a chargeback). Credits already paid are not clawed back here; revoke them
+ * from the Credits card separately if they shouldn't stand.
  */
 export async function POST(
   request: NextRequest,

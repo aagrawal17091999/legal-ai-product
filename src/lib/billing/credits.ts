@@ -132,7 +132,9 @@ type GrantType =
    *  but with amount_inr NULL so it never inflates revenue figures. */
   | "admin_grant"
   /** Staff claw-back of credits. Stored with a NEGATIVE `credits` value. */
-  | "admin_revoke";
+  | "admin_revoke"
+  /** Referral reward (5 qualified referrals). Persistent, amount_inr NULL. */
+  | "referral_grant";
 
 /**
  * Add credits and record the transaction. `monthly_reset` SETS plan_credits to

@@ -601,12 +601,6 @@ export default function AccountPage() {
             After that, your account will revert to the Starter plan (5 queries
             per day).
           </p>
-          {REFERRALS_ENABLED && (
-            <p className="text-[14px] text-charcoal-600 leading-relaxed">
-              Any referral free months you haven&apos;t used yet are lost when you
-              cancel. If a free month is running right now, Pro ends immediately.
-            </p>
-          )}
           <div className="flex gap-3 justify-end">
             <Button
               variant="outline"

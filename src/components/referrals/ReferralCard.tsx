@@ -22,7 +22,7 @@ function fmt(date: string | null): string {
 
 /**
  * "Refer & earn" on the account page: the user's link, progress toward the next
- * free month, and who they've referred. Anchored at #refer so the sidebar link
+ * reward, and who they've referred. Anchored at #refer so the sidebar link
  * can land on it.
  */
 export default function ReferralCard() {
@@ -87,8 +87,9 @@ export default function ReferralCard() {
     <div id="refer" className="bg-ivory-100 rounded-xl border border-ivory-200 p-8 scroll-mt-8">
       <h2 className="font-serif text-2xl text-charcoal-900 mb-2">Refer &amp; earn</h2>
       <p className="text-[14px] text-charcoal-600 mb-6">
-        Every {data?.perFreeMonth ?? 5} colleagues who subscribe to Pro earn you a month of Pro
-        free — your next renewal is skipped. No limit.
+        Every {data?.perReward ?? 5} colleagues who subscribe to Pro earn you{" "}
+        {(data?.creditsPerReward ?? 2000).toLocaleString()} credits — a month of Pro usage. They
+        never expire. No limit.
       </p>
 
       {!data ? (
@@ -127,13 +128,13 @@ export default function ReferralCard() {
 
           <div className="mt-8">
             <div className="flex items-baseline justify-between text-[14px]">
-              <span className="text-charcoal-600">Toward your next free month</span>
+              <span className="text-charcoal-600">Toward your next reward</span>
               <span className="font-medium text-charcoal-900">
-                {data.progress} of {data.perFreeMonth} paying
+                {data.progress} of {data.perReward} paying
               </span>
             </div>
             <div className="mt-2 flex gap-1.5" aria-hidden>
-              {Array.from({ length: data.perFreeMonth }, (_, i) => (
+              {Array.from({ length: data.perReward }, (_, i) => (
                 <div
                   key={i}
                   className={`h-2 flex-1 rounded-full ${
@@ -145,23 +146,9 @@ export default function ReferralCard() {
             <p className="mt-3 text-[13px] text-charcoal-600">
               {data.counts.signedUp} signed up · {data.counts.qualified} paying
               {data.counts.pending > 0 ? ` · ${data.counts.pending} confirming` : ""} ·{" "}
-              {data.months.earned} free month{data.months.earned === 1 ? "" : "s"} earned
-              {data.months.banked > 0 ? ` (${data.months.banked} still to use)` : ""}
+              {data.rewards.credits.toLocaleString()} credits earned
             </p>
           </div>
-
-          {data.current && (
-            <p className="mt-5 rounded-lg border border-gold-400 bg-gold-100 px-4 py-3 text-[13px] leading-relaxed text-charcoal-700">
-              Your renewal on {fmt(data.current.start)} is free — a referral reward. Billing
-              picks up again on {fmt(data.current.end)}.
-            </p>
-          )}
-          {!data.current && data.months.banked > 0 && (
-            <p className="mt-5 rounded-lg border border-gold-400 bg-gold-100 px-4 py-3 text-[13px] leading-relaxed text-charcoal-700">
-              You have {data.months.banked} free month{data.months.banked === 1 ? "" : "s"} waiting.
-              {" "}It&apos;s used automatically on your next Pro renewal.
-            </p>
-          )}
 
           {data.referrals.length > 0 && (
             <ul className="mt-6 divide-y divide-ivory-200 border-t border-ivory-200 text-[13px]">
@@ -182,8 +169,8 @@ export default function ReferralCard() {
           )}
           <p className="mt-5 text-[12px] leading-relaxed text-charcoal-400">
             A referral counts once their first Pro payment is 7 days old and hasn&apos;t been
-            refunded. Free months aren&apos;t exchangeable for cash, and unused ones are lost if you
-            cancel your subscription.
+            refunded. Credits are added to your wallet automatically and aren&apos;t exchangeable
+            for cash.
           </p>
         </>
       )}

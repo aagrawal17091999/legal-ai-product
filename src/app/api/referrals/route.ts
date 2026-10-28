@@ -6,7 +6,7 @@ import { REFERRALS_ENABLED } from "@/lib/referrals/shared";
 
 /**
  * GET /api/referrals — the caller's own referral link, progress toward the next
- * free month, and the people they've referred (names shortened, emails masked).
+ * reward, and the people they've referred (names shortened, emails masked).
  * Allocates their code on first call.
  */
 export async function GET(request: NextRequest) {

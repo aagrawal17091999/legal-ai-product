@@ -1,6 +1,5 @@
-# Referral program tick: settles referrals whose 7-day window has passed, banks
-# free months, grants a free month's credits, and — only with
-# REFERRAL_REWARDS_AUTO=on — pauses/resumes subscriptions to skip renewals.
+# Referral program tick: settles referrals whose 7-day window has passed and
+# pays 2,000 credits for every 5 that qualify.
 # See src/app/api/cron/referrals/route.ts.
 #
 # Install (as root):

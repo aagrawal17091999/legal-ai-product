@@ -69,8 +69,7 @@ export async function GET(
         [userId]
       ),
       pool.query(
-        `SELECT id, milestone, status, method, cycle_start, cycle_end, refund_id,
-                actor, note, earned_at, applied_at
+        `SELECT id, milestone, status, method, credits, actor, note, earned_at, applied_at
            FROM referral_rewards WHERE referrer_user_id = $1
           ORDER BY milestone`,
         [userId]

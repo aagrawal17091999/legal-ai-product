@@ -211,41 +211,10 @@ export async function fetchSubscription(subscriptionId: string) {
   return await client.subscriptions.fetch(subscriptionId);
 }
 
-/**
- * Pause / resume a subscription — how a referral free month skips a renewal.
- *
- * Unlike subscriptions.update (card mandates only), pause works for UPI Autopay
- * too, but Razorpay has to enable it on the account first. Only "now" exists for
- * either call, and the docs don't say whether resume charges at once or waits
- * for the original date — see src/lib/referrals/rewards.ts for how the timing is
- * chosen so that either behaviour charges on the right day.
- */
-export async function pauseSubscription(subscriptionId: string) {
-  const client = getClient();
-  return await client.subscriptions.pause(subscriptionId, { pause_at: "now" });
-}
-
-export async function resumeSubscription(subscriptionId: string) {
-  const client = getClient();
-  return await client.subscriptions.resume(subscriptionId, { resume_at: "now" });
-}
-
+/** Fetch a payment — the referral program checks a first payment wasn't refunded. */
 export async function fetchPayment(paymentId: string) {
   const client = getClient();
   return await client.payments.fetch(paymentId);
-}
-
-/** Refund a payment in full (no amount) or in part (`amountPaise`). */
-export async function refundPayment(
-  paymentId: string,
-  opts: { amountPaise?: number; notes?: Record<string, string> } = {}
-) {
-  const client = getClient();
-  return await client.payments.refund(paymentId, {
-    ...(opts.amountPaise ? { amount: opts.amountPaise } : {}),
-    speed: "normal",
-    notes: opts.notes ?? {},
-  });
 }
 
 /**

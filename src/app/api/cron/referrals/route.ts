@@ -1,29 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { qualifyDueReferrals } from "@/lib/referrals";
-import {
-  findDueRewardWork,
-  grantDueFreeMonthCredits,
-  rewardsAutomationOn,
-  runDueRewardWork,
-} from "@/lib/referrals/rewards";
+import { qualifyDueReferrals, settleBankedRewards } from "@/lib/referrals";
 import { logError } from "@/lib/error-logger";
 import { REFERRALS_ENABLED } from "@/lib/referrals/shared";
 
 /**
  * Referral program tick. Hourly (deploy/systemd/nyayasearch-referrals.timer).
  *
- * Always, database-only:
- *   1. settle pending referrals whose 7-day window has passed, banking a free
- *      month for every 5 qualified;
- *   2. grant the credits for any free month whose skipped renewal has arrived.
- * Only with REFERRAL_REWARDS_AUTO=on, calls Razorpay:
- *   3. finish free months that are ending (chain or resume), then book banked
- *      months against renewals due within 3 days (pause, or refund mode).
- * With it off, step 3 is reported as `due` and done by hand from /admin/referrals.
+ *   1. Settle pending referrals whose 7-day window has passed: qualified if the
+ *      first payment still stands, disqualified if it was refunded. Every 5
+ *      qualified pays the referrer 2,000 credits on the spot.
+ *   2. Pay any reward an interrupted run left banked.
  *
- * Hourly rather than daily because resume timing matters: a pause still in
- * place when the next renewal falls due would skip a month nobody earned.
- * Every step is idempotent, so extra runs cost nothing.
+ * Every step is idempotent, so extra or overlapping runs cost nothing. Hourly
+ * only so a reward lands within the hour its window closes; daily would do.
  */
 export const dynamic = "force-dynamic";
 
@@ -47,19 +36,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const qualification = await qualifyDueReferrals();
-    const creditsGranted = await grantDueFreeMonthCredits();
-    const due = await findDueRewardWork();
-    const auto = rewardsAutomationOn();
-    const automation = auto ? await runDueRewardWork(due) : null;
-
-    return NextResponse.json({
-      status: "ok",
-      ...qualification,
-      creditsGranted,
-      auto,
-      due: { schedule: due.toSchedule.length, complete: due.toComplete.length },
-      ...(automation ?? {}),
-    });
+    const resettled = await settleBankedRewards();
+    return NextResponse.json({ status: "ok", ...qualification, resettled });
   } catch (err) {
     logError({
       category: "payment",

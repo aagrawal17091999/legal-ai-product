@@ -455,11 +455,9 @@ export interface AdminReferral {
 export interface AdminReferralReward {
   id: number;
   milestone: number;
-  status: "banked" | "scheduled" | "applied" | "revoked" | "forfeited";
-  method: "pause" | "refund" | "manual" | null;
-  cycle_start: string | null;
-  cycle_end: string | null;
-  refund_id: string | null;
+  status: "banked" | "applied" | "revoked";
+  method: string | null;
+  credits: number | null;
   actor: string | null;
   note: string | null;
   earned_at: string;

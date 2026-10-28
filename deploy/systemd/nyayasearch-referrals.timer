@@ -1,6 +1,5 @@
-# Hourly, at :20 (clear of the 04:00 credit refill). Hourly rather than daily
-# because a paused subscription has to be resumed before the next renewal falls
-# due; every step is idempotent, so the extra runs cost nothing.
+# Hourly, at :20 (clear of the 04:00 credit refill), so a reward lands within
+# the hour its referral's window closes. Every step is idempotent.
 #
 # Persistent=true: a run missed while the box was down fires on next boot.
 [Unit]

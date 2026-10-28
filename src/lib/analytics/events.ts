@@ -73,8 +73,6 @@ export const EVENTS = {
   TOPUP_PURCHASED: "topup_purchased",
   CREDITS_REFILLED: "credits_refilled",
   ADMIN_ACTION: "admin_action_performed",
-  SUBSCRIPTION_PAUSED: "subscription_paused",
-  SUBSCRIPTION_RESUMED: "subscription_resumed",
 
   // ── Referrals ─────────────────────────────────────────────────────────────
   // Server-side events are sent against the REFERRER, with the referee as a
@@ -85,9 +83,6 @@ export const EVENTS = {
   REFERRAL_QUALIFIED: "referral_qualified",
   REFERRAL_DISQUALIFIED: "referral_disqualified",
   REFERRAL_REWARD_EARNED: "referral_reward_earned",
-  REFERRAL_REWARD_SCHEDULED: "referral_reward_scheduled",
-  REFERRAL_REWARD_APPLIED: "referral_reward_applied",
-  REFERRAL_REWARD_FORFEITED: "referral_reward_forfeited",
 
   // ── Client-side (clicks only) ─────────────────────────────────────────────
   UPGRADE_PROMPT_SHOWN: "upgrade_prompt_shown",

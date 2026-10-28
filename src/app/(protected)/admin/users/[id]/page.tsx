@@ -193,38 +193,8 @@ export default function AdminUserProfilePage() {
     );
   };
 
-  const rewardAction = (rewardId: number, action: RewardAction) => {
-    if (action === "revoke" && !window.confirm("Revoke this free month? It can't be re-earned.")) {
-      return;
-    }
-    act(
-      `/api/admin/referral-rewards/${rewardId}`,
-      { method: "POST", body: JSON.stringify({ action, reason }) },
-      (r) => {
-        switch (r.status) {
-          case "scheduled":
-            return r.method === "refund"
-              ? `Booked: the renewal on ${new Date(String(r.cycleStart)).toLocaleDateString()} will be refunded when it charges.`
-              : `Paused. The renewal on ${new Date(String(r.cycleStart)).toLocaleDateString()} is skipped; billing resumes ${new Date(String(r.cycleEnd)).toLocaleDateString()}.`;
-          case "chained":
-            return "Month finished; the next banked month started straight after (still paused).";
-          case "resumed":
-            return "Month finished and billing resumed.";
-          case "undone":
-            return "Billing resumed before the renewal; the month is banked again.";
-          case "applied":
-            return "Recorded as given by hand.";
-          case "revoked":
-            return "Month revoked.";
-          default:
-            return "Done.";
-        }
-      }
-    );
-  };
-
   const disqualify = (referralId: number) => {
-    if (!window.confirm("Disqualify this referral? It stops counting toward free months.")) return;
+    if (!window.confirm("Disqualify this referral? It stops counting toward rewards. Credits already paid are not clawed back.")) return;
     act(
       `/api/admin/referrals/${referralId}`,
       { method: "POST", body: JSON.stringify({ action: "disqualify", reason }) },
@@ -486,7 +456,6 @@ export default function AdminUserProfilePage() {
           <ReferralsCard
             data={data.referral}
             busy={busy}
-            onRewardAction={rewardAction}
             onDisqualify={disqualify}
           />
         </div>
@@ -662,17 +631,13 @@ export default function AdminUserProfilePage() {
   );
 }
 
-type RewardAction = "apply" | "complete" | "mark_applied" | "revoke";
-
 function ReferralsCard({
   data,
   busy,
-  onRewardAction,
   onDisqualify,
 }: {
   data: AdminUserDetail["referral"];
   busy: boolean;
-  onRewardAction: (rewardId: number, action: RewardAction) => void;
   onDisqualify: (referralId: number) => void;
 }) {
   const day = (d: string | null) => (d ? new Date(d).toLocaleDateString() : "—");
@@ -695,40 +660,13 @@ function ReferralsCard({
       </p>
 
       {data.rewards.length > 0 && (
-        <ul className="mt-4 space-y-2 text-[13px]">
+        <ul className="mt-4 space-y-1.5 text-[13px]">
           {data.rewards.map((w) => (
-            <li
-              key={w.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ivory-200 px-3 py-2"
-            >
-              <span className="text-charcoal-900">
-                Free month #{w.milestone} · {w.status}
-                {w.method ? ` (${w.method})` : ""}
-                <span className="ml-2 text-[11px] text-charcoal-400">
-                  {w.cycle_start ? `skips ${day(w.cycle_start)} → ${day(w.cycle_end)}` : `earned ${day(w.earned_at)}`}
-                  {w.actor ? ` · ${w.actor}` : ""}
-                  {w.note ? ` · ${w.note}` : ""}
-                </span>
-              </span>
-              <span className="flex flex-wrap gap-2">
-                {w.status === "banked" && (
-                  <>
-                    <Button size="sm" variant="primary" disabled={busy} onClick={() => onRewardAction(w.id, "apply")}>
-                      Apply now
-                    </Button>
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => onRewardAction(w.id, "mark_applied")}>
-                      Mark given by hand
-                    </Button>
-                    <Button size="sm" variant="destructive" disabled={busy} onClick={() => onRewardAction(w.id, "revoke")}>
-                      Revoke
-                    </Button>
-                  </>
-                )}
-                {w.status === "scheduled" && w.method === "pause" && (
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => onRewardAction(w.id, "complete")}>
-                    {w.cycle_start && new Date(w.cycle_start) > new Date() ? "Undo (resume)" : "Finish month"}
-                  </Button>
-                )}
+            <li key={w.id} className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="text-charcoal-900">Reward #{w.milestone}</span>
+              <span className="text-charcoal-600">
+                {w.credits != null ? `+${w.credits.toLocaleString()} credits` : w.method ?? "—"} ·{" "}
+                {w.status} · {day(w.applied_at ?? w.earned_at)}
               </span>
             </li>
           ))}
@@ -763,9 +701,9 @@ function ReferralsCard({
         </ul>
       )}
       <p className="mt-4 text-[12px] text-charcoal-400">
-        &ldquo;Apply now&rdquo; runs the same code as the cron, without waiting for the 3-day window.
-        &ldquo;Mark given by hand&rdquo; only records a month you already gave in the Razorpay dashboard.
-        The note above is saved with each action.
+        Every 5 qualified referrals pay 2,000 credits into the top-up pool automatically. To
+        claw a reward back, revoke the credits in the Credits card above. The note above is
+        saved with each action.
       </p>
     </Card>
   );

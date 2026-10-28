@@ -16,10 +16,6 @@ export type AdminActionType =
   | "revoke_credits"
   | "set_plan"
   | "cancel_plan"
-  | "referral_reward_apply"
-  | "referral_reward_complete"
-  | "referral_reward_mark_applied"
-  | "referral_reward_revoke"
   | "referral_disqualify";
 
 /**

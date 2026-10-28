@@ -4,10 +4,10 @@ import { Pool } from "pg";
 
 /**
  * The referral program end to end against a real Postgres: claim -> first
- * charge -> 7-day window -> banked month -> pause -> free month's credits ->
- * chain -> resume, plus the refund method and staff undo. Razorpay is stubbed;
- * what's under test is our own bookkeeping, because its failure mode is silent
- * — a wrong state transition doesn't throw, it gives a month away or loses one.
+ * charge -> 7-day window -> qualified -> 2,000 credits in the wallet. Razorpay
+ * is stubbed; what's under test is our own bookkeeping, because its failure
+ * mode is silent — a wrong transition doesn't throw, it pays a reward twice or
+ * never.
  *
  * Needs a THROWAWAY database (it creates tables): TEST_DATABASE_URL=...
  */
@@ -41,16 +41,17 @@ const DAY = 24 * 3600 * 1000;
 
 let pool: Pool;
 let referrals: typeof import("../index");
-let rewards: typeof import("../rewards");
 
 // Razorpay stub state.
-const calls: string[] = [];
-let chargeAt = 0;
 let refundedPayments = new Set<string>();
 
-async function migration(): Promise<string> {
+async function migrations(): Promise<string[]> {
   const { readFile } = await import("node:fs/promises");
-  return readFile(new URL("../../../../migrations/035_referrals.sql", import.meta.url), "utf8");
+  return Promise.all(
+    ["035_referrals.sql", "036_referral_credit_rewards.sql"].map((f) =>
+      readFile(new URL(`../../../../migrations/${f}`, import.meta.url), "utf8")
+    )
+  );
 }
 
 async function makeUser(
@@ -89,7 +90,7 @@ before(async () => {
   if (!TEST_DB) return;
   pool = new Pool({ connectionString: TEST_DB });
   await pool.query(SCHEMA);
-  await pool.query(await migration());
+  for (const sql of await migrations()) await pool.query(sql);
 
   mock.module("@/lib/db", { defaultExport: pool, namedExports: {} });
   mock.module("@/lib/analytics/server", { namedExports: { track: () => {} } });
@@ -101,21 +102,10 @@ before(async () => {
         status: refundedPayments.has(id) ? "refunded" : "captured",
         amount_refunded: refundedPayments.has(id) ? 295000 : 0,
       }),
-      fetchSubscription: async (id: string) => {
-        calls.push(`fetch:${id}`);
-        return { id, status: "active", charge_at: chargeAt / 1000 };
-      },
-      pauseSubscription: async (id: string) => void calls.push(`pause:${id}`),
-      resumeSubscription: async (id: string) => void calls.push(`resume:${id}`),
-      refundPayment: async (id: string) => {
-        calls.push(`refund:${id}`);
-        return { id: `rfnd_${id}` };
-      },
     },
   });
 
   referrals = await import("../index");
-  rewards = await import("../rewards");
 });
 
 after(async () => {
@@ -200,235 +190,73 @@ test("first charge from the referrer's own phone is disqualified", { skip }, asy
   assert.deepEqual(rows[0], { status: "disqualified", disqualified_reason: "self_referral" });
 });
 
-test("5 qualified = 1 banked month; a refund inside the window doesn't count", { skip }, async () => {
+async function walletOf(userId: number) {
+  const { rows } = await pool.query(
+    `SELECT plan_credits, topup_credits FROM credit_balances WHERE user_id = $1`,
+    [userId]
+  );
+  return rows[0] ? { plan: Number(rows[0].plan_credits), topup: Number(rows[0].topup_credits) } : null;
+}
+
+test("5 qualified = 2,000 credits; a refund inside the window doesn't count", { skip }, async () => {
   const k = await makeUser("k@x.in", { display_name: "Kavya" });
   const code = await referrals.ensureReferralCode(k);
 
   refundedPayments = new Set(["pay_k5"]);
-  // Six referees; one is refunded inside the window -> 5 qualified.
+  // Six referees; one refunded inside the window -> 5 qualified -> 1 reward.
   const res = await qualifyReferees(code, "k", 6);
-  assert.deepEqual(res, { qualified: 5, disqualified: 1, deferred: 0, monthsEarned: 1 });
+  assert.deepEqual(res, { qualified: 5, disqualified: 1, deferred: 0, rewardsEarned: 1 });
+  assert.deepEqual(await walletOf(k.id), { plan: 0, topup: 2000 }, "lands in the persistent pool");
 
-  // Re-running mints nothing new.
+  // Re-running pays nothing more.
   assert.equal(await referrals.syncRewards(k.id), 0);
+  assert.equal(await referrals.settleBankedRewards(), 0);
+  assert.deepEqual(await walletOf(k.id), { plan: 0, topup: 2000 });
+
+  const { rows: ledger } = await pool.query(
+    `SELECT type, credits, amount_inr FROM credit_transactions WHERE user_id = $1`,
+    [k.id]
+  );
+  assert.deepEqual(ledger, [{ type: "referral_grant", credits: "2000", amount_inr: null }]);
+
   const summary = await referrals.getReferralSummary({ ...k, referral_code: code });
   assert.equal(summary.counts.qualified, 5);
   assert.equal(summary.progress, 0);
-  assert.deepEqual(summary.months, { earned: 1, banked: 1, applied: 0 });
+  assert.deepEqual(summary.rewards, { earned: 1, credits: 2000 });
   assert.equal(summary.referrals.length, 6);
   assert.match(summary.referrals[0].email, /^k\*\*\*@x\.in$/);
 });
 
-test("pause flow: schedule -> free-month credits -> chain -> resume", { skip }, async () => {
-  const renewal = new Date(Date.now() + 2 * DAY);
-  const m = await makeUser("m@x.in", {
-    display_name: "Meera",
-    plan: "monthly",
-    subscription_status: "active",
-    razorpay_subscription_id: "sub_m",
-    subscription_end_date: renewal,
-  });
-  const code = await referrals.ensureReferralCode(m);
-  await qualifyReferees(code, "m", 10); // two months banked
-  chargeAt = renewal.getTime();
-  calls.length = 0;
+test("ten qualified pay twice; four pay nothing", { skip }, async () => {
+  const t = await makeUser("t@x.in", { display_name: "Tara" });
+  const tCode = await referrals.ensureReferralCode(t);
+  await qualifyReferees(tCode, "t", 10);
+  assert.deepEqual(await walletOf(t.id), { plan: 0, topup: 4000 });
 
-  // Not automated: the cron's due list still finds it.
-  const due = await rewards.findDueRewardWork();
-  const mine = due.toSchedule.filter((d) => d.user_id === m.id);
-  assert.equal(mine.length, 1, "only the earliest banked month is due at once");
+  const f = await makeUser("f4@x.in", { display_name: "Four" });
+  const fCode = await referrals.ensureReferralCode(f);
+  await qualifyReferees(fCode, "f4_", 4);
+  assert.equal(await walletOf(f.id), null);
+  const summary = await referrals.getReferralSummary({ ...f, referral_code: fCode });
+  assert.equal(summary.progress, 4);
+});
 
-  const run = await rewards.runDueRewardWork({ toSchedule: mine, toComplete: [] });
-  assert.deepEqual(run, { scheduled: 1, completed: 0, failed: 0 });
-  assert.deepEqual(calls, ["fetch:sub_m", "pause:sub_m"]);
-
-  const { rows: sched } = await pool.query(
-    `SELECT id, cycle_start, cycle_end FROM referral_rewards
-      WHERE referrer_user_id = $1 AND status = 'scheduled'`,
-    [m.id]
-  );
-  assert.equal(sched.length, 1);
-  const first = sched[0];
-  const { rows: u1 } = await pool.query(`SELECT subscription_end_date FROM users WHERE id = $1`, [m.id]);
-  assert.deepEqual(u1[0].subscription_end_date, first.cycle_end, "stays Pro through the free month");
-
-  // A second schedule while one is in progress is refused.
-  const { rows: banked } = await pool.query(
-    `SELECT id FROM referral_rewards WHERE referrer_user_id = $1 AND status = 'banked'`,
-    [m.id]
-  );
-  await assert.rejects(
-    rewards.scheduleReward(banked[0].id, { actor: "staff@x.in", force: true }),
-    /already in progress/
-  );
-
-  // The skipped renewal arrives: credits are granted once.
+test("a reward left banked by a crash is paid by the cron safety net", { skip }, async () => {
+  const b = await makeUser("bk@x.in", { display_name: "Bina" });
+  // Simulate syncRewards dying between the insert and the grant.
   await pool.query(
-    `UPDATE referral_rewards SET cycle_start = NOW() - interval '1 hour',
-            cycle_end = NOW() + interval '1 hour' WHERE id = $1`,
-    [first.id]
+    `INSERT INTO referral_rewards (referrer_user_id, milestone, method, credits)
+     VALUES ($1, 1, 'credits', 2000)`,
+    [b.id]
   );
-  assert.equal(await rewards.grantDueFreeMonthCredits(), 1);
-  assert.equal(await rewards.grantDueFreeMonthCredits(), 0);
-  const { rows: bal } = await pool.query(`SELECT plan_credits FROM credit_balances WHERE user_id = $1`, [m.id]);
-  assert.equal(Number(bal[0].plan_credits), 2000);
-
-  // Month ends with another banked: chain, no Razorpay call.
-  calls.length = 0;
-  assert.deepEqual(await rewards.completeReward(first.id, { actor: "cron" }), { status: "chained" });
-  assert.deepEqual(calls, []);
-  const { rows: next } = await pool.query(
-    `SELECT id, cycle_start FROM referral_rewards WHERE referrer_user_id = $1 AND status = 'scheduled'`,
-    [m.id]
-  );
-  assert.equal(next.length, 1);
-  assert.notEqual(next[0].id, first.id);
-
-  // Last month ends: resume.
-  await pool.query(
-    `UPDATE referral_rewards SET cycle_start = NOW() - interval '2 hours',
-            cycle_end = NOW() + interval '1 hour' WHERE id = $1`,
-    [next[0].id]
-  );
-  assert.deepEqual(await rewards.completeReward(next[0].id, { actor: "cron" }), { status: "resumed" });
-  assert.deepEqual(calls, ["resume:sub_m"]);
-  const { rows: done } = await pool.query(
-    `SELECT status, COUNT(*)::int AS n FROM referral_rewards WHERE referrer_user_id = $1 GROUP BY status`,
-    [m.id]
-  );
-  assert.deepEqual(done, [{ status: "applied", n: 2 }]);
-});
-
-test("not due yet: the cron leaves a renewal more than 3 days out alone", { skip }, async () => {
-  const far = new Date(Date.now() + 20 * DAY);
-  const f = await makeUser("f@x.in", {
-    display_name: "Farah",
-    plan: "monthly",
-    subscription_status: "active",
-    razorpay_subscription_id: "sub_f",
-    subscription_end_date: far,
-  });
-  const code = await referrals.ensureReferralCode(f);
-  await qualifyReferees(code, "f", 5);
-  const due = await rewards.findDueRewardWork();
-  assert.equal(due.toSchedule.filter((d) => d.user_id === f.id).length, 0);
-
-  // Staff "Apply now" goes early; "Undo" before the renewal banks it again.
-  chargeAt = far.getTime();
-  calls.length = 0;
-  const { rows } = await pool.query(`SELECT id FROM referral_rewards WHERE referrer_user_id = $1`, [f.id]);
-  const applied = await rewards.scheduleReward(rows[0].id, { actor: "staff@x.in", force: true });
-  assert.equal(applied.status, "scheduled");
-  assert.deepEqual(await rewards.completeReward(rows[0].id, { actor: "staff@x.in", force: true }), {
-    status: "undone",
-  });
-  assert.deepEqual(calls, ["fetch:sub_f", "pause:sub_f", "resume:sub_f"]);
-  const { rows: after } = await pool.query(
-    `SELECT r.status, u.subscription_end_date FROM referral_rewards r
-       JOIN users u ON u.id = r.referrer_user_id WHERE r.id = $1`,
-    [rows[0].id]
-  );
-  assert.equal(after[0].status, "banked");
-  assert.deepEqual(after[0].subscription_end_date, far, "renewal date restored");
-});
-
-test("refund method: the booked renewal is refunded exactly once", { skip }, async () => {
-  process.env.REFERRAL_REWARD_METHOD = "refund";
-  try {
-    const renewal = new Date(Date.now() + DAY);
-    const r = await makeUser("r@x.in", {
-      display_name: "Rohan",
-      plan: "monthly",
-      subscription_status: "active",
-      razorpay_subscription_id: "sub_r",
-      subscription_end_date: renewal,
-    });
-    const code = await referrals.ensureReferralCode(r);
-    await qualifyReferees(code, "r", 5);
-    chargeAt = renewal.getTime();
-    calls.length = 0;
-
-    const { rows } = await pool.query(`SELECT id FROM referral_rewards WHERE referrer_user_id = $1`, [r.id]);
-    const res = await rewards.scheduleReward(rows[0].id, { actor: "cron" });
-    assert.equal(res.status === "scheduled" && res.method, "refund");
-    assert.deepEqual(calls, ["fetch:sub_r"], "no pause in refund mode");
-
-    const opts = { userId: r.id, subscriptionId: "sub_r", paymentId: "pay_renewal" };
-    assert.equal(await rewards.refundBookedRenewal(opts), true);
-    assert.equal(await rewards.refundBookedRenewal(opts), false, "a retried webhook can't refund twice");
-    assert.deepEqual(calls.filter((c) => c.startsWith("refund")), ["refund:pay_renewal"]);
-  } finally {
-    delete process.env.REFERRAL_REWARD_METHOD;
-  }
-});
-
-test("yearly always pauses, even in refund mode", { skip }, async () => {
-  process.env.REFERRAL_REWARD_METHOD = "refund";
-  try {
-    const renewal = new Date(Date.now() + DAY);
-    const y = await makeUser("y@x.in", {
-      display_name: "Yash",
-      plan: "yearly",
-      subscription_status: "active",
-      razorpay_subscription_id: "sub_y",
-      subscription_end_date: renewal,
-    });
-    const code = await referrals.ensureReferralCode(y);
-    await qualifyReferees(code, "y", 5);
-    chargeAt = renewal.getTime();
-    const { rows } = await pool.query(`SELECT id FROM referral_rewards WHERE referrer_user_id = $1`, [y.id]);
-    const res = await rewards.scheduleReward(rows[0].id, { actor: "cron" });
-    assert.equal(res.status === "scheduled" && res.method, "pause");
-    // Yearly credits come from the refill cron, not here.
-    await pool.query(`UPDATE referral_rewards SET cycle_start = NOW() - interval '1 hour' WHERE id = $1`, [
-      rows[0].id,
-    ]);
-    const { rows: before } = await pool.query(
-      `SELECT COUNT(*)::int AS n FROM credit_transactions WHERE razorpay_payment_id = $1`,
-      [`refreward:${rows[0].id}`]
-    );
-    await rewards.grantDueFreeMonthCredits();
-    const { rows: afterRows } = await pool.query(
-      `SELECT COUNT(*)::int AS n FROM credit_transactions WHERE razorpay_payment_id = $1`,
-      [`refreward:${rows[0].id}`]
-    );
-    assert.equal(afterRows[0].n, before[0].n);
-  } finally {
-    delete process.env.REFERRAL_REWARD_METHOD;
-  }
-});
-
-test("cancelling forfeits every unused month, including one in progress", { skip }, async () => {
-  const renewal = new Date(Date.now() + DAY);
-  const c = await makeUser("c@x.in", {
-    display_name: "Chitra",
-    plan: "monthly",
-    subscription_status: "active",
-    razorpay_subscription_id: "sub_c",
-    subscription_end_date: renewal,
-  });
-  const code = await referrals.ensureReferralCode(c);
-  await qualifyReferees(code, "c", 10); // two months
-  chargeAt = renewal.getTime();
+  assert.equal(await referrals.settleBankedRewards(), 1);
+  assert.deepEqual(await walletOf(b.id), { plan: 0, topup: 2000 });
   const { rows } = await pool.query(
-    `SELECT id FROM referral_rewards WHERE referrer_user_id = $1 ORDER BY milestone`,
-    [c.id]
+    `SELECT status FROM referral_rewards WHERE referrer_user_id = $1`,
+    [b.id]
   );
-  await rewards.scheduleReward(rows[0].id, { actor: "cron" });
-  assert.equal(await rewards.freeMonthInProgress(c.id), true);
-
-  assert.equal(await rewards.forfeitRewards(c.id, "cancelled"), 2);
-  assert.equal(await rewards.forfeitRewards(c.id, "cancelled"), 0, "idempotent");
-  assert.equal(await rewards.freeMonthInProgress(c.id), false);
-  const { rows: after } = await pool.query(
-    `SELECT DISTINCT status FROM referral_rewards WHERE referrer_user_id = $1`,
-    [c.id]
-  );
-  assert.deepEqual(after, [{ status: "forfeited" }]);
-
-  // Forfeited milestones stay used: re-syncing mints nothing back.
-  assert.equal(await referrals.syncRewards(c.id), 0);
-  // Nothing forfeited is ever picked up by the cron again.
-  const due = await rewards.findDueRewardWork();
-  assert.equal(due.toSchedule.filter((d) => d.user_id === c.id).length, 0);
+  assert.equal(rows[0].status, "applied");
+  // And never twice.
+  assert.equal(await referrals.settleBankedRewards(), 0);
+  assert.deepEqual(await walletOf(b.id), { plan: 0, topup: 2000 });
 });

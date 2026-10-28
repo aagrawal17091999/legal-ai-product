@@ -1,23 +1,25 @@
 /**
- * Referral attribution and qualification (migration 035).
+ * The referral program (migrations 035, 036).
  *
  * The lifecycle of one referral:
  *   1. claimReferral()             a new user attaches a code    -> signed_up
  *   2. recordRefereeFirstCharge()  their first subscription charge -> pending
  *   3. qualifyDueReferrals()       7 days on, no refund           -> qualified
- *   4. syncRewards()               every 5 qualified = one banked free month
- * Turning a banked month into a skipped renewal is ./rewards.ts.
+ *   4. syncRewards()               every 5 qualified = 2,000 credits in the
+ *                                  referrer's wallet (top-up pool, never expire)
  */
 import crypto from "crypto";
 import pool from "@/lib/db";
 import { fetchPayment } from "@/lib/razorpay";
+import { grant } from "@/lib/billing/credits";
 import { normalizeIndianMobile } from "@/lib/onboarding";
 import { SITE_URL } from "@/lib/site";
 import { track } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
 import type { User } from "@/types";
 import {
-  REFERRALS_PER_FREE_MONTH,
+  REFERRALS_PER_REWARD,
+  REFERRAL_REWARD_CREDITS,
   REFERRAL_PENDING_DAYS,
   REFERRAL_CLAIM_WINDOW_DAYS,
   normalizeReferralCode,
@@ -259,7 +261,7 @@ export async function qualifyDueReferrals(): Promise<{
   qualified: number;
   disqualified: number;
   deferred: number;
-  monthsEarned: number;
+  rewardsEarned: number;
 }> {
   const { rows } = await pool.query<{
     id: number;
@@ -277,7 +279,7 @@ export async function qualifyDueReferrals(): Promise<{
   let qualified = 0;
   let disqualified = 0;
   let deferred = 0;
-  let monthsEarned = 0;
+  let rewardsEarned = 0;
 
   for (const r of rows) {
     let refunded = false;
@@ -321,17 +323,24 @@ export async function qualifyDueReferrals(): Promise<{
         insertId: `ref_ok:${r.id}`,
         properties: { referee_user_id: r.referee_user_id },
       });
-      monthsEarned += await syncRewards(r.referrer_user_id);
+      rewardsEarned += await syncRewards(r.referrer_user_id);
     }
   }
 
-  return { qualified, disqualified, deferred, monthsEarned };
+  return { qualified, disqualified, deferred, rewardsEarned };
 }
 
 /**
- * Bank one free month per REFERRALS_PER_FREE_MONTH qualified referrals.
- * Idempotent: milestones are unique per referrer, so this only ever adds the
- * months that floor(qualified / 5) says are missing. Returns how many it added.
+ * Pay out one reward per REFERRALS_PER_REWARD qualified referrals: 2,000
+ * credits into the referrer's top-up pool. Returns how many NEW rewards this
+ * call earned.
+ *
+ * Two idempotent steps, so a crash between them is repaired by the next call
+ * (the hourly cron calls settleBankedRewards for everyone):
+ *   1. insert the missing milestones as 'banked' — UNIQUE (referrer, milestone)
+ *      means recomputing floor(qualified / 5) can never mint a reward twice;
+ *   2. grant every banked reward, keyed 'refreward:<id>' in the ledger, then
+ *      mark it 'applied'.
  */
 export async function syncRewards(referrerUserId: number): Promise<number> {
   const { rows: countRows } = await pool.query<{ n: string }>(
@@ -339,23 +348,59 @@ export async function syncRewards(referrerUserId: number): Promise<number> {
       WHERE referrer_user_id = $1 AND status = 'qualified'`,
     [referrerUserId]
   );
-  const months = Math.floor(Number(countRows[0].n) / REFERRALS_PER_FREE_MONTH);
-  if (months === 0) return 0;
+  const earned = Math.floor(Number(countRows[0].n) / REFERRALS_PER_REWARD);
+  let inserted = 0;
+  if (earned > 0) {
+    const res = await pool.query(
+      `INSERT INTO referral_rewards (referrer_user_id, milestone, method, credits)
+       SELECT $1, g, 'credits', $3 FROM generate_series(1, $2::int) AS g
+       ON CONFLICT (referrer_user_id, milestone) DO NOTHING`,
+      [referrerUserId, earned, REFERRAL_REWARD_CREDITS]
+    );
+    inserted = res.rowCount ?? 0;
+  }
+  await payBankedRewards(referrerUserId);
+  return inserted;
+}
 
-  const { rows } = await pool.query<{ id: number; milestone: number }>(
-    `INSERT INTO referral_rewards (referrer_user_id, milestone)
-     SELECT $1, g FROM generate_series(1, $2::int) AS g
-     ON CONFLICT (referrer_user_id, milestone) DO NOTHING
-     RETURNING id, milestone`,
-    [referrerUserId, months]
+async function payBankedRewards(referrerUserId: number): Promise<void> {
+  const { rows } = await pool.query<{ id: number; milestone: number; credits: number | null }>(
+    `SELECT id, milestone, credits FROM referral_rewards
+      WHERE referrer_user_id = $1 AND status = 'banked'
+      ORDER BY milestone`,
+    [referrerUserId]
   );
   for (const r of rows) {
-    track(EVENTS.REFERRAL_REWARD_EARNED, {
+    const credits = r.credits ?? REFERRAL_REWARD_CREDITS;
+    const { applied } = await grant({
       userId: referrerUserId,
-      insertId: `ref_reward:${r.id}`,
-      properties: { reward_id: r.id, milestone: r.milestone },
+      type: "referral_grant",
+      credits,
+      idempotencyKey: `refreward:${r.id}`,
     });
+    await pool.query(
+      `UPDATE referral_rewards
+          SET status = 'applied', method = 'credits', credits = $2, actor = 'system',
+              applied_at = COALESCE(applied_at, NOW()), updated_at = NOW()
+        WHERE id = $1 AND status = 'banked'`,
+      [r.id, credits]
+    );
+    if (applied) {
+      track(EVENTS.REFERRAL_REWARD_EARNED, {
+        userId: referrerUserId,
+        insertId: `ref_reward:${r.id}`,
+        properties: { reward_id: r.id, milestone: r.milestone, credits },
+      });
+    }
   }
+}
+
+/** Cron safety net: pay any reward left banked by an interrupted syncRewards. */
+export async function settleBankedRewards(): Promise<number> {
+  const { rows } = await pool.query<{ referrer_user_id: number }>(
+    `SELECT DISTINCT referrer_user_id FROM referral_rewards WHERE status = 'banked'`
+  );
+  for (const r of rows) await payBankedRewards(r.referrer_user_id);
   return rows.length;
 }
 
@@ -379,10 +424,9 @@ export async function getReferralSummary(user: User): Promise<ReferralSummary> {
         LIMIT 200`,
       [user.id]
     ),
-    pool.query<{ status: string; cycle_start: string | null; cycle_end: string | null }>(
-      `SELECT status, cycle_start, cycle_end FROM referral_rewards
-        WHERE referrer_user_id = $1 AND status <> 'revoked'
-        ORDER BY milestone`,
+    pool.query<{ n: string; credits: string | null }>(
+      `SELECT COUNT(*) AS n, SUM(credits) AS credits FROM referral_rewards
+        WHERE referrer_user_id = $1 AND status = 'applied'`,
       [user.id]
     ),
   ]);
@@ -394,20 +438,17 @@ export async function getReferralSummary(user: User): Promise<ReferralSummary> {
     if (r.status !== "disqualified") counts.signedUp++;
   }
 
-  const current = rewards.rows.find((r) => r.status === "scheduled");
-
   return {
     code,
     link: referralLink(code),
-    perFreeMonth: REFERRALS_PER_FREE_MONTH,
+    perReward: REFERRALS_PER_REWARD,
+    creditsPerReward: REFERRAL_REWARD_CREDITS,
     counts,
-    progress: counts.qualified % REFERRALS_PER_FREE_MONTH,
-    months: {
-      earned: rewards.rows.length,
-      banked: rewards.rows.filter((r) => r.status === "banked").length,
-      applied: rewards.rows.filter((r) => r.status === "applied").length,
+    progress: counts.qualified % REFERRALS_PER_REWARD,
+    rewards: {
+      earned: Number(rewards.rows[0].n),
+      credits: Number(rewards.rows[0].credits ?? 0),
     },
-    current: current ? { start: current.cycle_start, end: current.cycle_end } : null,
     referrals: refs.rows.map((r) => ({
       name: publicName(r.display_name),
       email: maskEmail(r.email),

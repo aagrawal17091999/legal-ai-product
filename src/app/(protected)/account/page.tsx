@@ -8,6 +8,7 @@ import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import { openRazorpayCheckout } from "@/lib/razorpay-checkout";
 import { reportError } from "@/lib/report-error";
+import ReferralCard from "@/components/referrals/ReferralCard";
 
 interface UserData {
   id: number;
@@ -512,6 +513,8 @@ export default function AccountPage() {
             )}
           </div>
         </div>
+
+        <ReferralCard />
       </div>
 
       {/* Upgrade Plan Modal */}
@@ -596,6 +599,10 @@ export default function AccountPage() {
             access to Pro features until the end of your current billing period.
             After that, your account will revert to the Starter plan (5 queries
             per day).
+          </p>
+          <p className="text-[14px] text-charcoal-600 leading-relaxed">
+            Any referral free months you haven&apos;t used yet are lost when you
+            cancel. If a free month is running right now, Pro ends immediately.
           </p>
           <div className="flex gap-3 justify-end">
             <Button

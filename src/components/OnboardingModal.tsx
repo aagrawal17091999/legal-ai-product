@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Modal from "@/components/ui/Modal";
 import Input from "@/components/ui/Input";
 import Button from "@/components/ui/Button";
@@ -11,6 +11,11 @@ import {
   normalizeIndianMobile,
   type ReferralSource,
 } from "@/lib/onboarding";
+import {
+  normalizeReferralCode,
+  readReferralCookie,
+  writeReferralCookie,
+} from "@/lib/referrals/shared";
 
 // Deliberately not dismissable: no close button, and Escape / backdrop clicks
 // route to this no-op. The only way out is submitting the form.
@@ -19,6 +24,10 @@ const noop = () => {};
 /**
  * Post-signup step: mobile number + how they heard about us. Shown on any
  * protected page until the server says the user has completed it.
+ *
+ * Also where a referral is attached: the code a /r/ link or the signup form left
+ * in the cookie is claimed on mount, and anyone who arrived without one can type
+ * it here. A claimed referral pre-answers "how did you hear about us".
  */
 export default function OnboardingModal() {
   const { getToken } = useAuth();
@@ -28,6 +37,44 @@ export default function OnboardingModal() {
   const [detail, setDetail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [referralCode, setReferralCode] = useState("");
+  const [referredBy, setReferredBy] = useState<string | null>(null);
+
+  /** POST a code; returns null on success, else the message to show. */
+  const claimReferral = useCallback(
+    async (code: string): Promise<string | null> => {
+      const token = await getToken();
+      if (!token) return "Please sign in again.";
+      const res = await fetch("/api/referrals/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setReferredBy(data.referrerName ?? "a colleague");
+        setSource("friend");
+        return null;
+      }
+      return data.error || "Couldn't apply that referral code.";
+    },
+    [getToken]
+  );
+
+  // Claim a code carried over from the /r/ link or the signup form. Any definite
+  // answer clears the cookie, so a refused code isn't retried on every page.
+  useEffect(() => {
+    const code = readReferralCookie();
+    if (!code) return;
+    (async () => {
+      try {
+        await claimReferral(code);
+        writeReferralCookie(null);
+      } catch {
+        /* Network trouble: keep the cookie and try on the next page load. */
+      }
+    })();
+  }, [claimReferral]);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,9 +112,21 @@ export default function OnboardingModal() {
       setError("Tell us where you heard about Legal Brain.");
       return;
     }
+    const typedCode = normalizeReferralCode(referralCode);
+    if (!referredBy && referralCode.trim() && !typedCode) {
+      setError("That doesn't look like a referral code. Check it, or leave it empty.");
+      return;
+    }
 
     setSubmitting(true);
     try {
+      if (!referredBy && typedCode) {
+        const claimError = await claimReferral(typedCode);
+        if (claimError) {
+          setError(claimError);
+          return;
+        }
+      }
       const token = await getToken();
       const res = await fetch("/api/user/onboarding", {
         method: "POST",
@@ -152,6 +211,23 @@ export default function OnboardingModal() {
             </div>
           )}
         </fieldset>
+
+        {referredBy ? (
+          <p className="mt-6 text-[13px] text-charcoal-600">
+            Referred by <span className="font-medium text-charcoal-900">{referredBy}</span>.
+          </p>
+        ) : (
+          <div className="mt-6">
+            <Input
+              label="Referral code (optional)"
+              placeholder="e.g. PRIYA7KQ"
+              value={referralCode}
+              maxLength={16}
+              autoComplete="off"
+              onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+            />
+          </div>
+        )}
 
         {error && <p className="mt-4 text-[13px] text-burgundy-700">{error}</p>}
 

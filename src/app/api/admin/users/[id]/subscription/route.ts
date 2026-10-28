@@ -4,6 +4,7 @@ import { invalidateUserCache } from "@/lib/auth";
 import pool from "@/lib/db";
 import { cancelSubscription } from "@/lib/razorpay";
 import { logError } from "@/lib/error-logger";
+import { forfeitRewards, freeMonthInProgress } from "@/lib/referrals/rewards";
 
 /**
  * DELETE /api/admin/users/[id]/subscription — cancel a user's paid plan.
@@ -31,7 +32,9 @@ export async function DELETE(
   if (!target) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const body = await request.json().catch(() => ({}));
-  const immediate = body.immediate === true;
+  // A subscription paused for a referral free month has no paid period to run
+  // out, so any cancel of it is immediate (and forfeits the month, below).
+  const immediate = body.immediate === true || (await freeMonthInProgress(target.id));
   const reason = typeof body.reason === "string" ? body.reason : null;
   const comped = target.comped_plan === true;
 
@@ -80,6 +83,8 @@ export async function DELETE(
       );
     }
 
+    const forfeited = await forfeitRewards(target.id, `cancelled by staff (${gate.user.email})`);
+
     invalidateUserCache(target.firebase_uid);
     await logAdminAction({
       actor: gate.user,
@@ -92,6 +97,7 @@ export async function DELETE(
         plan: target.plan,
         subscriptionId: target.razorpay_subscription_id,
         accessUntil: immediate ? null : target.subscription_end_date,
+        referralMonthsForfeited: forfeited,
       },
     });
 

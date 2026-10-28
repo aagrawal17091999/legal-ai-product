@@ -28,7 +28,8 @@ export async function GET(
   if (!target) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
-    const [balance, transactions, usage, errorSummary, actions] = await Promise.all([
+    const [balance, transactions, usage, errorSummary, actions, referrals, rewards, referredBy] =
+      await Promise.all([
       getBalance(userId),
       pool.query(
         `SELECT id, type, credits, amount_inr, razorpay_payment_id, created_at
@@ -56,6 +57,28 @@ export async function GET(
         `SELECT id, actor_email, action, reason, details, created_at
            FROM admin_actions WHERE target_user_id = $1
           ORDER BY created_at DESC LIMIT ${RECENT}`,
+        [userId]
+      ),
+      // People this user referred — all of them, the count is the reward.
+      pool.query(
+        `SELECT r.id, r.referee_user_id, u.email AS referee_email, r.status,
+                r.first_paid_at, r.qualifies_at, r.disqualified_reason, r.created_at
+           FROM referrals r JOIN users u ON u.id = r.referee_user_id
+          WHERE r.referrer_user_id = $1
+          ORDER BY r.created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, milestone, status, method, cycle_start, cycle_end, refund_id,
+                actor, note, earned_at, applied_at
+           FROM referral_rewards WHERE referrer_user_id = $1
+          ORDER BY milestone`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT r.referrer_user_id AS id, u.email, r.status
+           FROM referrals r JOIN users u ON u.id = r.referrer_user_id
+          WHERE r.referee_user_id = $1`,
         [userId]
       ),
     ]);
@@ -99,6 +122,12 @@ export async function GET(
         lastAt: summary.last_at,
       },
       actions: actions.rows,
+      referral: {
+        code: target.referral_code,
+        referredBy: referredBy.rows[0] ?? null,
+        referrals: referrals.rows,
+        rewards: rewards.rows,
+      },
     });
   } catch (err) {
     logError({

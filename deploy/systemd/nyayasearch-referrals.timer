@@ -1,0 +1,14 @@
+# Hourly, at :20 (clear of the 04:00 credit refill). Hourly rather than daily
+# because a paused subscription has to be resumed before the next renewal falls
+# due; every step is idempotent, so the extra runs cost nothing.
+#
+# Persistent=true: a run missed while the box was down fires on next boot.
+[Unit]
+Description=Hourly NyayaSearch referral program tick
+
+[Timer]
+OnCalendar=*-*-* *:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

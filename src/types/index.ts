@@ -85,6 +85,9 @@ export interface User {
   referral_source: string | null;
   referral_detail: string | null;
   onboarded_at: string | null;
+  /** Referral program (migration 035). Allocated on first use. */
+  referral_code: string | null;
+  referred_by_user_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -430,4 +433,35 @@ export interface AdminUserDetail {
   usage: AdminUsageEvent[];
   errors: { total: number; unresolved: number; critical: number; lastAt: string | null };
   actions: AdminAction[];
+  referral: {
+    code: string | null;
+    referredBy: { id: number; email: string; status: string } | null;
+    referrals: AdminReferral[];
+    rewards: AdminReferralReward[];
+  };
+}
+
+export interface AdminReferral {
+  id: number;
+  referee_user_id: number;
+  referee_email: string;
+  status: "signed_up" | "pending" | "qualified" | "disqualified";
+  first_paid_at: string | null;
+  qualifies_at: string | null;
+  disqualified_reason: string | null;
+  created_at: string;
+}
+
+export interface AdminReferralReward {
+  id: number;
+  milestone: number;
+  status: "banked" | "scheduled" | "applied" | "revoked" | "forfeited";
+  method: "pause" | "refund" | "manual" | null;
+  cycle_start: string | null;
+  cycle_end: string | null;
+  refund_id: string | null;
+  actor: string | null;
+  note: string | null;
+  earned_at: string;
+  applied_at: string | null;
 }

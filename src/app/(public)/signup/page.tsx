@@ -5,6 +5,11 @@ import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import {
+  normalizeReferralCode,
+  readReferralCookie,
+  writeReferralCookie,
+} from "@/lib/referrals/shared";
 
 export default function SignupPage() {
   const [displayName, setDisplayName] = useState("");
@@ -12,6 +17,11 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Pre-filled from /r/<code> (query param, else the cookie it set). The claim
+  // itself happens after the account exists — OnboardingModal posts it from the
+  // cookie — so all this page does is keep the cookie in step with the field.
+  const [referralCode, setReferralCode] = useState("");
+  const [referrerName, setReferrerName] = useState<string | null>(null);
 
   const { signUp, signInWithGoogle, user, loading: authLoading } = useAuth();
 
@@ -24,9 +34,46 @@ export default function SignupPage() {
     }
   }, [authLoading, user]);
 
+  useEffect(() => {
+    const fromUrl = normalizeReferralCode(
+      new URLSearchParams(window.location.search).get("ref")
+    );
+    const code = fromUrl ?? readReferralCookie();
+    if (code) setReferralCode(code);
+  }, []);
+
+  // Show whose invite this is, for any code that looks complete.
+  useEffect(() => {
+    const code = normalizeReferralCode(referralCode);
+    if (!code) {
+      setReferrerName(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/referrals/lookup?code=${encodeURIComponent(code)}`);
+        const data = await res.json();
+        if (!cancelled) setReferrerName(data.valid ? data.referrerName : null);
+      } catch {
+        if (!cancelled) setReferrerName(null);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [referralCode]);
+
+  // Before either signup path: what's in the field is what gets claimed.
+  const rememberReferral = () => {
+    writeReferralCookie(normalizeReferralCode(referralCode));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    rememberReferral();
     setLoading(true);
     try {
       await signUp(email, password, displayName);
@@ -41,6 +88,7 @@ export default function SignupPage() {
 
   const handleGoogle = async () => {
     setError("");
+    rememberReferral();
     setLoading(true);
     try {
       await signInWithGoogle();
@@ -62,6 +110,13 @@ export default function SignupPage() {
         <p className="mt-3 text-[15px] text-charcoal-600 text-center">
           Create a free account. 200 free credits, no credit card required.
         </p>
+
+        {referrerName && (
+          <div className="mt-6 rounded-lg border border-gold-400 bg-gold-100 px-4 py-3 text-center text-[14px] text-charcoal-700">
+            <span className="font-medium text-charcoal-900">{referrerName}</span> invited
+            you to Legal Brain.
+          </div>
+        )}
 
         <button
           onClick={handleGoogle}
@@ -113,6 +168,15 @@ export default function SignupPage() {
             placeholder="Minimum 8 characters"
             required
             minLength={8}
+          />
+          <Input
+            label="Referral code (optional)"
+            type="text"
+            value={referralCode}
+            onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+            placeholder="e.g. PRIYA7KQ"
+            autoComplete="off"
+            maxLength={16}
           />
 
           {error && (

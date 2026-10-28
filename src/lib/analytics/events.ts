@@ -73,6 +73,21 @@ export const EVENTS = {
   TOPUP_PURCHASED: "topup_purchased",
   CREDITS_REFILLED: "credits_refilled",
   ADMIN_ACTION: "admin_action_performed",
+  SUBSCRIPTION_PAUSED: "subscription_paused",
+  SUBSCRIPTION_RESUMED: "subscription_resumed",
+
+  // ── Referrals ─────────────────────────────────────────────────────────────
+  // Server-side events are sent against the REFERRER, with the referee as a
+  // property, so one person's funnel reads top to bottom in their timeline —
+  // except REFERRAL_CLAIMED, which belongs to the new user who claimed it.
+  REFERRAL_CLAIMED: "referral_claimed",
+  REFERRAL_FIRST_PAYMENT: "referral_first_payment",
+  REFERRAL_QUALIFIED: "referral_qualified",
+  REFERRAL_DISQUALIFIED: "referral_disqualified",
+  REFERRAL_REWARD_EARNED: "referral_reward_earned",
+  REFERRAL_REWARD_SCHEDULED: "referral_reward_scheduled",
+  REFERRAL_REWARD_APPLIED: "referral_reward_applied",
+  REFERRAL_REWARD_FORFEITED: "referral_reward_forfeited",
 
   // ── Client-side (clicks only) ─────────────────────────────────────────────
   UPGRADE_PROMPT_SHOWN: "upgrade_prompt_shown",
@@ -86,6 +101,8 @@ export const EVENTS = {
   CITATION_OPENED: "citation_opened",
   OCR_RESULT_DOWNLOADED: "ocr_result_downloaded",
   TRANSLATION_RESULT_DOWNLOADED: "translation_result_downloaded",
+  REFERRAL_LINK_COPIED: "referral_link_copied",
+  REFERRAL_LINK_SHARED: "referral_link_shared",
 } as const;
 
 export type EventName = (typeof EVENTS)[keyof typeof EVENTS];
@@ -112,4 +129,6 @@ export const CLIENT_ALLOWED: ReadonlySet<string> = new Set<string>([
   EVENTS.CITATION_OPENED,
   EVENTS.OCR_RESULT_DOWNLOADED,
   EVENTS.TRANSLATION_RESULT_DOWNLOADED,
+  EVENTS.REFERRAL_LINK_COPIED,
+  EVENTS.REFERRAL_LINK_SHARED,
 ]);

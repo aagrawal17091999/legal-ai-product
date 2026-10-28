@@ -193,6 +193,45 @@ export default function AdminUserProfilePage() {
     );
   };
 
+  const rewardAction = (rewardId: number, action: RewardAction) => {
+    if (action === "revoke" && !window.confirm("Revoke this free month? It can't be re-earned.")) {
+      return;
+    }
+    act(
+      `/api/admin/referral-rewards/${rewardId}`,
+      { method: "POST", body: JSON.stringify({ action, reason }) },
+      (r) => {
+        switch (r.status) {
+          case "scheduled":
+            return r.method === "refund"
+              ? `Booked: the renewal on ${new Date(String(r.cycleStart)).toLocaleDateString()} will be refunded when it charges.`
+              : `Paused. The renewal on ${new Date(String(r.cycleStart)).toLocaleDateString()} is skipped; billing resumes ${new Date(String(r.cycleEnd)).toLocaleDateString()}.`;
+          case "chained":
+            return "Month finished; the next banked month started straight after (still paused).";
+          case "resumed":
+            return "Month finished and billing resumed.";
+          case "undone":
+            return "Billing resumed before the renewal; the month is banked again.";
+          case "applied":
+            return "Recorded as given by hand.";
+          case "revoked":
+            return "Month revoked.";
+          default:
+            return "Done.";
+        }
+      }
+    );
+  };
+
+  const disqualify = (referralId: number) => {
+    if (!window.confirm("Disqualify this referral? It stops counting toward free months.")) return;
+    act(
+      `/api/admin/referrals/${referralId}`,
+      { method: "POST", body: JSON.stringify({ action: "disqualify", reason }) },
+      () => "Referral disqualified."
+    );
+  };
+
   if (denied) {
     return (
       <div className="flex-1 overflow-y-auto bg-ivory-50">
@@ -442,6 +481,16 @@ export default function AdminUserProfilePage() {
           </Card>
         </div>
 
+        {/* --------------------------------------------------------- referrals */}
+        <div className="mt-6">
+          <ReferralsCard
+            data={data.referral}
+            busy={busy}
+            onRewardAction={rewardAction}
+            onDisqualify={disqualify}
+          />
+        </div>
+
         {/* ------------------------------------------------------------ errors */}
         <div className="mt-10">
           <div className="flex flex-wrap items-end justify-between gap-3">
@@ -610,6 +659,115 @@ export default function AdminUserProfilePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+type RewardAction = "apply" | "complete" | "mark_applied" | "revoke";
+
+function ReferralsCard({
+  data,
+  busy,
+  onRewardAction,
+  onDisqualify,
+}: {
+  data: AdminUserDetail["referral"];
+  busy: boolean;
+  onRewardAction: (rewardId: number, action: RewardAction) => void;
+  onDisqualify: (referralId: number) => void;
+}) {
+  const day = (d: string | null) => (d ? new Date(d).toLocaleDateString() : "—");
+  const qualified = data.referrals.filter((r) => r.status === "qualified").length;
+  return (
+    <Card title="Referrals">
+      <p className="text-[13px] text-charcoal-600">
+        Code <span className="font-mono text-charcoal-900">{data.code ?? "not allocated yet"}</span>
+        {" · "}
+        {data.referrals.length} referred · {qualified} qualified
+        {data.referredBy ? (
+          <>
+            {" · referred by "}
+            <Link href={`/admin/users/${data.referredBy.id}`} className="text-gold-700 hover:underline">
+              {data.referredBy.email}
+            </Link>{" "}
+            ({data.referredBy.status.replace(/_/g, " ")})
+          </>
+        ) : null}
+      </p>
+
+      {data.rewards.length > 0 && (
+        <ul className="mt-4 space-y-2 text-[13px]">
+          {data.rewards.map((w) => (
+            <li
+              key={w.id}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ivory-200 px-3 py-2"
+            >
+              <span className="text-charcoal-900">
+                Free month #{w.milestone} · {w.status}
+                {w.method ? ` (${w.method})` : ""}
+                <span className="ml-2 text-[11px] text-charcoal-400">
+                  {w.cycle_start ? `skips ${day(w.cycle_start)} → ${day(w.cycle_end)}` : `earned ${day(w.earned_at)}`}
+                  {w.actor ? ` · ${w.actor}` : ""}
+                  {w.note ? ` · ${w.note}` : ""}
+                </span>
+              </span>
+              <span className="flex flex-wrap gap-2">
+                {w.status === "banked" && (
+                  <>
+                    <Button size="sm" variant="primary" disabled={busy} onClick={() => onRewardAction(w.id, "apply")}>
+                      Apply now
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => onRewardAction(w.id, "mark_applied")}>
+                      Mark given by hand
+                    </Button>
+                    <Button size="sm" variant="destructive" disabled={busy} onClick={() => onRewardAction(w.id, "revoke")}>
+                      Revoke
+                    </Button>
+                  </>
+                )}
+                {w.status === "scheduled" && w.method === "pause" && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => onRewardAction(w.id, "complete")}>
+                    {w.cycle_start && new Date(w.cycle_start) > new Date() ? "Undo (resume)" : "Finish month"}
+                  </Button>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {data.referrals.length === 0 ? (
+        <p className="mt-4 text-[13px] text-charcoal-600">Hasn&apos;t referred anyone.</p>
+      ) : (
+        <ul className="mt-4 space-y-1.5 text-[13px]">
+          {data.referrals.map((r) => (
+            <li key={r.id} className="flex flex-wrap items-baseline justify-between gap-2">
+              <Link href={`/admin/users/${r.referee_user_id}`} className="text-charcoal-900 hover:underline">
+                {r.referee_email}
+              </Link>
+              <span className="flex items-baseline gap-3 text-charcoal-600">
+                {r.status.replace(/_/g, " ")}
+                {r.status === "pending" ? ` · counts ${day(r.qualifies_at)}` : ""}
+                {r.disqualified_reason ? ` · ${r.disqualified_reason}` : ""}
+                {r.status !== "disqualified" && (
+                  <button
+                    disabled={busy}
+                    onClick={() => onDisqualify(r.id)}
+                    className="text-[12px] text-burgundy-700 hover:underline disabled:opacity-50"
+                  >
+                    disqualify
+                  </button>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-4 text-[12px] text-charcoal-400">
+        &ldquo;Apply now&rdquo; runs the same code as the cron, without waiting for the 3-day window.
+        &ldquo;Mark given by hand&rdquo; only records a month you already gave in the Razorpay dashboard.
+        The note above is saved with each action.
+      </p>
+    </Card>
   );
 }
 

@@ -1,0 +1,24 @@
+# Referral program tick: settles referrals whose 7-day window has passed, banks
+# free months, grants a free month's credits, and — only with
+# REFERRAL_REWARDS_AUTO=on — pauses/resumes subscriptions to skip renewals.
+# See src/app/api/cron/referrals/route.ts.
+#
+# Install (as root):
+#   cp deploy/systemd/nyayasearch-referrals.* /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now nyayasearch-referrals.timer
+#
+# `User=` and `WorkingDirectory=` are placeholders — bootstrap-box.sh rewrites
+# both to the box's actual run user / checkout path.
+[Unit]
+Description=NyayaSearch referral program tick
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+Environment=CRON_TARGET_BASE=http://127.0.0.1:3000
+ExecStart=/bin/bash scripts/cron-tick.sh /api/cron/referrals

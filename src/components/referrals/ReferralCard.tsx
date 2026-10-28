@@ -1,0 +1,192 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
+import Button from "@/components/ui/Button";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
+import type { ReferralStatus, ReferralSummary } from "@/lib/referrals/shared";
+
+const STATUS_LABEL: Record<ReferralStatus, string> = {
+  signed_up: "Signed up, not paying yet",
+  pending: "Paying — confirming",
+  qualified: "Paying ✓",
+  disqualified: "Didn't qualify",
+};
+
+function fmt(date: string | null): string {
+  return date
+    ? new Date(date).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })
+    : "—";
+}
+
+/**
+ * "Refer & earn" on the account page: the user's link, progress toward the next
+ * free month, and who they've referred. Anchored at #refer so the sidebar link
+ * can land on it.
+ */
+export default function ReferralCard() {
+  const { getToken } = useAuth();
+  const [data, setData] = useState<ReferralSummary | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const res = await fetch("/api/referrals", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const summary = (await res.json()) as ReferralSummary;
+        if (cancelled) return;
+        setData(summary);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getToken]);
+
+  // The card renders after its fetch, too late for the browser's own jump to
+  // #refer — do it once the content is there.
+  useEffect(() => {
+    if (data && window.location.hash === "#refer") {
+      document.getElementById("refer")?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [data]);
+
+  if (failed) return null;
+
+  const message = data
+    ? `I use Legal Brain for legal research — case law with citations you can check. Sign up with my link: ${data.link}`
+    : "";
+
+  const copy = async () => {
+    if (!data) return;
+    try {
+      await navigator.clipboard.writeText(data.link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+      trackClick(EVENTS.REFERRAL_LINK_COPIED, { code: data.code });
+    } catch {
+      /* Clipboard blocked: the link is on screen to select by hand. */
+    }
+  };
+
+  const shared = (channel: string) => {
+    if (data) trackClick(EVENTS.REFERRAL_LINK_SHARED, { code: data.code, channel });
+  };
+
+  return (
+    <div id="refer" className="bg-ivory-100 rounded-xl border border-ivory-200 p-8 scroll-mt-8">
+      <h2 className="font-serif text-2xl text-charcoal-900 mb-2">Refer &amp; earn</h2>
+      <p className="text-[14px] text-charcoal-600 mb-6">
+        Every {data?.perFreeMonth ?? 5} colleagues who subscribe to Pro earn you a month of Pro
+        free — your next renewal is skipped. No limit.
+      </p>
+
+      {!data ? (
+        <p className="text-[14px] text-charcoal-400">Loading…</p>
+      ) : (
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <code className="flex-1 truncate rounded-lg border border-ivory-200 bg-ivory-50 px-3 py-2.5 text-[14px] text-charcoal-900">
+              {data.link}
+            </code>
+            <Button size="sm" onClick={copy}>
+              {copied ? "Copied" : "Copy link"}
+            </Button>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-[13px]">
+            <a
+              href={`https://wa.me/?text=${encodeURIComponent(message)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => shared("whatsapp")}
+              className="rounded-full border border-ivory-200 px-3 py-1.5 text-charcoal-700 hover:border-gold-400"
+            >
+              Share on WhatsApp
+            </a>
+            <a
+              href={`mailto:?subject=${encodeURIComponent("Try Legal Brain")}&body=${encodeURIComponent(message)}`}
+              onClick={() => shared("email")}
+              className="rounded-full border border-ivory-200 px-3 py-1.5 text-charcoal-700 hover:border-gold-400"
+            >
+              Share by email
+            </a>
+            <span className="px-1 py-1.5 text-charcoal-400">
+              Code: <span className="font-mono text-charcoal-700">{data.code}</span>
+            </span>
+          </div>
+
+          <div className="mt-8">
+            <div className="flex items-baseline justify-between text-[14px]">
+              <span className="text-charcoal-600">Toward your next free month</span>
+              <span className="font-medium text-charcoal-900">
+                {data.progress} of {data.perFreeMonth} paying
+              </span>
+            </div>
+            <div className="mt-2 flex gap-1.5" aria-hidden>
+              {Array.from({ length: data.perFreeMonth }, (_, i) => (
+                <div
+                  key={i}
+                  className={`h-2 flex-1 rounded-full ${
+                    i < data.progress ? "bg-gold-500" : "bg-ivory-200"
+                  }`}
+                />
+              ))}
+            </div>
+            <p className="mt-3 text-[13px] text-charcoal-600">
+              {data.counts.signedUp} signed up · {data.counts.qualified} paying
+              {data.counts.pending > 0 ? ` · ${data.counts.pending} confirming` : ""} ·{" "}
+              {data.months.earned} free month{data.months.earned === 1 ? "" : "s"} earned
+              {data.months.banked > 0 ? ` (${data.months.banked} still to use)` : ""}
+            </p>
+          </div>
+
+          {data.current && (
+            <p className="mt-5 rounded-lg border border-gold-400 bg-gold-100 px-4 py-3 text-[13px] leading-relaxed text-charcoal-700">
+              Your renewal on {fmt(data.current.start)} is free — a referral reward. Billing
+              picks up again on {fmt(data.current.end)}.
+            </p>
+          )}
+          {!data.current && data.months.banked > 0 && (
+            <p className="mt-5 rounded-lg border border-gold-400 bg-gold-100 px-4 py-3 text-[13px] leading-relaxed text-charcoal-700">
+              You have {data.months.banked} free month{data.months.banked === 1 ? "" : "s"} waiting.
+              {" "}It&apos;s used automatically on your next Pro renewal.
+            </p>
+          )}
+
+          {data.referrals.length > 0 && (
+            <ul className="mt-6 divide-y divide-ivory-200 border-t border-ivory-200 text-[13px]">
+              {data.referrals.map((r, i) => (
+                <li key={i} className="flex flex-wrap items-baseline justify-between gap-2 py-2.5">
+                  <span className="text-charcoal-900">
+                    {r.name} <span className="text-charcoal-400">({r.email})</span>
+                  </span>
+                  <span className="text-charcoal-600">
+                    {STATUS_LABEL[r.status]}
+                    {r.status === "pending" && r.qualifiesAt
+                      ? ` · counts from ${fmt(r.qualifiesAt)}`
+                      : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-5 text-[12px] leading-relaxed text-charcoal-400">
+            A referral counts once their first Pro payment is 7 days old and hasn&apos;t been
+            refunded. Free months aren&apos;t exchangeable for cash, and unused ones are lost if you
+            cancel your subscription.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}

@@ -14,6 +14,8 @@ import { logError } from "@/lib/error-logger";
 import { track, identify, setOnce } from "@/lib/analytics/server";
 import { trackTopupPurchased } from "@/lib/analytics/payments";
 import { EVENTS } from "@/lib/analytics/events";
+import { recordRefereeFirstCharge } from "@/lib/referrals";
+import { forfeitRewards, refundBookedRenewal } from "@/lib/referrals/rewards";
 
 export async function POST(request: NextRequest) {
   // Safety net: if the webhook secret isn't configured, don't 500 — Razorpay
@@ -188,6 +190,43 @@ export async function POST(request: NextRequest) {
                 last_subscription_payment_at: new Date(),
               });
             }
+
+            // A referred user's first charge starts their 7-day pending window.
+            // Never fails the webhook: the subscriber's own grant above already
+            // landed, and a retry would only repeat this same idempotent step.
+            if (paidCount === 1) {
+              try {
+                await recordRefereeFirstCharge({
+                  refereeUserId: rows[0].id,
+                  paymentId: payment?.id ?? null,
+                  subscriptionId,
+                  paymentEmail: payment?.email,
+                  paymentContact: payment?.contact,
+                });
+              } catch (err) {
+                logError({
+                  category: "payment",
+                  message: `recordRefereeFirstCharge failed: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                  error: err,
+                  severity: "error",
+                  userId: rows[0].id,
+                  endpoint: "/api/payments/webhook",
+                  method: "POST",
+                  metadata: { subscriptionId, paymentId: payment?.id },
+                });
+              }
+            }
+            // Refund-mode referral month booked against this renewal: refund
+            // it. Allowed to throw — Razorpay's retry is the recovery path.
+            if (payment?.id) {
+              await refundBookedRenewal({
+                userId: rows[0].id,
+                subscriptionId,
+                paymentId: payment.id,
+              });
+            }
           }
         }
         break;
@@ -277,6 +316,10 @@ export async function POST(request: NextRequest) {
                 WHERE user_id = $1`,
               [rows[0].id]
             );
+            // Unused referral free months go with the subscription — covers a
+            // cancel from the Razorpay dashboard or after failed renewals,
+            // which never pass through our cancel routes.
+            await forfeitRewards(rows[0].id, `subscription ${String(cancelEntity?.status)}`);
             track(EVENTS.SUBSCRIPTION_ENDED, {
               userId: rows[0].id,
               insertId: `sub_end:${subscriptionId}`,
@@ -289,6 +332,58 @@ export async function POST(request: NextRequest) {
               },
             });
           }
+        }
+        break;
+      }
+
+      case "subscription.paused":
+      case "subscription.resumed": {
+        // Referral free months pause and resume subscriptions on purpose, and
+        // our own table already says what that means (rewards.ts). A pause we
+        // didn't make — the customer pausing their UPI mandate from their bank
+        // app, which only they can undo — is worth a human look: the renewal
+        // won't be collected and nothing here will notice otherwise.
+        const entity = payload.subscription?.entity;
+        const subscriptionId = entity?.id;
+        if (!subscriptionId) break;
+        const { rows } = await pool.query<{ id: number; ours: boolean }>(
+          `SELECT u.id,
+                  EXISTS (SELECT 1 FROM referral_rewards r
+                           WHERE r.razorpay_subscription_id = $1
+                             AND r.method = 'pause'
+                             AND r.status IN ('scheduled', 'applied')
+                             AND r.updated_at > NOW() - interval '2 days') AS ours
+             FROM users u WHERE u.razorpay_subscription_id = $1`,
+          [subscriptionId]
+        );
+        const userId = rows[0]?.id ?? null;
+        const ours = rows[0]?.ours === true;
+        track(
+          eventType === "subscription.paused"
+            ? EVENTS.SUBSCRIPTION_PAUSED
+            : EVENTS.SUBSCRIPTION_RESUMED,
+          {
+            userId,
+            insertId: `${eventType}:${subscriptionId}:${entity?.paused_at ?? entity?.current_end ?? ""}`,
+            properties: {
+              razorpay_subscription_id: subscriptionId,
+              initiated_by: entity?.pause_initiated_by ?? null,
+              referral_reward: ours,
+            },
+          }
+        );
+        if (eventType === "subscription.paused" && !ours) {
+          logError({
+            category: "payment",
+            message: `Subscription ${subscriptionId} was paused outside the referral flow (initiated by ${
+              entity?.pause_initiated_by ?? "unknown"
+            }); renewals will not be collected until it is resumed`,
+            severity: "warning",
+            userId: userId ?? undefined,
+            endpoint: "/api/payments/webhook",
+            method: "POST",
+            metadata: { subscriptionId },
+          });
         }
         break;
       }

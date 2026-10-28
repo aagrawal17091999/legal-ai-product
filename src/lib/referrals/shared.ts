@@ -1,0 +1,75 @@
+/**
+ * Referral program constants and helpers that are safe in the browser. The
+ * server-only logic lives in ./index.ts (attribution, qualification) and
+ * ./rewards.ts (turning earned months into skipped renewals).
+ */
+
+/** Qualified referrals per free month. */
+export const REFERRALS_PER_FREE_MONTH = 5;
+
+/** A first payment counts once it has gone this long without a refund. */
+export const REFERRAL_PENDING_DAYS = 7;
+
+/**
+ * How long after signup a code can still be attached. Long enough for someone
+ * who skipped the field to add it from the onboarding step on a later visit;
+ * short enough that an established account can't be retro-fitted to a referrer.
+ */
+export const REFERRAL_CLAIM_WINDOW_DAYS = 7;
+
+/** Carries a code from /r/<code> (or the signup field) through signup. */
+export const REFERRAL_COOKIE = "lb_ref";
+export const REFERRAL_COOKIE_MAX_AGE = 60 * 60 * 24 * 30;
+
+/** Uppercase letters and digits, 4–16 long. Anything else is not a code. */
+export function normalizeReferralCode(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const code = input.trim().toUpperCase();
+  return /^[A-Z0-9]{4,16}$/.test(code) ? code : null;
+}
+
+export function readReferralCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${REFERRAL_COOKIE}=([^;]*)`));
+  return match ? normalizeReferralCode(decodeURIComponent(match[1])) : null;
+}
+
+export function writeReferralCookie(code: string | null): void {
+  if (typeof document === "undefined") return;
+  document.cookie = code
+    ? `${REFERRAL_COOKIE}=${encodeURIComponent(code)}; path=/; max-age=${REFERRAL_COOKIE_MAX_AGE}; samesite=lax`
+    : `${REFERRAL_COOKIE}=; path=/; max-age=0; samesite=lax`;
+}
+
+/** Why a claim was refused, in words a user can act on. */
+export const CLAIM_ERRORS: Record<string, string> = {
+  invalid_code: "That referral code doesn't exist. Check it and try again.",
+  self: "You can't use your own referral code.",
+  already_referred: "Your account already has a referral code attached.",
+  too_late: `Referral codes can only be added within ${REFERRAL_CLAIM_WINDOW_DAYS} days of signing up.`,
+  already_paying: "Referral codes can only be added before your first payment.",
+};
+
+export type ReferralStatus = "signed_up" | "pending" | "qualified" | "disqualified";
+export type RewardStatus = "banked" | "scheduled" | "applied" | "revoked" | "forfeited";
+
+/** GET /api/referrals — the referrer's own view. */
+export interface ReferralSummary {
+  code: string;
+  link: string;
+  perFreeMonth: number;
+  counts: { signedUp: number; pending: number; qualified: number };
+  /** Qualified referrals toward the next free month (0..perFreeMonth-1). */
+  progress: number;
+  months: { earned: number; banked: number; applied: number };
+  /** The free month in progress or booked, if any. */
+  current: { start: string | null; end: string | null } | null;
+  referrals: {
+    name: string;
+    email: string;
+    status: ReferralStatus;
+    joinedAt: string;
+    firstPaidAt: string | null;
+    qualifiesAt: string | null;
+  }[];
+}

@@ -60,6 +60,12 @@ export interface TrackOptions {
    * what makes it safe to emit from a retried webhook or a re-run cron tick.
    */
   insertId?: string;
+  /**
+   * The browser's Mixpanel $device_id. When set, the event carries both
+   * $device_id and $user_id, which merges that device's anonymous history into
+   * the user (Simplified ID Merge). Only the signup/sign-in events need it.
+   */
+  deviceId?: string | null;
 }
 
 /**
@@ -187,6 +193,9 @@ export function track(event: EventName, opts: TrackOptions): void {
           // value, so send a stable sentinel rather than dropping it.
           distinct_id: opts.userId != null ? String(opts.userId) : "anonymous",
           ...(opts.insertId ? { $insert_id: opts.insertId } : {}),
+          ...(opts.deviceId && opts.userId != null
+            ? { $device_id: opts.deviceId, $user_id: String(opts.userId) }
+            : {}),
           ...sanitize(account?.event),
           // Call-site properties win: an event that knows the balance *after*
           // its own debit, say, is more precise than the snapshot.

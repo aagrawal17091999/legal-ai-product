@@ -122,6 +122,8 @@ export async function getOrCreateUser(firebaseUser: {
   photoURL?: string;
   /** Firebase's sign_in_provider claim ("google.com", "password"); analytics only. */
   signInProvider?: string;
+  /** The browser's Mixpanel $device_id, so the signup event links its page views. */
+  deviceId?: string | null;
 }): Promise<User> {
   const { rows } = await pool.query<User>(
     `INSERT INTO users (firebase_uid, email, display_name, photo_url)
@@ -153,6 +155,7 @@ export async function getOrCreateUser(firebaseUser: {
       userId: user.id,
       // Dedup key, so a retried request during signup can't double-count.
       insertId: `signup:${user.id}`,
+      deviceId: firebaseUser.deviceId,
       properties: {
         email: user.email,
         name: user.display_name,

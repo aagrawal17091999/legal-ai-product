@@ -102,6 +102,29 @@ export function identifyUser(userId: number, plan?: string): void {
   }
 }
 
+/**
+ * The SDK's anonymous device id, for the server to put on the signup/sign-in
+ * events. An event carrying both $device_id and $user_id is what makes Mixpanel
+ * attach this browser's pre-signup page views to the user; sending it from the
+ * server means that link no longer depends on the browser identifying in time
+ * or sending another event afterwards.
+ *
+ * Falls back to the SDK's persisted state, so it still works if the chunk
+ * hasn't finished loading on this page but did on an earlier one.
+ */
+export function getDeviceId(): string | null {
+  if (typeof window === "undefined" || !TOKEN) return null;
+  try {
+    const id = mp?.get_property("$device_id");
+    if (typeof id === "string" && id) return id;
+    const raw = window.localStorage.getItem(`mp_${TOKEN}_mixpanel`);
+    const stored = raw ? JSON.parse(raw).$device_id : null;
+    return typeof stored === "string" && stored ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
 export function resetAnalytics(): void {
   if (!mp) return;
   try {

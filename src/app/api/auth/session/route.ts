@@ -47,12 +47,18 @@ export async function POST(request: NextRequest) {
     // NULL for everyone who didn't later edit it on /account. Google tokens
     // carry both; email signups carry the name once useAuth force-refreshes
     // the token after updateProfile.
+    // Client-supplied, so only shape-checked: a forged value can at worst merge
+    // some anonymous history into the forger's own profile.
+    const rawDeviceId = request.headers.get("x-mixpanel-device-id");
+    const deviceId =
+      rawDeviceId && /^[A-Za-z0-9-]{1,64}$/.test(rawDeviceId) ? rawDeviceId : null;
     const user = await getOrCreateUser({
       uid: decoded.uid,
       email: decoded.email || "",
       displayName: typeof decoded.name === "string" ? decoded.name : undefined,
       photoURL: typeof decoded.picture === "string" ? decoded.picture : undefined,
       signInProvider: provider,
+      deviceId,
     });
 
     // This route also runs on every page load and hourly token refresh, so it
@@ -62,6 +68,7 @@ export async function POST(request: NextRequest) {
     track(EVENTS.SIGNED_IN, {
       userId: user.id,
       insertId: `signin:${user.id}:${decoded.auth_time}`,
+      deviceId,
       properties: {
         sign_in_provider: provider ?? null,
         email: user.email,

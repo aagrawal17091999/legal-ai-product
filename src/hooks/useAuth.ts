@@ -11,6 +11,7 @@ import {
   type User as FirebaseUser,
 } from "firebase/auth";
 import { getAuth, googleProvider } from "@/lib/firebase";
+import { getDeviceId } from "@/lib/analytics/client";
 
 interface AuthState {
   user: FirebaseUser | null;
@@ -23,9 +24,14 @@ interface AuthState {
 // no cookie on the next route and bounce the user back to /login.
 async function syncSessionCookie(idToken: string): Promise<void> {
   try {
+    const deviceId = getDeviceId();
     await fetch("/api/auth/session", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Lets the signup event link this browser's anonymous page views.
+        ...(deviceId ? { "X-Mixpanel-Device-Id": deviceId } : {}),
+      },
       body: JSON.stringify({ idToken }),
     });
   } catch {

@@ -58,3 +58,6 @@ __pycache__/
 
 # eval run output (regenerable; the eval SETS are committed, the results are not)
 /eval/results/
+
+# pipeline venv (created by scripts/sync-sc.sh on the box)
+/.venv/

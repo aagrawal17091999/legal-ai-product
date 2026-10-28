@@ -480,26 +480,40 @@ SELECT message_id, jsonb_path_query_array(data->'top_candidates', '$[*].found_in
 
 ## Cron / Automation
 
-### Install weekly SC update cron job
+### Daily Supreme Court sync (new judgments → searchable)
 
 ```bash
-bash pipeline/cron_setup.sh
+ENV_FILE=.env.production.local bash scripts/sync-sc.sh             # what the timer runs
+ENV_FILE=.env.production.local bash scripts/sync-sc.sh --dry-run   # just report what is new
 ```
 
-**When:** On the production server, once.
-**Why:** Installs a cron job that runs **every Sunday at 2:00 AM** to download the current year's SC data and load it into the database. Keeps the corpus up to date automatically.
+**What it does:** `pipeline/sync_sc.py`, for the previous and current year: downloads the year's `metadata.parquet`, diffs it against `supreme_court_cases` on `path`/`cnr`, refreshes `english.tar` only if upstream changed it (ETag), extracts just the new PDFs, inserts the rows (text + R2 upload), then runs field extraction and `reembed_all` embedding **scoped to those years**, and checks every inserted case has chunks. Prints one `SYNC_SUMMARY {json}` line.
 
-**What it runs:** `download_sc.py --year {CURRENT_YEAR}` → `process_and_load.py --source sc --year {CURRENT_YEAR}`
+**Why previous + current year:** upstream rewrites each year's files in place as SCR volumes are published — small drops every 1–2 weeks, ~10 days to a few months after the decision date — and a year keeps growing for months after it ends (2025 gained rows until April 2026). Measured 2026-10-28.
 
-### Check/manage the cron job
+**Safety rails:**
+- Rows whose PDF is not in the tar yet are *not* inserted (listed under `awaiting_pdf`) and are retried next run.
+- Extraction and embedding select pending work from the DB, so a run that dies halfway is finished by the next one.
+- Refuses (exit 2, `critical` row in `error_logs`) if more than `--max-new` (300) rows look new — a sign upstream re-keyed or `DATABASE_URL` is wrong.
+- `flock` on `data/supreme-court/.sync.lock`; a second concurrent run exits 2.
+- R2 upload failure means the row is not inserted (no 404ing PDF downloads).
+- Non-zero exit → `scripts/send-alert.sh` with the summary.
+
+**Install on the box (once):**
 
 ```bash
-# View installed cron jobs
-crontab -l
-
-# View pipeline logs
-tail -f /var/log/nyayasearch-pipeline.log
+sudo cp deploy/systemd/nyayasearch-sync-sc.* /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now nyayasearch-sync-sc.timer
+journalctl -u nyayasearch-sync-sc -n 100 | grep SYNC_SUMMARY
 ```
+
+Runs daily at 04:15. The wrapper creates `.venv/` from `pipeline/requirements.txt` on first run and whenever that file changes. `pipeline/config.py` honours `ENV_FILE` with first-assignment-wins, matching `scripts/*.sh`.
+
+**Reference dump:** the sync writes reference tables in prod only. After a large catch-up, re-run `scripts/dump-reference-data.sh` if other environments should get the new judgments.
+
+**Not covered:** High Courts (no HC incremental sync yet), and paragraph extraction (`backfill_paragraphs.py` — deliberately off, see the paragraph-numbers decision).
+
+`pipeline/cron_setup.sh` (the old weekly crontab) is retired: it could not see upstream additions and never extracted or embedded.
 
 ---
 

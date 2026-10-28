@@ -502,7 +502,9 @@ ENV_FILE=.env.production.local bash scripts/sync-sc.sh --dry-run   # just report
 **Install on the box (once):**
 
 ```bash
-sudo cp deploy/systemd/nyayasearch-sync-sc.* /etc/systemd/system/
+# User= must match the box's run user (root; there is no deploy user), as bootstrap-box.sh does
+sed "s#^User=.*#User=root#" deploy/systemd/nyayasearch-sync-sc.service | sudo tee /etc/systemd/system/nyayasearch-sync-sc.service >/dev/null
+sudo cp deploy/systemd/nyayasearch-sync-sc.timer /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now nyayasearch-sync-sc.timer
 journalctl -u nyayasearch-sync-sc -n 100 | grep SYNC_SUMMARY
 ```

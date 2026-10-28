@@ -17,17 +17,23 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$APP_DIR"
 export ENV_FILE="${ENV_FILE:-.env.production.local}"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "ERROR: env file '$ENV_FILE' not found in $APP_DIR. Run this on the box, in /opt/legal-ai-product." >&2
+  exit 1
+fi
 
 VENV="${PIPELINE_VENV:-$APP_DIR/.venv}"
 REQS="$APP_DIR/pipeline/requirements.txt"
 STAMP="$VENV/.requirements.sha"
 want="$( (sha256sum "$REQS" 2>/dev/null || shasum -a 256 "$REQS") | cut -d' ' -f1)"
 if [ ! -x "$VENV/bin/python" ] || [ "$(cat "$STAMP" 2>/dev/null || true)" != "$want" ]; then
-  echo "Setting up pipeline venv at $VENV"
+  echo "Setting up pipeline venv at $VENV (first run, or requirements changed)."
+  echo "Installing packages; this takes a few minutes and prints nothing until it finishes..."
   python3 -m venv "$VENV"
   "$VENV/bin/pip" install -q --upgrade pip
   "$VENV/bin/pip" install -q -r "$REQS"
   echo "$want" > "$STAMP"
+  echo "Venv ready."
 fi
 
 LOG="$(mktemp)"

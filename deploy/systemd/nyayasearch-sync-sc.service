@@ -1,6 +1,9 @@
 # Daily incremental Supreme Court sync (pipeline/sync_sc.py via scripts/sync-sc.sh).
-# Install with its .timer:
-#   sudo cp deploy/systemd/nyayasearch-sync-sc.* /etc/systemd/system/
+# Install with its .timer. User= must match the box's run user (root on the
+# Hetzner box; there is no deploy user), as bootstrap-box.sh does:
+#   sed "s#^User=.*#User=root#" deploy/systemd/nyayasearch-sync-sc.service \
+#     | sudo tee /etc/systemd/system/nyayasearch-sync-sc.service >/dev/null
+#   sudo cp deploy/systemd/nyayasearch-sync-sc.timer /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now nyayasearch-sync-sc.timer
 #   systemctl list-timers | grep sync-sc

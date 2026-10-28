@@ -27,7 +27,7 @@ def clean_pdf_artifacts(text: str, collapse_whitespace: bool = False) -> str:
     """
     text = re.sub(r'[\x08]', '', text)
     text = re.sub(r'\[?\d{4}\]?\s+\d+\s+S\.C\.R\.?\s*\n?', '', text)
-    text = re.sub(r'Digital Supreme Court Reports\s*\n?', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?:Digital )?Supreme Court Reports\s*\n?', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\n\s*\d{1,4}\s*\n', '\n', text)
     text = re.sub(r'\*\s*Author\b', '', text)
     text = re.sub(r'\n[A-Z][A-Za-z\s.@]+\s+v\.\s+[A-Z][A-Za-z\s.@]+\n', '\n', text)
@@ -621,6 +621,33 @@ def _match_heading(block_text: str) -> str | None:
     return None
 
 
+# Page furniture in SCR PDFs. Pages after the first carry a running header
+# band — "[2026] 6 S.C.R. \x08 593" then the short title (odd pages) or
+# "Supreme Court Reports" (even) — whose blocks all end above ~81pt, while
+# content starts below ~91pt (measured on all 147 judgments synced 2026-10-28).
+# Without this, a headnote box that crosses a page swallowed the header: 1,838
+# judgments had it inside headnotes, 217 in keywords, 146 in cases cited and
+# 103 in act names (20 more lost their acts outright). The band is only
+# dropped on pages whose first band block really is an SCR header, so other
+# layouts are untouched.
+_HEADER_BAND_BOTTOM = 85.0
+_SCR_HEADER_BLOCK_RE = re.compile(
+    r'^\s*(?:\[\d{4}\]\s+(?:SUPP\.\s+)?\d+\s+S\.C\.R\.|\d{1,4}\x08)'
+)
+_AUTHOR_FOOTNOTE_RE = re.compile(r'^\s*\*\s*Author\s*$')
+
+
+def _drop_page_furniture(page_index: int, text_blocks: list) -> list:
+    """text_blocks are PyMuPDF "blocks" tuples sorted top-to-bottom."""
+    kept = [b for b in text_blocks if not _AUTHOR_FOOTNOTE_RE.match(b[4] or '')]
+    if page_index == 0:
+        return kept
+    band = [b for b in kept if b[3] < _HEADER_BAND_BOTTOM]
+    if band and _SCR_HEADER_BLOCK_RE.match(band[0][4] or ''):
+        kept = [b for b in kept if b[3] >= _HEADER_BAND_BOTTOM]
+    return kept
+
+
 def extract_headnote_blocks(pdf_path: str, max_pages: int = 8) -> dict[str, str] | None:
     """Walk the first max_pages of the PDF and return a dict
     {heading_name: content_text} for every recognized headnote section.
@@ -643,7 +670,7 @@ def extract_headnote_blocks(pdf_path: str, max_pages: int = 8) -> dict[str, str]
     current_heading: str | None = None
 
     try:
-        for page in doc[:max_pages]:
+        for page_index, page in enumerate(doc[:max_pages]):
             try:
                 blocks = page.get_text("blocks")
             except Exception:
@@ -651,6 +678,7 @@ def extract_headnote_blocks(pdf_path: str, max_pages: int = 8) -> dict[str, str]
             text_blocks = [b for b in blocks if len(b) >= 7 and b[6] == 0]
             # Sort top-to-bottom, then left-to-right (within ~2pt tolerance).
             text_blocks.sort(key=lambda b: (round(b[1], 0), b[0]))
+            text_blocks = _drop_page_furniture(page_index, text_blocks)
 
             for b in text_blocks:
                 text = (b[4] or "").strip()
@@ -708,9 +736,34 @@ def extract_acts_cited_layout(pdf_path: str) -> list[str] | None:
     return _split_and_validate_acts(content)
 
 
+# SCR running headers that land inside a headnote box when it crosses a page
+# break, e.g. "Evidence Act, 1872.\n[2026] 6 S.C.R. \x08\n595\nPapan Sarkar
+# @ Pranab v. State of West Bengal". Glued onto the last act, they made the
+# whole entry fail _looks_like_act (the "v. " check), so the case lost every
+# act it cited. Page numbers are only removed when tied to a header or a \x08,
+# so a year wrapped onto its own line ("...Procedure,\n1973") survives.
+_RUNNING_HEADER_RES = [
+    re.compile(r'^\[\d{4}\]\s+(?:SUPP\.\s+)?\d+\s+S\.C\.R\.[ \t\x08]*\n\d{1,4}[ \t]*$', re.M),
+    re.compile(r'^\d{1,4}\x08[ \t]*$', re.M),
+    re.compile(r'^\[\d{4}\]\s+(?:SUPP\.\s+)?\d+\s+S\.C\.R\.[ \t\x08]*$', re.M),
+    re.compile(r'^(?:Digital )?Supreme Court Reports[ \t]*$', re.M),
+    re.compile(r'^\*\s*Author\b.*$', re.M),  # "* Author" footnote on the first page
+    # Short-title header; no act name has "v. ". It can wrap ("...v. West
+    # Bengal Board of\nPrimary Education & Ors."), so a following line ending
+    # like a party list goes with it — act names never end in Ors./Anr.
+    re.compile(r'^.*\bv\.\s.*(?:\n.*\b(?:Ors|Anr|Another|Others|Etc)\.?[ \t]*)?$', re.M),
+]
+
+
+def _strip_running_headers(body: str) -> str:
+    for rx in _RUNNING_HEADER_RES:
+        body = rx.sub('', body)
+    return body
+
+
 def _split_and_validate_acts(body: str) -> list[str]:
     """Split semicolon-delimited acts list and filter to act-shaped entries."""
-    flat = _collapse_newlines(body)
+    flat = _collapse_newlines(_strip_running_headers(body))
     entries = [e.strip() for e in flat.split(';')]
     acts = []
     for entry in entries:

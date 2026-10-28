@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 import time
 
@@ -99,7 +100,8 @@ def embed_one_case(
 
     inserted = 0
     chunk_offset = 0
-    for batch in batches:
+    while batches:
+        batch = batches.pop(0)
         attempt = 0
         while True:
             try:
@@ -107,6 +109,17 @@ def embed_one_case(
                 embeddings = result.embeddings
                 break
             except Exception as e:
+                # The batcher only estimates tokens (chars / 2.5), and dense
+                # text runs over: the 853k-char Jayalalithaa judgment came to
+                # 120,572 tokens in a batch budgeted at 100k, failed all three
+                # retries and was silently left unembedded. Splitting the
+                # batch is the only retry that can succeed; order is kept.
+                if "max allowed tokens per submitted batch" in str(e) and len(batch) > 1:
+                    mid = len(batch) // 2
+                    print(f"  case {case_id}: batch of {len(batch)} over Voyage's token limit, splitting")
+                    batches[:0] = [batch[:mid], batch[mid:]]
+                    batch = None
+                    break
                 attempt += 1
                 if attempt >= 3:
                     print(f"  giving up on case {case_id} after 3 attempts: {e}")
@@ -115,6 +128,8 @@ def embed_one_case(
                 sleep_s = 2 ** attempt
                 print(f"  voyage error on case {case_id}: {e} (retry in {sleep_s}s)")
                 time.sleep(sleep_s)
+        if batch is None:
+            continue
 
         for j, (chunk_text_item, embedding) in enumerate(zip(batch, embeddings)):
             cur.execute(
@@ -135,6 +150,47 @@ def embed_one_case(
     )
     conn.commit()
     return inserted
+
+
+def replace_cases(source_table: str, ids: list[int], batch_size: int) -> None:
+    """Re-embed specific cases whose metadata changed (the header is part of
+    every chunk). Old chunks and the progress row are deleted in the same
+    transaction embed_one_case commits, so a failed embed rolls back to the
+    old chunks instead of leaving the case unsearchable."""
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    meta_cols = SC_METADATA_COLUMNS if source_table == "supreme_court_cases" else HC_METADATA_COLUMNS
+    cur.execute(
+        f"""SELECT c.id, c.judgment_text, {meta_cols} FROM {source_table} c
+            WHERE c.id = ANY(%s) AND c.judgment_text IS NOT NULL AND c.judgment_text != ''
+            ORDER BY c.id""",
+        (ids,),
+    )
+    columns = [desc[0] for desc in cur.description]
+    cases = [dict(zip(columns, row)) for row in cur.fetchall()]
+    voyage_client = voyageai.Client(api_key=VOYAGE_API_KEY)
+    ok = failed = 0
+    for case in tqdm(cases, desc=f"replace {source_table}"):
+        # A rollback restores the OLD progress row too, so success means a
+        # progress row stamped inside this transaction, not merely a row.
+        cur.execute("SELECT now()")
+        started = cur.fetchone()[0]
+        cur.execute("DELETE FROM case_chunks WHERE source_table = %s AND source_id = %s",
+                    (source_table, case["id"]))
+        cur.execute("DELETE FROM reembed_progress WHERE source_table = %s AND source_id = %s",
+                    (source_table, case["id"]))
+        embed_one_case(conn, cur, voyage_client, source_table, case, batch_size)
+        cur.execute("SELECT 1 FROM reembed_progress WHERE source_table = %s AND source_id = %s "
+                    "AND completed_at >= %s", (source_table, case["id"], started))
+        if cur.fetchone():
+            ok += 1
+        else:
+            failed += 1
+            print(f"  case {case['id']}: re-embed failed, old chunks kept")
+    cur.close()
+    conn.close()
+    print(f"\nReplaced {ok} cases, {failed} failed (kept old chunks), "
+          f"{len(ids) - len(cases)} ids had no text")
 
 
 def run(source: str, court_filter: str | None, batch_size: int):
@@ -181,11 +237,22 @@ def main():
     parser.add_argument("--source", choices=["sc", "hc", "all"], default="all")
     parser.add_argument("--court", type=str, help="High Court name filter (when --source hc)")
     parser.add_argument("--batch-size", type=int, default=VOYAGE_BATCH_SIZE)
+    parser.add_argument("--replace-ids-file", type=str, default=None,
+                        help="JSON list of ids to re-embed even if already done "
+                             "(after their metadata changed); needs --source sc or hc")
     args = parser.parse_args()
 
     if args.source != "hc" and args.court:
         print("--court only applies to --source hc", file=sys.stderr)
         sys.exit(2)
+
+    if args.replace_ids_file:
+        if args.source == "all":
+            print("--replace-ids-file needs --source sc or hc", file=sys.stderr)
+            sys.exit(2)
+        table = "supreme_court_cases" if args.source == "sc" else "high_court_cases"
+        replace_cases(table, json.load(open(args.replace_ids_file)), args.batch_size)
+        return
 
     run(args.source, args.court, args.batch_size)
 

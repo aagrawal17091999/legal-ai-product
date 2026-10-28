@@ -136,6 +136,7 @@ def backfill_table(
     dry_run: bool,
     with_llm: bool,
     min_confidence: float,
+    ids: list[int] | None = None,
 ):
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
@@ -144,13 +145,15 @@ def backfill_table(
     else:
         cols = "id, judgment_text, acts_cited, year, court_name, pdf_link"
 
-    query = (
-        f"SELECT {cols} FROM {table} "
-        f"WHERE judgment_text IS NOT NULL ORDER BY id"
-    )
+    query = f"SELECT {cols} FROM {table} WHERE judgment_text IS NOT NULL"
+    params: list = []
+    if ids:
+        query += " AND id = ANY(%s)"
+        params.append(ids)
+    query += " ORDER BY id"
     if limit:
         query += f" LIMIT {int(limit)}"
-    cur.execute(query)
+    cur.execute(query, params)
     rows = cur.fetchall()
     cur.close()
 
@@ -228,6 +231,7 @@ def backfill_table(
                 logger.info(f"  after:  {consensus.acts}")
             continue
 
+        logger.info(f"[{table}] id={case_id} acts {stored_acts} -> {consensus.acts}")
         write_cur.execute(
             f"UPDATE {table} SET "
             f"acts_cited = %s::jsonb, "
@@ -270,7 +274,10 @@ def main():
                         help="Re-run Haiku for the LLM vote (costs API quota)")
     parser.add_argument("--min-confidence", type=float, default=0.0,
                         help="Only overwrite stored acts_cited if new confidence >= this")
+    parser.add_argument("--ids-file", type=str, default=None,
+                        help="JSON list of row ids to restrict the backfill to")
     args = parser.parse_args()
+    ids = json.load(open(args.ids_file)) if args.ids_file else None
 
     load_env()
     conn = get_db_connection()
@@ -286,7 +293,7 @@ def main():
         for source, table in targets:
             total += backfill_table(
                 conn, table, source, args.limit,
-                args.dry_run, args.with_llm, args.min_confidence,
+                args.dry_run, args.with_llm, args.min_confidence, ids,
             )
 
         logger.info(f"TOTAL updated: {total} {'(dry-run)' if args.dry_run else ''}")

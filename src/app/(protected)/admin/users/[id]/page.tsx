@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
+import { REFERRAL_SOURCES } from "@/lib/onboarding";
 import type { AdminUserDetail, ErrorLog, ErrorSeverity } from "@/types";
 
 /**
@@ -29,6 +30,10 @@ const SEVERITY_STYLE: Record<ErrorSeverity, string> = {
 };
 
 const QUICK_GRANTS = [100, 500, 1000];
+
+function referralLabel(value: string): string {
+  return REFERRAL_SOURCES.find((s) => s.value === value)?.label ?? value;
+}
 
 export default function AdminUserProfilePage() {
   const params = useParams<{ id: string }>();
@@ -245,6 +250,20 @@ export default function AdminUserProfilePage() {
               joined {new Date(user.created_at).toLocaleDateString()}
               {user.is_staff ? " · staff" : ""}
               {user.unlimited_credits ? " · unlimited credits" : ""}
+            </p>
+            <p className="mt-1 text-[14px] text-charcoal-600">
+              {user.phone ? (
+                <a href={`tel:${user.phone}`} className="hover:text-charcoal-900">
+                  {user.phone}
+                </a>
+              ) : (
+                "No phone yet"
+              )}
+              {user.referral_source
+                ? ` · heard via ${referralLabel(user.referral_source)}${
+                    user.referral_detail ? ` (${user.referral_detail})` : ""
+                  }`
+                : ""}
             </p>
           </div>
           <Button variant="outline" onClick={load} disabled={loading || busy}>

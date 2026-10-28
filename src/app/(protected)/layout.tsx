@@ -8,6 +8,7 @@ import Sidebar from "@/components/chat/Sidebar";
 import CreditsProvider from "@/components/credits/CreditsProvider";
 import CreditMeter from "@/components/credits/CreditMeter";
 import LowBalanceBanner from "@/components/credits/LowBalanceBanner";
+import OnboardingModal from "@/components/OnboardingModal";
 import { useChat } from "@/hooks/useChat";
 import type { SearchFilters } from "@/types";
 
@@ -143,6 +144,8 @@ export default function ProtectedLayout({
           purchase modals are only ever shown to one. */}
       <CreditsProvider>
         <ProtectedContent>{children}</ProtectedContent>
+        {/* After the content so it stacks above the sidebar (same z-50). */}
+        <OnboardingModal />
       </CreditsProvider>
     </AuthGuard>
   );

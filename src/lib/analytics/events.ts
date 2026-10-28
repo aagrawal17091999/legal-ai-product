@@ -13,6 +13,7 @@ export const EVENTS = {
   // ── Acquisition / activation ──────────────────────────────────────────────
   SIGNED_UP: "user_signed_up",
   SIGNED_IN: "user_signed_in",
+  ONBOARDING_COMPLETED: "user_onboarding_completed",
 
   // ── Case-law research ─────────────────────────────────────────────────────
   RESEARCH_ASKED: "research_question_asked",

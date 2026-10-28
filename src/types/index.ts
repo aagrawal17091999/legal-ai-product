@@ -80,6 +80,11 @@ export interface User {
   comped_plan: boolean;
   /** Never metered, never gated (migration 025). */
   unlimited_credits: boolean;
+  /** Post-signup onboarding (migration 034). */
+  phone: string | null;
+  referral_source: string | null;
+  referral_detail: string | null;
+  onboarded_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -409,6 +414,9 @@ export interface AdminUserDetail {
     comped_plan: boolean;
     unlimited_credits: boolean;
     is_staff: boolean;
+    phone: string | null;
+    referral_source: string | null;
+    referral_detail: string | null;
     created_at: string;
   };
   balance: {

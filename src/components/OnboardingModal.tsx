@@ -40,12 +40,19 @@ export default function OnboardingModal() {
   const [submitting, setSubmitting] = useState(false);
   const [referralCode, setReferralCode] = useState("");
   const [referredBy, setReferredBy] = useState<string | null>(null);
+  const [referralNote, setReferralNote] = useState<string | null>(null);
 
-  /** POST a code; returns null on success, else the message to show. */
+  /**
+   * POST a code. "refused" is the server's definite no (400, with a reason to
+   * show); "unavailable" means no answer yet — signed-in state still loading,
+   * a network blip, a 5xx — and the caller should keep the code and retry.
+   */
   const claimReferral = useCallback(
-    async (code: string): Promise<string | null> => {
+    async (
+      code: string
+    ): Promise<{ kind: "ok" } | { kind: "refused" | "unavailable"; message: string }> => {
       const token = await getToken();
-      if (!token) return "Please sign in again.";
+      if (!token) return { kind: "unavailable", message: "Please sign in again." };
       const res = await fetch("/api/referrals/claim", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -55,23 +62,35 @@ export default function OnboardingModal() {
       if (res.ok) {
         setReferredBy(data.referrerName ?? "a colleague");
         setSource("friend");
-        return null;
+        return { kind: "ok" };
       }
-      return data.error || "Couldn't apply that referral code.";
+      return {
+        kind: res.status === 400 ? "refused" : "unavailable",
+        message: data.error || "Couldn't apply that referral code.",
+      };
     },
     [getToken]
   );
 
-  // Claim a code carried over from the /r/ link or the signup form. Any definite
-  // answer clears the cookie, so a refused code isn't retried on every page.
+  // Claim a code carried over from the /r/ link or the signup form. The code
+  // shows in the field straight away. The cookie is cleared only on the server's
+  // definite answer: right after signup the sign-in token can still be loading,
+  // and treating that as final used to throw the code away before it was sent.
+  // getToken changes identity once the user is known, which re-runs this.
   useEffect(() => {
     if (!REFERRALS_ENABLED) return;
     const code = readReferralCookie();
     if (!code) return;
+    setReferralCode((current) => current || code);
     (async () => {
       try {
-        await claimReferral(code);
+        const result = await claimReferral(code);
+        if (result.kind === "unavailable") return;
         writeReferralCookie(null);
+        if (result.kind === "refused") {
+          setReferralCode("");
+          setReferralNote(`Referral code ${code} wasn't applied: ${result.message}`);
+        }
       } catch {
         /* Network trouble: keep the cookie and try on the next page load. */
       }
@@ -123,11 +142,12 @@ export default function OnboardingModal() {
     setSubmitting(true);
     try {
       if (!referredBy && typedCode) {
-        const claimError = await claimReferral(typedCode);
-        if (claimError) {
-          setError(claimError);
+        const result = await claimReferral(typedCode);
+        if (result.kind !== "ok") {
+          setError(result.message);
           return;
         }
+        writeReferralCookie(null);
       }
       const token = await getToken();
       const res = await fetch("/api/user/onboarding", {
@@ -228,6 +248,9 @@ export default function OnboardingModal() {
               autoComplete="off"
               onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
             />
+            {referralNote && (
+              <p className="mt-2 text-[12px] text-charcoal-600">{referralNote}</p>
+            )}
           </div>
         )}
 

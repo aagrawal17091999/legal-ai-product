@@ -15,26 +15,32 @@ import {
  * claim itself happens after the account exists, from the onboarding step.
  * Not httpOnly on purpose — the signup page reads it to show the field.
  */
+/**
+ * A RELATIVE Location, as proxy.ts sends: behind nginx, request.url is the
+ * app's own address (localhost:3000), so an absolute URL built from it sends
+ * the visitor to localhost. Browsers resolve a relative one against the page.
+ */
+function redirectTo(path: string): NextResponse {
+  return new NextResponse(null, { status: 307, headers: { Location: path } });
+}
+
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
 ) {
-  const target = new URL("/signup", request.url);
   // Program switched off: the link still lands somewhere useful, but carries
   // nothing — no code in the URL, no cookie.
-  if (!REFERRALS_ENABLED) return NextResponse.redirect(target);
+  if (!REFERRALS_ENABLED) return redirectTo("/signup");
 
   const { code: raw } = await params;
   const code = normalizeReferralCode(raw);
-  if (code) target.searchParams.set("ref", code);
+  if (!code) return redirectTo("/signup");
 
-  const res = NextResponse.redirect(target);
-  if (code) {
-    res.cookies.set(REFERRAL_COOKIE, code, {
-      path: "/",
-      maxAge: REFERRAL_COOKIE_MAX_AGE,
-      sameSite: "lax",
-    });
-  }
+  const res = redirectTo(`/signup?ref=${encodeURIComponent(code)}`);
+  res.cookies.set(REFERRAL_COOKIE, code, {
+    path: "/",
+    maxAge: REFERRAL_COOKIE_MAX_AGE,
+    sameSite: "lax",
+  });
   return res;
 }

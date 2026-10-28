@@ -155,33 +155,16 @@ python pipeline/download_sc.py --all
 
 ### Download High Court data
 
-```bash
-# Single court + year
-python pipeline/download_hc.py --year 2024 --court 32_4
+**Use `pipeline/ingest_hc.py` — see [HC_INGEST.md](HC_INGEST.md).** It loads
+High Court judgments in costed batches straight from `s3://indian-high-court-judgments`
+(per-PDF downloads, free Tesseract OCR for garbled/scanned pages, paid second
+pass only where that fails) and has a weekly sync.
 
-# All 24 courts for a year
-python pipeline/download_hc.py --year 2024 --all-courts
-```
-
-**When:** After SC data is set up, or when expanding to High Court coverage.
-**Why:** Downloads from `s3://indian-high-court-judgments`. Stores in `data/high-courts/court={code}/year={year}/`.
-
-**Court codes:**
-
-| Code | Court | Code | Court |
-|------|-------|------|-------|
-| `32_1` | Allahabad | `32_13` | Kerala |
-| `32_2` | Andhra Pradesh | `32_14` | Madhya Pradesh |
-| `32_3` | Chhattisgarh | `32_15` | Manipur |
-| `32_4` | Delhi | `32_16` | Meghalaya |
-| `32_5` | Bombay | `32_17` | Orissa |
-| `32_6` | Calcutta | `32_18` | Patna |
-| `32_7` | Madras | `32_19` | Punjab & Haryana |
-| `32_8` | Gujarat | `32_20` | Rajasthan |
-| `32_9` | Himachal Pradesh | `32_21` | Sikkim |
-| `32_10` | Jammu & Kashmir | `32_22` | Telangana |
-| `32_11` | Jharkhand | `32_23` | Tripura |
-| `32_12` | Karnataka | `32_24` | Uttarakhand |
+The older `download_hc.py` + `process_and_load.py --source hc` path is
+superseded: it took only the first bench of each court, only `data.tar`
+(recent years are split into `part-*.tar`), and its court-code table was wrong
+(`32_4` is Kerala, not Delhi; Delhi is `7_26`). The correct table is in
+HC_INGEST.md.
 
 ---
 

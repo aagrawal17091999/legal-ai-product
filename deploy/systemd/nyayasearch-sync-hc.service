@@ -1,0 +1,27 @@
+# Weekly incremental High Court sync (pipeline/ingest_hc.py sync via scripts/hc-ingest.sh):
+# refresh the upstream file list, then load judgments decided in the last 120
+# days that are not loaded yet, newest first, at most 40,000 per run.
+# Install with its .timer — but enable it only once a few manual batches look right:
+#   sudo cp deploy/systemd/nyayasearch-sync-hc.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nyayasearch-sync-hc.timer
+# Run by hand / inspect:
+#   sudo systemctl start nyayasearch-sync-hc.service
+#   journalctl -u nyayasearch-sync-hc | grep BATCH_SUMMARY
+[Unit]
+Description=NyayaSearch weekly High Court judgment sync
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+ExecStart=/bin/bash scripts/hc-ingest.sh sync
+# Upstream adds ~25-30k High Court documents a week.
+TimeoutStartSec=36h
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=200%
+MemoryMax=2G

@@ -32,6 +32,9 @@ die() { printf '\n\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 say "Ensuring nginx + certbot are installed"
 if ! command -v nginx >/dev/null;   then apt-get update -y && apt-get install -y nginx; fi
 if ! command -v certbot >/dev/null; then apt-get install -y certbot python3-certbot-nginx; fi
+# Free OCR for High Court ingestion (pipeline/hc_text.py): English, Hindi and
+# each High Court's regional language. apt skips what is already installed.
+apt-get update -y >/dev/null && apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-hin tesseract-ocr-kan tesseract-ocr-tam tesseract-ocr-tel tesseract-ocr-mal tesseract-ocr-ben tesseract-ocr-guj tesseract-ocr-mar tesseract-ocr-ori tesseract-ocr-pan tesseract-ocr-urd tesseract-ocr-asm tesseract-ocr-nep
 
 # --- 2. Postgres tuning -----------------------------------------------------
 PG_CONFD="$(find /etc/postgresql -maxdepth 3 -type d -name conf.d 2>/dev/null | head -1)"
@@ -68,6 +71,16 @@ systemctl enable --now nyayasearch-process-batches.timer nyayasearch-credit-refi
                        nyayasearch-referrals.timer \
                        nyayasearch-rag-retention.timer nyayasearch-backup.timer \
                        nyayasearch-disk-alert.timer nyayasearch-sync-sc.timer
+# High Court ingestion: installed, NOT enabled. Batches are started by hand
+# (systemctl start nyayasearch-hc-batch@1000) and the weekly sync is enabled
+# once those look right — see pipeline/HC_INGEST.md.
+for f in nyayasearch-hc-batch@.service nyayasearch-sync-hc.service; do
+  sed -e "s#^User=.*#User=$RUN_USER#" \
+      -e "s#^WorkingDirectory=.*#WorkingDirectory=$APP_DIR#" \
+      "deploy/systemd/$f" > "/etc/systemd/system/$f"
+done
+cp deploy/systemd/nyayasearch-sync-hc.timer /etc/systemd/system/
+systemctl daemon-reload
 systemctl list-timers | grep nyayasearch || true
 
 # --- 5. nginx (HTTP-only; certbot adds TLS after) ---------------------------

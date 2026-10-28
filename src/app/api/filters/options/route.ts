@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
 import type { FilterOptions } from "@/types";
+import { hcSearchEnabled } from "@/lib/highCourt";
 
 // Cache filter options for 24 hours
 let cachedOptions: FilterOptions | null = null;
@@ -15,12 +16,15 @@ export async function GET() {
   }
 
   try {
+    // Folded to a constant by the planner: with HC hidden, no HC query scans.
+    const hcOn = hcSearchEnabled();
+
     // Get distinct courts
     const { rows: scCourts } = await pool.query(
       `SELECT DISTINCT court FROM supreme_court_cases WHERE court IS NOT NULL ORDER BY court`
     );
     const { rows: hcCourts } = await pool.query(
-      `SELECT DISTINCT court_name FROM high_court_cases WHERE court_name IS NOT NULL ORDER BY court_name`
+      `SELECT DISTINCT court_name FROM high_court_cases WHERE court_name IS NOT NULL AND ${hcOn} ORDER BY court_name`
     );
 
     const courts = [
@@ -33,11 +37,11 @@ export async function GET() {
       SELECT
         LEAST(
           (SELECT MIN(year) FROM supreme_court_cases WHERE year IS NOT NULL),
-          (SELECT MIN(year) FROM high_court_cases WHERE year IS NOT NULL)
+          (SELECT MIN(year) FROM high_court_cases WHERE year IS NOT NULL AND ${hcOn})
         ) as min_year,
         GREATEST(
           (SELECT MAX(year) FROM supreme_court_cases WHERE year IS NOT NULL),
-          (SELECT MAX(year) FROM high_court_cases WHERE year IS NOT NULL)
+          (SELECT MAX(year) FROM high_court_cases WHERE year IS NOT NULL AND ${hcOn})
         ) as max_year
     `);
 
@@ -62,7 +66,7 @@ export async function GET() {
         `SELECT DISTINCT ${column} AS value FROM supreme_court_cases WHERE ${column} IS NOT NULL AND ${column} != '' ORDER BY value LIMIT 5000`
       ),
       pool.query(
-        `SELECT DISTINCT ${column} AS value FROM high_court_cases WHERE ${column} IS NOT NULL AND ${column} != '' ORDER BY value LIMIT 5000`
+        `SELECT DISTINCT ${column} AS value FROM high_court_cases WHERE ${column} IS NOT NULL AND ${column} != '' AND ${hcOn} ORDER BY value LIMIT 5000`
       ),
     ]);
 
@@ -71,7 +75,7 @@ export async function GET() {
         `SELECT DISTINCT jsonb_array_elements_text(${column}) AS value FROM supreme_court_cases WHERE ${column} IS NOT NULL AND ${column} != '[]'::jsonb ORDER BY value LIMIT 5000`
       ),
       pool.query(
-        `SELECT DISTINCT jsonb_array_elements_text(${column}) AS value FROM high_court_cases WHERE ${column} IS NOT NULL AND ${column} != '[]'::jsonb ORDER BY value LIMIT 5000`
+        `SELECT DISTINCT jsonb_array_elements_text(${column}) AS value FROM high_court_cases WHERE ${column} IS NOT NULL AND ${column} != '[]'::jsonb AND ${hcOn} ORDER BY value LIMIT 5000`
       ),
     ]);
 

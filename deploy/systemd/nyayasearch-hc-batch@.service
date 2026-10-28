@@ -1,0 +1,28 @@
+# One High Court ingestion batch of %i documents (newest not yet loaded).
+# Runs detached under systemd, so it keeps going after you log out.
+#   sudo cp deploy/systemd/nyayasearch-hc-batch@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl start nyayasearch-hc-batch@1000      # next 1,000
+#   journalctl -u nyayasearch-hc-batch@1000 -f           # watch it
+#   journalctl -u nyayasearch-hc-batch@1000 | grep -A12 '=== HC batch'   # cost report
+# Not enabled and has no timer: each batch is started by hand so its cost is
+# seen before the next. Shares a lock with the weekly sync, never overlaps it.
+[Unit]
+Description=NyayaSearch High Court ingestion batch (%i documents)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/legal-ai-product
+Environment=ENV_FILE=.env.production.local
+ExecStart=/bin/bash scripts/hc-ingest.sh batch --size %i
+# Measured ~2,000 documents/hour on a laptop with 2 workers, newest-first mix;
+# expect less on the CAX21 under CPUQuota, and less again for OCR-heavy courts.
+TimeoutStartSec=24h
+# The box also serves the app and Postgres: stay out of their way.
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=200%
+MemoryMax=2G

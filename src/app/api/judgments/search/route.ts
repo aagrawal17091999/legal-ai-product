@@ -6,6 +6,7 @@ import { logError } from "@/lib/error-logger";
 import { track, filterProperties } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
 import type { SearchFilters, JudgmentSearchResponse, FilterDiagnostic } from "@/types";
+import { hcSearchEnabled } from "@/lib/highCourt";
 
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 20;
@@ -60,7 +61,7 @@ function buildCountQuery(
   filters: SearchFilters
 ): { query: string; params: unknown[] } {
   const searchSC = !filters.court || filters.court === "Supreme Court of India";
-  const searchHC = !filters.court || filters.court !== "Supreme Court of India";
+  const searchHC = hcSearchEnabled() && (!filters.court || filters.court !== "Supreme Court of India");
 
   const { clauses: scClauses, params: scParams } = buildCaseFilterClauses(filters, "sc", { prefixColumns: false });
   const { clauses: hcClauses, params: hcParams } = buildCaseFilterClauses(filters, "hc", { prefixColumns: false });
@@ -154,7 +155,7 @@ export async function GET(request: NextRequest) {
     }
 
     const searchSC = !filters.court || filters.court === "Supreme Court of India";
-    const searchHC = !filters.court || filters.court !== "Supreme Court of India";
+    const searchHC = hcSearchEnabled() && (!filters.court || filters.court !== "Supreme Court of India");
 
     const { clauses: scClauses, params: scParams } = buildCaseFilterClauses(filters, "sc", { prefixColumns: false });
     const { clauses: hcClauses, params: hcParams } = buildCaseFilterClauses(filters, "hc", { prefixColumns: false });

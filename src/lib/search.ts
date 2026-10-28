@@ -5,6 +5,7 @@ import { toStringArray } from "./metadata";
 import { Semaphore } from "./concurrency";
 import { DB_POOL_MAX } from "./db";
 import type { SearchFilters } from "@/types";
+import { hcSearchEnabled } from "./highCourt";
 
 const RRF_K = 60; // Reciprocal Rank Fusion smoothing constant
 const DEFAULT_CANDIDATES_PER_QUERY = 40;
@@ -290,7 +291,7 @@ async function ftsChunks(
   limit: number
 ): Promise<MethodHits> {
   const searchSC = !filters.court || filters.court === "Supreme Court of India";
-  const searchHC = !filters.court || filters.court !== "Supreme Court of India";
+  const searchHC = hcSearchEnabled() && (!filters.court || filters.court !== "Supreme Court of India");
 
   const results: RawChunkHit[] = [];
   let scCount = 0;
@@ -365,7 +366,7 @@ async function vectorChunks(
 ): Promise<MethodHits> {
   const embeddingStr = `[${embedding.join(",")}]`;
   const searchSC = !filters.court || filters.court === "Supreme Court of India";
-  const searchHC = !filters.court || filters.court !== "Supreme Court of India";
+  const searchHC = hcSearchEnabled() && (!filters.court || filters.court !== "Supreme Court of India");
 
   const results: RawChunkHit[] = [];
   let scCount = 0;
@@ -434,7 +435,7 @@ async function metaCaseChunks(
   limit: number
 ): Promise<MethodHits> {
   const searchSC = !filters.court || filters.court === "Supreme Court of India";
-  const searchHC = !filters.court || filters.court !== "Supreme Court of India";
+  const searchHC = hcSearchEnabled() && (!filters.court || filters.court !== "Supreme Court of India");
 
   const results: Array<{ hit: RawChunkHit; rank: number }> = [];
   let scCount = 0;
@@ -769,6 +770,7 @@ async function findByCitation(citation: string): Promise<IdentifierMatch[]> {
     }
   }
 
+  if (!hcSearchEnabled()) return out;
   const hcExtracted = await pool.query(
     `SELECT id FROM high_court_cases WHERE extracted_citation = $1 LIMIT 3`,
     [cite]
@@ -802,6 +804,7 @@ async function findByTitleOrParty(title: string): Promise<IdentifierMatch[]> {
     out.push({ source_table: "supreme_court_cases", source_id: r.id as number, match_reason: "title_ilike" });
   }
 
+  if (!hcSearchEnabled()) return out;
   const hc = await pool.query(
     `SELECT id
        FROM high_court_cases
@@ -823,9 +826,9 @@ async function fetchChunksForCases(matches: IdentifierMatch[]): Promise<Retrieve
   const scIds = matches
     .filter((m) => m.source_table === "supreme_court_cases")
     .map((m) => m.source_id);
-  const hcIds = matches
-    .filter((m) => m.source_table === "high_court_cases")
-    .map((m) => m.source_id);
+  const hcIds = hcSearchEnabled()
+    ? matches.filter((m) => m.source_table === "high_court_cases").map((m) => m.source_id)
+    : [];
 
   const out: RetrievedChunk[] = [];
 

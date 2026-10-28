@@ -11,6 +11,8 @@ import {
 import { grant } from "@/lib/billing/credits";
 import { PLAN_CREDITS, creditPeriodEnd } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
+import { track, setOnce } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 /**
  * Client-side verification endpoint for a completed Razorpay subscription checkout.
@@ -162,6 +164,25 @@ export async function POST(request: NextRequest) {
       plan,
       endDate,
     });
+
+    // This is the path almost every real upgrade takes, and it emitted nothing:
+    // subscription_activated came only from the webhook. Same insert id as the
+    // webhook's, so whichever lands second is dropped as a duplicate.
+    track(EVENTS.SUBSCRIPTION_ACTIVATED, {
+      userId: user.id,
+      insertId: `sub_active:${subscriptionCycleKey(razorpay_subscription_id, currentEnd)}`,
+      properties: {
+        plan,
+        credits: PLAN_CREDITS[plan],
+        confirmed_by: "checkout",
+        razorpay_subscription_id,
+        razorpay_payment_id,
+        razorpay_plan_id: subscription.plan_id,
+        razorpay_subscription_status: status,
+        current_period_end: endDate,
+      },
+    });
+    setOnce(user.id, { first_subscribed_at: new Date(), first_plan: plan });
 
     return NextResponse.json({
       plan,

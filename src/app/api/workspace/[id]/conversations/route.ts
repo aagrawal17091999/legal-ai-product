@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 async function ownWorkspace(userId: number, workspaceId: string): Promise<boolean> {
   const { rows } = await pool.query(
@@ -69,6 +71,11 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
       [workspaceId, title]
     );
     await pool.query(`UPDATE workspaces SET updated_at = NOW() WHERE id = $1`, [workspaceId]);
+    track(EVENTS.DOCCHAT_CONVERSATION_CREATED, {
+      userId: user.id,
+      insertId: `conv_create:${rows[0].id}`,
+      properties: { workspace_id: workspaceId, conversation_id: rows[0].id, title },
+    });
     return NextResponse.json({ ...rows[0], message_count: 0 });
   } catch (err) {
     logError({

@@ -3,6 +3,8 @@ import pool from "@/lib/db";
 import { grant } from "@/lib/billing/credits";
 import { PLAN_CREDITS, addOneMonth } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 /**
  * Monthly credit refill for accounts whose billing cycle is longer than their
@@ -72,6 +74,12 @@ async function expireCompedPlans(): Promise<number> {
         WHERE user_id = ANY($1::int[])`,
       [rows.map((r) => r.id)]
     );
+    for (const r of rows) {
+      track(EVENTS.SUBSCRIPTION_ENDED, {
+        userId: r.id,
+        properties: { reason: "comped_plan_expired", comped: true },
+      });
+    }
   }
   return rows.length;
 }
@@ -145,8 +153,20 @@ export async function GET(request: NextRequest) {
         periodEnd: nextEnd,
         idempotencyKey: key,
       });
-      if (applied) refilled++;
-      else skipped++;
+      if (applied) {
+        refilled++;
+        track(EVENTS.CREDITS_REFILLED, {
+          userId: row.user_id,
+          insertId: key,
+          properties: {
+            plan: row.plan,
+            credits: PLAN_CREDITS[row.plan] ?? PLAN_CREDITS.monthly,
+            period_end: nextEnd,
+            razorpay_subscription_id: row.razorpay_subscription_id,
+            source: "refill_cron",
+          },
+        });
+      } else skipped++;
     }
 
     return NextResponse.json({ status: "ok", due: rows.length, refilled, skipped, expired });

@@ -26,6 +26,13 @@ test("the client may only send interaction events, never anything of consequence
     EVENTS.OCR_COMPLETED,
     EVENTS.TRANSLATE_COMPLETED,
     EVENTS.OUT_OF_CREDITS,
+    EVENTS.SUBSCRIPTION_CANCELLED,
+    EVENTS.SUBSCRIPTION_ENDED,
+    EVENTS.SUBSCRIPTION_PLAN_CHANGED,
+    EVENTS.PAYMENT_FAILED,
+    EVENTS.CREDITS_REFILLED,
+    EVENTS.ADMIN_ACTION,
+    EVENTS.SIGNED_IN,
   ];
   for (const e of forbidden) {
     assert.ok(!CLIENT_ALLOWED.has(e), `${e} must not be client-sendable — it can be forged`);

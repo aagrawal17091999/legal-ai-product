@@ -97,7 +97,7 @@ export async function POST(
     if (e instanceof OutOfCreditsError) {
       track(EVENTS.OUT_OF_CREDITS, {
         userId: user.id,
-        properties: { feature: "workspace_chat", plan: user.plan },
+        properties: { feature: "workspace_chat", credits_remaining: e.remaining },
       });
       return NextResponse.json(
         { error: "insufficient_credits", remaining: e.remaining },

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getOrCreateUser, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
+import { track, increment } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 // POST /api/workspace — create a new document workspace
 export async function POST(request: NextRequest) {
@@ -19,6 +21,12 @@ export async function POST(request: NextRequest) {
        RETURNING id, title, created_at, updated_at`,
       [user.id, title]
     );
+    track(EVENTS.WORKSPACE_CREATED, {
+      userId: user.id,
+      insertId: `workspace_create:${rows[0].id}`,
+      properties: { workspace_id: rows[0].id, title },
+    });
+    increment(user.id, { workspaces_created: 1 });
     return NextResponse.json(rows[0]);
   } catch (err) {
     logError({

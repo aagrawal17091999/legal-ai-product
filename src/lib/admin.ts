@@ -7,6 +7,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import pool from "@/lib/db";
 import { getRequestUser, verifyAuth } from "@/lib/auth";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 import type { User } from "@/types";
 
 export type AdminActionType =
@@ -66,6 +68,21 @@ export async function logAdminAction(opts: {
         JSON.stringify(opts.details ?? {}),
       ]
     );
+    // Recorded against the AFFECTED user, so a support credit grant or a comp
+    // shows up in that user's own timeline — otherwise their balance jumps for
+    // no visible reason. The staff member is a property.
+    const flat: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(opts.details ?? {})) flat[`detail_${k}`] = v;
+    track(EVENTS.ADMIN_ACTION, {
+      userId: opts.target.id,
+      properties: {
+        action: opts.action,
+        reason: opts.reason?.trim() || null,
+        actor_user_id: opts.actor.id,
+        actor_email: opts.actor.email,
+        ...flat,
+      },
+    });
   } catch (err) {
     const { logError } = await import("@/lib/error-logger");
     logError({

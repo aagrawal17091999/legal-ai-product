@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/hooks/useAuth";
 import type { CitationRef, ParagraphDetail, SupportSpan } from "@/types";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 
 interface CitationPanelProps {
   citation: CitationRef | null;
@@ -62,6 +64,19 @@ export default function CitationPanel({ citation, onClose }: CitationPanelProps)
     sourceTable && sourceId !== undefined && paragraph
       ? cacheKey(sourceTable, sourceId, paragraph)
       : null;
+
+  useEffect(() => {
+    if (!citation) return;
+    trackClick(EVENTS.CITATION_OPENED, {
+      feature: "research",
+      case_id: `${citation.case.source_table}:${citation.case.id}`,
+      case_title: citation.case.title,
+      case_citation: citation.case.citation ?? "",
+      paragraph: citation.paragraph ?? "",
+      citation_index: citation.case.index ?? 0,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceTable, sourceId, paragraph]);
 
   useEffect(() => {
     if (!key || !sourceTable || sourceId === undefined || !paragraph) return;

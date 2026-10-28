@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { adminAuth } from "@/lib/firebase-admin";
 import { getOrCreateUser, SESSION_COOKIE } from "@/lib/auth";
 import { logError } from "@/lib/error-logger";
+import pool from "@/lib/db";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 function clearCookie(res: NextResponse) {
   res.cookies.set(SESSION_COOKIE, "", {
@@ -39,7 +42,32 @@ export async function POST(request: NextRequest) {
 
   try {
     const decoded = await adminAuth().verifyIdToken(idToken);
-    await getOrCreateUser({ uid: decoded.uid, email: decoded.email || "" });
+    const provider = decoded.firebase?.sign_in_provider;
+    // The name and photo were never passed here, so users.display_name stayed
+    // NULL for everyone who didn't later edit it on /account. Google tokens
+    // carry both; email signups carry the name once useAuth force-refreshes
+    // the token after updateProfile.
+    const user = await getOrCreateUser({
+      uid: decoded.uid,
+      email: decoded.email || "",
+      displayName: typeof decoded.name === "string" ? decoded.name : undefined,
+      photoURL: typeof decoded.picture === "string" ? decoded.picture : undefined,
+      signInProvider: provider,
+    });
+
+    // This route also runs on every page load and hourly token refresh, so it
+    // is not itself a sign-in. auth_time is when the user actually
+    // authenticated: keying on it makes every repeat post of the same login a
+    // Mixpanel duplicate, leaving one event per real sign-in.
+    track(EVENTS.SIGNED_IN, {
+      userId: user.id,
+      insertId: `signin:${user.id}:${decoded.auth_time}`,
+      properties: {
+        sign_in_provider: provider ?? null,
+        email: user.email,
+        auth_time: new Date(decoded.auth_time * 1000),
+      },
+    });
 
     const sessionCookie = await adminAuth().createSessionCookie(idToken, {
       expiresIn: EXPIRES_IN_MS,
@@ -83,6 +111,11 @@ export async function DELETE(request: NextRequest) {
       // Don't checkRevoked here — we're about to revoke; we just need the uid.
       const decoded = await adminAuth().verifySessionCookie(sessionCookie);
       await adminAuth().revokeRefreshTokens(decoded.uid);
+      const { rows } = await pool.query<{ id: number }>(
+        `SELECT id FROM users WHERE firebase_uid = $1`,
+        [decoded.uid]
+      );
+      if (rows[0]) track(EVENTS.SIGNED_OUT, { userId: rows[0].id });
     } catch (err) {
       // Already-expired/invalid cookie: nothing to revoke. Still clear + 200 so
       // the client always completes sign-out.

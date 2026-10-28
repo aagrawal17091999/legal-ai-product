@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     if (e instanceof OutOfCreditsError) {
       track(EVENTS.OUT_OF_CREDITS, {
         userId: user.id,
-        properties: { feature: "ocr", plan: user.plan },
+        properties: { feature: "ocr", credits_remaining: e.remaining },
       });
       return NextResponse.json(
         { error: "insufficient_credits", remaining: e.remaining },
@@ -66,13 +66,27 @@ export async function POST(request: NextRequest) {
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "No file provided" }, { status: 400 });
   }
+  const rejected = (reason: string, detail?: string) =>
+    track(EVENTS.UPLOAD_REJECTED, {
+      userId: user.id,
+      properties: {
+        feature: "ocr",
+        reason,
+        detail: detail ?? null,
+        filename: file.name,
+        mime: file.type,
+        file_bytes: file.size,
+      },
+    });
   if (!acceptedFile(file.name, file.type)) {
+    rejected("unsupported_type");
     return NextResponse.json(
       { error: "Unsupported file type. Accepted: PDF, DOCX, JPG, PNG." },
       { status: 400 }
     );
   }
   if (file.size > MAX_FILE_BYTES) {
+    rejected("file_too_large");
     return NextResponse.json({ error: tooLargeMessage() }, { status: 400 });
   }
 
@@ -112,8 +126,9 @@ export async function POST(request: NextRequest) {
       userId: user.id,
       insertId: `ocr_start:${job.id}`,
       properties: {
-        // Shape and size only — never the filename, which routinely carries a
-        // client or matter name.
+        job_id: job.id,
+        filename: file.name,
+        mime,
         pages: plan.totalPages,
         batches: plan.batches.length,
         source_kind: plan.kind,
@@ -135,6 +150,14 @@ export async function POST(request: NextRequest) {
       err instanceof Error &&
       /supports up to|password-protected|no pages/.test(err.message)
     ) {
+      rejected(
+        /password-protected/.test(err.message)
+          ? "password_protected"
+          : /no pages/.test(err.message)
+            ? "no_pages"
+            : "page_limit",
+        err.message
+      );
       return NextResponse.json({ error: err.message }, { status: 400 });
     }
     logError({

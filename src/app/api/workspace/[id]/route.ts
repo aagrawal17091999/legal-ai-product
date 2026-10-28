@@ -4,6 +4,8 @@ import pool from "@/lib/db";
 import { deleteFromR2 } from "@/lib/r2";
 import { expireStaleDocuments } from "@/lib/docchat/expire";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 async function ownWorkspace(userId: number, workspaceId: string): Promise<boolean> {
   const { rows } = await pool.query(
@@ -86,6 +88,10 @@ export async function PATCH(request: NextRequest, ctx: { params: Promise<{ id: s
       [title, id, user.id]
     );
     if (rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    track(EVENTS.WORKSPACE_RENAMED, {
+      userId: user.id,
+      properties: { workspace_id: id, title },
+    });
     return NextResponse.json(rows[0]);
   } catch (err) {
     logError({
@@ -119,13 +125,22 @@ export async function DELETE(request: NextRequest, ctx: { params: Promise<{ id: 
       [id, user.id]
     );
 
-    const { rowCount } = await pool.query(
-      `DELETE FROM workspaces WHERE id = $1 AND user_id = $2`,
+    const { rows: deleted } = await pool.query<{ title: string | null; created_at: Date }>(
+      `DELETE FROM workspaces WHERE id = $1 AND user_id = $2 RETURNING title, created_at`,
       [id, user.id]
     );
-    if (rowCount === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (deleted.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     await deleteFromR2(docRows.map((r) => r.r2_key));
+    track(EVENTS.WORKSPACE_DELETED, {
+      userId: user.id,
+      properties: {
+        workspace_id: id,
+        title: deleted[0].title,
+        documents_deleted: docRows.length,
+        workspace_created_at: deleted[0].created_at,
+      },
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     logError({

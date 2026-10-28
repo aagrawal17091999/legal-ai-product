@@ -1,6 +1,9 @@
 "use client";
 
+import { useEffect } from "react";
 import { useCreditsContext } from "./CreditsProvider";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 
 /**
  * Warns before the wall, and explains it after.
@@ -11,6 +14,26 @@ import { useCreditsContext } from "./CreditsProvider";
  */
 export default function LowBalanceBanner() {
   const { credits, promptForCredits } = useCreditsContext();
+  const state =
+    !credits || credits.unlimited
+      ? null
+      : credits.exhausted
+        ? "exhausted"
+        : credits.lowBalance
+          ? "low"
+          : null;
+
+  // Once per state change, not per render: the banner re-renders on every
+  // credit refresh.
+  useEffect(() => {
+    if (!state || !credits) return;
+    trackClick(EVENTS.LOW_BALANCE_BANNER_SHOWN, {
+      state,
+      credits_remaining: credits.remaining,
+      plan: credits.plan,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
 
   if (!credits || credits.unlimited) return null;
   if (!credits.lowBalance && !credits.exhausted) return null;

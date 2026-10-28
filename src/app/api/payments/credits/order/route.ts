@@ -32,7 +32,14 @@ export async function POST(request: NextRequest) {
 
     track(EVENTS.CHECKOUT_STARTED, {
       userId: user.id,
-      properties: { kind: "topup", tier_id: tier.id, credits: tier.credits },
+      properties: {
+        kind: "topup",
+        tier_id: tier.id,
+        credits: tier.credits,
+        amount_inr_ex_gst: tier.priceInr,
+        amount_inr_gross: typeof order.amount === "number" ? order.amount / 100 : null,
+        razorpay_order_id: order.id,
+      },
     });
 
     return NextResponse.json({

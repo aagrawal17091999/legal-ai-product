@@ -4,6 +4,8 @@ import pool from "@/lib/db";
 import { getSignedObjectUrl, deleteFromR2 } from "@/lib/r2";
 import { expireStaleOcrJobs } from "@/lib/ocr/expire";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 // GET /api/ocr/[id] — job status; includes download URLs (PDF + DOCX) when ready
 export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -68,12 +70,16 @@ export async function DELETE(request: NextRequest, ctx: { params: Promise<{ id: 
     const { rows } = await pool.query(
       `DELETE FROM ocr_jobs
         WHERE id = $1 AND user_id = $2
-        RETURNING source_r2_key, output_pdf_r2_key, output_docx_r2_key`,
+        RETURNING source_r2_key, output_pdf_r2_key, output_docx_r2_key, source_filename, status`,
       [id, user.id]
     );
     if (rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     await deleteFromR2([rows[0].source_r2_key, rows[0].output_pdf_r2_key, rows[0].output_docx_r2_key]);
+    track(EVENTS.OCR_DELETED, {
+      userId: user.id,
+      properties: { job_id: id, filename: rows[0].source_filename, job_status: rows[0].status },
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     logError({

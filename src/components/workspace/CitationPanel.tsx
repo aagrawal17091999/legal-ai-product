@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/hooks/useAuth";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 
 export interface DocCitation {
   ref: number;
@@ -76,6 +78,21 @@ export default function WorkspaceCitationPanel({
   const inFlight = useRef<number | null>(null);
 
   const chunkId = citation?.chunk_id ?? null;
+
+  useEffect(() => {
+    if (!citation) return;
+    trackClick(EVENTS.CITATION_OPENED, {
+      feature: "workspace",
+      workspace_id: workspaceId,
+      document_id: citation.document_id,
+      document_name: citation.document_name,
+      page_no: citation.page_no ?? 0,
+      chunk_id: citation.chunk_id,
+      citation_index: citation.ref,
+      verified: citation.verified === true,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chunkId]);
 
   useEffect(() => {
     if (chunkId == null) return;

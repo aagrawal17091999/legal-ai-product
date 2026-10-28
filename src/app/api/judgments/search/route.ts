@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyAuth } from "@/lib/auth";
+import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { buildCaseFilterClauses } from "@/lib/search";
 import { logError } from "@/lib/error-logger";
+import { track, filterProperties } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 import type { SearchFilters, JudgmentSearchResponse, FilterDiagnostic } from "@/types";
 
 const MAX_LIMIT = 50;
@@ -249,6 +251,21 @@ export async function GET(request: NextRequest) {
     if (total === 0) {
       response.diagnostics = await buildDiagnostics(filters);
     }
+
+    // Full searches only: countOnly is the live preview that fires on every
+    // filter edit, and counting it would turn one search into dozens.
+    const user = await getRequestUser({ uid: decoded.uid, email: decoded.email });
+    track(EVENTS.JUDGMENT_SEARCHED, {
+      userId: user.id,
+      properties: {
+        ...filterProperties(filters),
+        result_count: total,
+        page,
+        limit,
+        zero_results: total === 0,
+        top_result_titles: response.results.slice(0, 5).map((r) => r.title),
+      },
+    });
 
     return NextResponse.json(response);
   } catch (err) {

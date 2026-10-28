@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getOrCreateUser } from "@/lib/auth";
 import { createSubscription, updateSubscriptionPlan } from "@/lib/razorpay";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 export async function POST(request: NextRequest) {
   const decoded = await verifyAuth(request);
@@ -44,6 +46,15 @@ export async function POST(request: NextRequest) {
     // Razorpay handling proration ("now"), so there is no window with no plan.
     if (user.razorpay_subscription_id) {
       await updateSubscriptionPlan(user.razorpay_subscription_id, plan, "now");
+      track(EVENTS.SUBSCRIPTION_PLAN_CHANGED, {
+        userId: user.id,
+        properties: {
+          from_plan: user.plan,
+          to_plan: plan,
+          mode: "in_place",
+          razorpay_subscription_id: user.razorpay_subscription_id,
+        },
+      });
       return NextResponse.json({
         subscription_id: user.razorpay_subscription_id,
         updated: true,
@@ -56,6 +67,20 @@ export async function POST(request: NextRequest) {
       plan,
       user.id
     );
+
+    // A fresh, still-unpaid subscription: this is a checkout start, and the
+    // payment itself arrives as subscription_activated.
+    track(EVENTS.CHECKOUT_STARTED, {
+      userId: user.id,
+      properties: {
+        kind: "subscription",
+        plan,
+        existing_plan: user.plan,
+        via: "change_plan",
+        razorpay_subscription_id: subscription.id,
+        razorpay_customer_id: user.razorpay_customer_id,
+      },
+    });
 
     return NextResponse.json({ subscription_id: subscription.id, updated: false });
   } catch (err) {

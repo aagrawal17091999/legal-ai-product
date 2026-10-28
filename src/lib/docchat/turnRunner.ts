@@ -14,7 +14,7 @@
  */
 import pool from "@/lib/db";
 import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
-import { track } from "@/lib/analytics/server";
+import { track, preview, increment, setOnce } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
 import { runDocChat, type DocChatTurn, type DocCitation } from "@/lib/docchat/answer";
 import { DocAgentAbortedError } from "@/lib/docchat/docAgent";
@@ -145,6 +145,28 @@ export async function startDocTurn(
   return { messageId };
 }
 
+/**
+ * What the user was asking against — the workspace's documents at the moment
+ * of the question. Best-effort: a failed read just leaves these off the event.
+ */
+async function workspaceShape(workspaceId: string): Promise<Record<string, unknown>> {
+  try {
+    const { rows } = await pool.query<{ filename: string; status: string; page_count: number | null }>(
+      `SELECT filename, status, page_count FROM workspace_documents
+        WHERE workspace_id = $1 ORDER BY created_at ASC`,
+      [workspaceId]
+    );
+    return {
+      workspace_document_count: rows.length,
+      workspace_ready_count: rows.filter((r) => r.status === "ready").length,
+      workspace_page_count: rows.reduce((n, r) => n + (r.page_count ?? 0), 0),
+      workspace_document_names: rows.map((r) => r.filename),
+    };
+  } catch {
+    return {};
+  }
+}
+
 interface RunDocTurnParams {
   turn: LiveTurn;
   userId: number;
@@ -178,8 +200,19 @@ async function runDocTurn(p: RunDocTurnParams): Promise<void> {
   try {
     track(EVENTS.DOCCHAT_ASKED, {
       userId,
-      properties: { message_length: userMessage.length, history_turns: history.length },
+      insertId: `docchat_ask:${turn.messageId}`,
+      properties: {
+        question: preview(userMessage),
+        message_length: userMessage.length,
+        history_turns: history.length,
+        workspace_id: workspaceId,
+        conversation_id: conversationId,
+        message_id: turn.messageId,
+        ...(await workspaceShape(workspaceId)),
+      },
     });
+    increment(userId, { docchat_questions_asked: 1 });
+    setOnce(userId, { first_docchat_question_at: new Date() });
 
     let turnMeter: Awaited<ReturnType<typeof withMeter>>["meter"] | null = null;
     try {
@@ -271,9 +304,32 @@ async function runDocTurn(p: RunDocTurnParams): Promise<void> {
 
     const responseTimeMs = Date.now() - tStart;
 
-    track(EVENTS.DOCCHAT_ANSWERED, {
+    const cancelled = errorMsg === "cancelled";
+    track(
+      cancelled
+        ? EVENTS.DOCCHAT_STOPPED
+        : status === "error"
+          ? EVENTS.DOCCHAT_FAILED
+          : EVENTS.DOCCHAT_ANSWERED,
+      {
       userId,
+      insertId: `docchat_settle:${turn.messageId}`,
       properties: {
+        question: preview(userMessage),
+        answer_preview: preview(assistantContent),
+        answer_length: assistantContent.length,
+        status,
+        error: cancelled ? null : preview(errorMsg),
+        workspace_id: workspaceId,
+        conversation_id: conversationId,
+        message_id: turn.messageId,
+        model,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cited_document_names: [...new Set(citations.map((c) => c.document_name))],
+        cited_document_ids: [...new Set(citations.map((c) => c.document_id))],
+        cited_pages: citations.map((c) => c.page_no ?? 0),
+        citations_verified: citations.filter((c) => c.verified === true).length,
         response_time_ms: responseTimeMs,
         citations: citations.length,
         credits_charged: turnMeter?.credits ?? 0,
@@ -284,7 +340,9 @@ async function runDocTurn(p: RunDocTurnParams): Promise<void> {
         budget_hit: budgetHit,
         credit_budget: creditBudget,
       },
-    });
+      }
+    );
+    if (turnMeter?.credits) increment(userId, { credits_spent: turnMeter.credits });
 
     // Finalize the row that has been accumulating all along. Stop the durability
     // loop first so a late tick can't overwrite the final content with a partial

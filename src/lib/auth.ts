@@ -4,7 +4,7 @@ import pool from "./db";
 import { grantSignupCredits } from "./billing/credits";
 import { logError } from "./error-logger";
 import { beginRequestContext, setContextUser } from "./request-context";
-import { track, identify } from "./analytics/server";
+import { track, setOnce } from "./analytics/server";
 import { EVENTS } from "./analytics/events";
 import type { User } from "@/types";
 
@@ -120,14 +120,19 @@ export async function getOrCreateUser(firebaseUser: {
   email: string;
   displayName?: string;
   photoURL?: string;
+  /** Firebase's sign_in_provider claim ("google.com", "password"); analytics only. */
+  signInProvider?: string;
 }): Promise<User> {
   const { rows } = await pool.query<User>(
     `INSERT INTO users (firebase_uid, email, display_name, photo_url)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (firebase_uid) DO UPDATE SET
        email = EXCLUDED.email,
-       display_name = COALESCE(EXCLUDED.display_name, users.display_name),
-       photo_url = COALESCE(EXCLUDED.photo_url, users.photo_url),
+       -- Fill-only: the session route passes the token's name on every page
+       -- load, and a token minted before an /account rename still carries the
+       -- old one. Letting it win would quietly undo the rename.
+       display_name = COALESCE(users.display_name, EXCLUDED.display_name),
+       photo_url = COALESCE(users.photo_url, EXCLUDED.photo_url),
        updated_at = NOW()
      RETURNING *, (xmax = 0) AS inserted`,
     [
@@ -148,12 +153,17 @@ export async function getOrCreateUser(firebaseUser: {
       userId: user.id,
       // Dedup key, so a retried request during signup can't double-count.
       insertId: `signup:${user.id}`,
-      properties: { plan: user.plan },
+      properties: {
+        email: user.email,
+        name: user.display_name,
+        sign_in_provider: firebaseUser.signInProvider ?? null,
+        firebase_uid: user.firebase_uid,
+      },
     });
-    identify(user.id, {
-      $email: user.email,
-      $created: new Date().toISOString(),
-      plan: user.plan,
+    // The rest of the profile is filled from the users row by track() itself.
+    setOnce(user.id, {
+      signed_up_at: new Date(),
+      signup_method: firebaseUser.signInProvider ?? null,
     });
   }
   // One-time free credit allowance for genuinely new users. Idempotent (no-op if

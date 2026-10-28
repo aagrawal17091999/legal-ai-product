@@ -36,6 +36,24 @@ function apiHost(): string {
   return raw.startsWith("http") ? raw : `https://${raw}`;
 }
 
+/**
+ * Session replay: every session, nothing masked. Text, inputs and images are
+ * all recorded as rendered — which includes chat messages, judgment excerpts
+ * and uploaded-document content, so that material does reach Mixpanel. To
+ * hide a single element anyway, give it the `mp-mask` (text) or `mp-block`
+ * (whole element) class. The SDK still masks password, email and tel inputs
+ * regardless of these settings.
+ *
+ * Kept out of the init literal because @types/mixpanel-browser doesn't yet
+ * know the record_mask_all_* keys.
+ */
+const SESSION_REPLAY = {
+  record_sessions_percent: 100,
+  record_mask_all_text: false,
+  record_mask_all_inputs: false,
+  record_block_selector: "",
+};
+
 let mp: OverridedMixpanel | null = null;
 let loading = false;
 
@@ -49,13 +67,13 @@ export function initAnalytics(): void {
       const client = mod.default;
       client.init(TOKEN, {
         api_host: apiHost(),
-        // Explicit events only. Autocapture would hoover up DOM text from pages
-        // rendering judgment excerpts and uploaded-document content — exactly
-        // the material that must never leave the box.
+        // Explicit events only: autocapture would flood the event stream with
+        // DOM clicks. Session replay (below) is what shows the page itself.
         autocapture: false,
         // Path only: query strings on authenticated routes can carry ids.
         track_pageview: "url-with-path",
         persistence: "localStorage",
+        ...SESSION_REPLAY,
       });
       mp = client;
     } catch {

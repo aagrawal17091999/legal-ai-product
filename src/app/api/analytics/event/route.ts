@@ -17,9 +17,9 @@ import { CLIENT_ALLOWED, type EventName } from "@/lib/analytics/events";
 
 export const dynamic = "force-dynamic";
 
-/** Cap what a single event may carry — clicks need very little. */
-const MAX_PROPS = 10;
-const MAX_STRING_LEN = 200;
+/** Cap what a single event may carry. A failed checkout carries the most ids. */
+const MAX_PROPS = 20;
+const MAX_STRING_LEN = 255;
 
 export async function POST(request: NextRequest) {
   // Always answer 204. The browser can do nothing useful with an analytics

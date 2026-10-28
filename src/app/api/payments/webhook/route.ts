@@ -11,7 +11,8 @@ import pool from "@/lib/db";
 import { grant, unlockOutputs } from "@/lib/billing/credits";
 import { PLAN_CREDITS, creditPeriodEnd } from "@/lib/billing/cost";
 import { logError } from "@/lib/error-logger";
-import { track, identify } from "@/lib/analytics/server";
+import { track, identify, setOnce } from "@/lib/analytics/server";
+import { trackTopupPurchased } from "@/lib/analytics/payments";
 import { EVENTS } from "@/lib/analytics/events";
 
 export async function POST(request: NextRequest) {
@@ -97,9 +98,18 @@ export async function POST(request: NextRequest) {
             // Keyed on the cycle so a retried webhook delivery — which Razorpay
             // does freely — can't double-count a subscription.
             insertId: `sub_active:${subscriptionCycleKey(subscriptionId, currentEnd)}`,
-            properties: { plan, credits: PLAN_CREDITS[plan] },
+            properties: {
+              plan,
+              credits: PLAN_CREDITS[plan],
+              confirmed_by: "webhook",
+              razorpay_subscription_id: subscriptionId,
+              razorpay_plan_id: planId,
+              razorpay_customer_id: entity?.customer_id,
+              razorpay_subscription_status: entity?.status,
+              current_period_end: endDate,
+            },
           });
-          identify(userId, { plan, subscription_status: "active" });
+          setOnce(userId, { first_subscribed_at: new Date(), first_plan: plan });
         } else {
           logError({
             category: "payment",
@@ -146,11 +156,38 @@ export async function POST(request: NextRequest) {
               periodEnd: creditPeriodEnd(plan, endDate),
               idempotencyKey: subscriptionCycleKey(subscriptionId, currentEnd),
             });
+            // Razorpay sends subscription.charged for the FIRST charge too, so
+            // this event is "a subscription payment landed", not only a
+            // renewal — is_first_charge tells the two apart.
+            const payment = payload.payment?.entity;
+            const paidCount = Number(entity?.paid_count);
             track(EVENTS.SUBSCRIPTION_RENEWED, {
               userId: rows[0].id,
               insertId: `sub_renew:${subscriptionCycleKey(subscriptionId, currentEnd)}`,
-              properties: { plan },
+              properties: {
+                plan,
+                razorpay_subscription_id: subscriptionId,
+                razorpay_plan_id: entity?.plan_id,
+                razorpay_payment_id: payment?.id,
+                razorpay_invoice_id: payment?.invoice_id,
+                payment_method: payment?.method,
+                // Gross: the live plans bake GST into the plan amount.
+                amount_inr_gross: Number.isFinite(Number(payment?.amount))
+                  ? Number(payment.amount) / 100
+                  : null,
+                paid_count: Number.isFinite(paidCount) ? paidCount : null,
+                is_first_charge: paidCount === 1,
+                current_period_end: endDate,
+              },
             });
+            // set (not increment): paid_count is Razorpay's own running total,
+            // so a retried delivery can't inflate it.
+            if (Number.isFinite(paidCount)) {
+              identify(rows[0].id, {
+                subscription_payments: paidCount,
+                last_subscription_payment_at: new Date(),
+              });
+            }
           }
         }
         break;
@@ -187,7 +224,23 @@ export async function POST(request: NextRequest) {
                 : undefined,
             });
             // A top-up restores a positive balance — release any withheld outputs.
-            if (applied) await unlockOutputs(userId);
+            if (applied) {
+              await unlockOutputs(userId);
+              // Only reached when the Checkout callback never ran (closed tab,
+              // dropped network) — otherwise /credits/verify applied it first.
+              // Same insert id as that path, so the two can't double-count.
+              trackTopupPurchased({
+                userId,
+                credits,
+                tierId: notes.tier_id,
+                baseInr: Number(notes.base_inr),
+                grossPaise: Number(entity.amount),
+                paymentId: entity.id,
+                orderId: entity.order_id,
+                method: entity.method,
+                confirmedBy: "webhook",
+              });
+            }
           }
         }
         break;
@@ -224,8 +277,66 @@ export async function POST(request: NextRequest) {
                 WHERE user_id = $1`,
               [rows[0].id]
             );
+            track(EVENTS.SUBSCRIPTION_ENDED, {
+              userId: rows[0].id,
+              insertId: `sub_end:${subscriptionId}`,
+              properties: {
+                razorpay_subscription_id: subscriptionId,
+                razorpay_plan_id: cancelEntity?.plan_id,
+                razorpay_subscription_status: cancelEntity?.status,
+                webhook_event: eventType,
+                paid_count: Number(cancelEntity?.paid_count) || 0,
+              },
+            });
           }
         }
+        break;
+      }
+
+      case "payment.failed": {
+        // Only arrives if payment.failed is ticked on the webhook in the
+        // Razorpay dashboard. The browser reports the same failure as
+        // checkout_payment_failed, but only while the tab is open; this is the
+        // authoritative copy, and the only one for a failed auto-renewal.
+        const p = payload.payment?.entity;
+        if (!p?.id) break;
+        let userId = Number(p.notes?.user_id);
+        if (!(Number.isInteger(userId) && userId > 0)) {
+          const { rows } = await pool.query<{ id: number }>(
+            `SELECT id FROM users
+              WHERE ($1::text IS NOT NULL AND razorpay_customer_id = $1)
+                 OR ($2::text IS NOT NULL AND lower(email) = lower($2))
+              ORDER BY (razorpay_customer_id = $1) DESC NULLS LAST
+              LIMIT 1`,
+            [p.customer_id ?? null, p.email ?? null]
+          );
+          userId = rows[0]?.id ?? NaN;
+        }
+        track(EVENTS.PAYMENT_FAILED, {
+          userId: Number.isInteger(userId) && userId > 0 ? userId : null,
+          insertId: `pay_fail:${p.id}`,
+          properties: {
+            razorpay_payment_id: p.id,
+            razorpay_order_id: p.order_id,
+            razorpay_invoice_id: p.invoice_id,
+            razorpay_customer_id: p.customer_id,
+            kind: p.notes?.kind === "credit_topup" ? "topup" : p.invoice_id ? "subscription" : "unknown",
+            tier_id: p.notes?.tier_id,
+            amount_inr_gross: Number.isFinite(Number(p.amount)) ? Number(p.amount) / 100 : null,
+            payment_method: p.method,
+            bank: p.bank,
+            wallet: p.wallet,
+            vpa: p.vpa,
+            card_network: p.card?.network,
+            error_code: p.error_code,
+            error_description: p.error_description,
+            error_reason: p.error_reason,
+            error_source: p.error_source,
+            error_step: p.error_step,
+            payer_email: p.email,
+            payer_contact: p.contact,
+          },
+        });
         break;
       }
     }

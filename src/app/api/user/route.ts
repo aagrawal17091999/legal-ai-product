@@ -3,6 +3,8 @@ import { verifyAuth, getOrCreateUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { adminAuth } from "@/lib/firebase-admin";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 export async function GET(request: NextRequest) {
   const decoded = await verifyAuth(request);
@@ -26,6 +28,8 @@ export async function GET(request: NextRequest) {
       is_staff: user.is_staff === true,
       subscription_status: user.subscription_status,
       subscription_end_date: user.subscription_end_date,
+      // Drives the post-signup onboarding modal (phone + referral source).
+      needs_onboarding: !user.onboarded_at,
     });
   } catch (err) {
     logError({
@@ -71,6 +75,11 @@ export async function PATCH(request: NextRequest) {
     // Update Firebase profile
     const auth = adminAuth();
     await auth.updateUser(decoded.uid, { displayName });
+
+    track(EVENTS.PROFILE_UPDATED, {
+      userId: rows[0].id,
+      properties: { field: "display_name", display_name: displayName },
+    });
 
     return NextResponse.json(rows[0]);
   } catch (err) {

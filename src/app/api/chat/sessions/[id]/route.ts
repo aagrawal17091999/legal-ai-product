@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 import { reapStaleTurns } from "@/lib/chat/turnRunner";
 import type { CitedCase } from "@/types";
 
@@ -111,7 +113,10 @@ export async function DELETE(
 
     // Verify ownership
     const { rows } = await pool.query(
-      `SELECT id FROM chat_sessions WHERE id = $1 AND user_id = $2`,
+      `SELECT s.id, s.title, s.created_at,
+              (SELECT COUNT(*)::int FROM chat_messages m
+                WHERE m.session_id = s.id AND m.role = 'user') AS questions
+         FROM chat_sessions s WHERE s.id = $1 AND s.user_id = $2`,
       [id, user.id]
     );
 
@@ -122,6 +127,15 @@ export async function DELETE(
     // Delete messages first (foreign key), then session
     await pool.query(`DELETE FROM chat_messages WHERE session_id = $1`, [id]);
     await pool.query(`DELETE FROM chat_sessions WHERE id = $1`, [id]);
+    track(EVENTS.RESEARCH_SESSION_DELETED, {
+      userId: user.id,
+      properties: {
+        session_id: id,
+        session_title: rows[0].title,
+        questions_in_session: rows[0].questions,
+        session_created_at: rows[0].created_at,
+      },
+    });
 
     return NextResponse.json({ status: "deleted" });
   } catch (err) {

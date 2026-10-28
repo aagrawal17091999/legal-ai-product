@@ -3,8 +3,7 @@ import { verifyAuth, getRequestUser } from "@/lib/auth";
 import { verifyPaymentSignature, fetchOrder } from "@/lib/razorpay";
 import { grant, unlockOutputs, getBalance } from "@/lib/billing/credits";
 import { logError } from "@/lib/error-logger";
-import { track } from "@/lib/analytics/server";
-import { EVENTS } from "@/lib/analytics/events";
+import { trackTopupPurchased } from "@/lib/analytics/payments";
 
 /**
  * POST /api/payments/credits/verify
@@ -60,16 +59,15 @@ export async function POST(request: NextRequest) {
     });
     if (applied) {
       await unlockOutputs(user.id);
-      track(EVENTS.TOPUP_PURCHASED, {
+      trackTopupPurchased({
         userId: user.id,
-        // The payment id already dedupes the grant; reuse it so the webhook
-        // path and this synchronous path can't both count the same purchase.
-        insertId: `topup:${paymentId}`,
-        properties: {
-          credits,
-          tier_id: String(notes.tier_id ?? ""),
-          amount_inr_ex_gst: Number.isFinite(baseInr) ? baseInr : 0,
-        },
+        credits,
+        tierId: notes.tier_id,
+        baseInr,
+        grossPaise: typeof order.amount === "number" ? order.amount : NaN,
+        paymentId,
+        orderId,
+        confirmedBy: "checkout",
       });
     }
 

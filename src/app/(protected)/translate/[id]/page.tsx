@@ -6,6 +6,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 
 interface TranslatedSegment {
   source: string;
@@ -150,12 +152,18 @@ export default function TranslationViewerPage({
               {job.status === "ready" && (
                 <div className="flex items-center gap-3">
                   {pdfUrl && (
-                    <Button size="sm" variant="outline" onClick={() => window.open(pdfUrl, "_blank")}>
+                    <Button size="sm" variant="outline" onClick={() => {
+                        trackClick(EVENTS.TRANSLATION_RESULT_DOWNLOADED, { job_id: id, format: "pdf", filename: job.source_filename ?? "", target_language: job.target_language ?? "" });
+                        window.open(pdfUrl, "_blank");
+                      }}>
                       Download PDF
                     </Button>
                   )}
                   {docxUrl && (
-                    <Button size="sm" variant="ghost" onClick={() => window.open(docxUrl, "_blank")}>
+                    <Button size="sm" variant="ghost" onClick={() => {
+                        trackClick(EVENTS.TRANSLATION_RESULT_DOWNLOADED, { job_id: id, format: "docx", filename: job.source_filename ?? "", target_language: job.target_language ?? "" });
+                        window.open(docxUrl, "_blank");
+                      }}>
                       .docx
                     </Button>
                   )}

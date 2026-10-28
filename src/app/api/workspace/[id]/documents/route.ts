@@ -6,7 +6,7 @@ import { ingestDocument } from "@/lib/docchat/ingest";
 import { expireStaleDocuments } from "@/lib/docchat/expire";
 import { detectKind } from "@/lib/extract";
 import { logError } from "@/lib/error-logger";
-import { track } from "@/lib/analytics/server";
+import { track, increment } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
 import { MAX_FILE_BYTES, tooLargeMessage } from "@/lib/uploads";
 
@@ -77,7 +77,25 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     [workspaceId]
   );
   const existingDocs = countRows[0].n;
+  // Every early return below is a user who tried to upload and couldn't. Those
+  // are what decide whether the size/type/count limits are set right.
+  const rejected = (reason: string, file?: File) =>
+    track(EVENTS.UPLOAD_REJECTED, {
+      userId: user.id,
+      properties: {
+        feature: "workspace",
+        reason,
+        workspace_id: workspaceId,
+        filename: file?.name,
+        mime: file?.type,
+        file_bytes: file?.size,
+        files_in_batch: files.length,
+        batch_bytes: files.reduce((sum, f) => sum + f.size, 0),
+        existing_documents: existingDocs,
+      },
+    });
   if (existingDocs + files.length > MAX_DOCS_PER_WORKSPACE) {
+    rejected("workspace_document_limit");
     return NextResponse.json(
       {
         error: `This workspace can hold at most ${MAX_DOCS_PER_WORKSPACE} documents (it has ${existingDocs}). Delete some before uploading ${files.length} more.`,
@@ -87,6 +105,7 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
   }
   const batchBytes = files.reduce((sum, f) => sum + f.size, 0);
   if (batchBytes > MAX_BYTES_PER_WORKSPACE) {
+    rejected("batch_too_large");
     return NextResponse.json(
       { error: `This upload exceeds the ${Math.round(MAX_BYTES_PER_WORKSPACE / (1024 * 1024))} MB per-workspace limit.` },
       { status: 400 }
@@ -99,12 +118,14 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
   try {
     for (const file of files) {
       if (!acceptedFile(file.name, file.type)) {
+        rejected("unsupported_type", file);
         return NextResponse.json(
           { error: `Unsupported file type: ${file.name}. Accepted: PDF, DOCX, JPG, PNG.` },
           { status: 400 }
         );
       }
       if (file.size > MAX_FILE_BYTES) {
+        rejected("file_too_large", file);
         return NextResponse.json(
           { error: tooLargeMessage(file.name) },
           { status: 400 }
@@ -131,8 +152,14 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
       track(EVENTS.DOCUMENT_UPLOADED, {
         userId: user.id,
         insertId: `doc_upload:${rows[0].id}`,
-        // Size and type only; the filename can carry a client or matter name.
-        properties: { file_bytes: file.size, mime },
+        properties: {
+          workspace_id: workspaceId,
+          document_id: rows[0].id,
+          filename: file.name,
+          file_bytes: file.size,
+          mime,
+          files_in_batch: files.length,
+        },
       });
     }
 
@@ -176,17 +203,40 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
         // ingestDocument owns its own error handling and records the outcome on
         // the row, so read the settled status back rather than assuming success.
         try {
-          const { rows: after } = await pool.query<{ status: string }>(
-            `SELECT status FROM workspace_documents WHERE id = $1`,
+          const { rows: after } = await pool.query<{
+            status: string;
+            filename: string;
+            mime: string;
+            page_count: number | null;
+            ocr_used: boolean | null;
+            char_count: number | null;
+            chunk_count: number | null;
+            error: string | null;
+          }>(
+            `SELECT status, filename, mime, page_count, ocr_used, char_count, chunk_count, error
+               FROM workspace_documents WHERE id = $1`,
             [docId]
           );
-          const settled = after[0]?.status;
+          const doc = after[0];
+          const settled = doc?.status;
           if (settled === "ready" || settled === "failed") {
             track(settled === "ready" ? EVENTS.DOCUMENT_READY : EVENTS.DOCUMENT_FAILED, {
               userId: user.id,
               insertId: `doc_ingest:${docId}`,
-              properties: { duration_ms: Date.now() - startedAt },
+              properties: {
+                duration_ms: Date.now() - startedAt,
+                workspace_id: workspaceId,
+                document_id: docId,
+                filename: doc.filename,
+                mime: doc.mime,
+                page_count: doc.page_count,
+                ocr_used: doc.ocr_used,
+                char_count: doc.char_count,
+                chunk_count: doc.chunk_count,
+                error: doc.error,
+              },
             });
+            if (settled === "ready") increment(user.id, { documents_uploaded: 1 });
           }
         } catch {
           // Best-effort: never let analytics abort the remaining ingestions.

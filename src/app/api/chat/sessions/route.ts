@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getOrCreateUser, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
+import { track, filterProperties } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 // POST /api/chat/sessions — Create a new chat session
 export async function POST(request: NextRequest) {
@@ -25,6 +27,12 @@ export async function POST(request: NextRequest) {
        RETURNING id, title, filters, created_at, updated_at`,
       [user.id, JSON.stringify(filters)]
     );
+
+    track(EVENTS.RESEARCH_SESSION_CREATED, {
+      userId: user.id,
+      insertId: `session_create:${rows[0].id}`,
+      properties: { session_id: rows[0].id, ...filterProperties(filters) },
+    });
 
     return NextResponse.json(rows[0]);
   } catch (err) {

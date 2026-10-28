@@ -55,7 +55,14 @@ export async function POST(request: NextRequest) {
 
     track(EVENTS.CHECKOUT_STARTED, {
       userId: user.id,
-      properties: { kind: "subscription", plan },
+      properties: {
+        kind: "subscription",
+        plan,
+        razorpay_subscription_id: subscription.id,
+        razorpay_customer_id: customerId,
+        razorpay_plan_id: (subscription as { plan_id?: string }).plan_id ?? null,
+        existing_plan: user.plan,
+      },
     });
 
     return NextResponse.json({

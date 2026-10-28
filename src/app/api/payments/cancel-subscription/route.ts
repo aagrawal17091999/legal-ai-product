@@ -3,6 +3,8 @@ import { verifyAuth, getOrCreateUser } from "@/lib/auth";
 import { cancelSubscription } from "@/lib/razorpay";
 import pool from "@/lib/db";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 export async function POST(request: NextRequest) {
   const decoded = await verifyAuth(request);
@@ -35,6 +37,17 @@ export async function POST(request: NextRequest) {
       `UPDATE users SET subscription_status = 'cancelled', updated_at = NOW() WHERE id = $1`,
       [user.id]
     );
+
+    track(EVENTS.SUBSCRIPTION_CANCELLED, {
+      userId: user.id,
+      properties: {
+        plan: user.plan,
+        cancelled_by: "user",
+        at_cycle_end: true,
+        access_until: user.subscription_end_date,
+        razorpay_subscription_id: user.razorpay_subscription_id,
+      },
+    });
 
     return NextResponse.json({
       status: "cancelled",

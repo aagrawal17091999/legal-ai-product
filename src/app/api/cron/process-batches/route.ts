@@ -248,8 +248,18 @@ async function trackJobSettled(
       user_id: number;
       created_at: Date;
       output_locked: boolean | null;
+      source_filename: string | null;
+      detected_language: string | null;
+      target_language: string | null;
+      segment_count: number | null;
+      flagged_count: number | null;
+      ocr_used: boolean | null;
+      error: string | null;
     }>(
-      `SELECT user_id, created_at, output_locked FROM ${jobTable(kind)} WHERE id = $1`,
+      `SELECT user_id, created_at, output_locked, source_filename, detected_language,
+              ${kind === "translate" ? "target_language" : "NULL AS target_language"},
+              segment_count, flagged_count, ocr_used, error
+         FROM ${jobTable(kind)} WHERE id = $1`,
       [jobId]
     );
     const row = rows[0];
@@ -271,6 +281,14 @@ async function trackJobSettled(
         // whether this feature feels usable.
         duration_ms: Date.now() - new Date(row.created_at).getTime(),
         output_locked: row.output_locked === true,
+        job_id: jobId,
+        filename: row.source_filename,
+        detected_language: row.detected_language,
+        target_language: row.target_language,
+        segment_count: row.segment_count,
+        flagged_count: row.flagged_count,
+        ocr_used: row.ocr_used,
+        error: row.error,
       },
     });
   } catch {

@@ -12,7 +12,7 @@
 import pool from "@/lib/db";
 import type { PoolClient } from "pg";
 import { withMeter, markMeterUnbillable } from "@/lib/billing/meter";
-import { track } from "@/lib/analytics/server";
+import { track, preview, filterProperties, increment, setOnce } from "@/lib/analytics/server";
 import { EVENTS } from "@/lib/analytics/events";
 import { hydrateSessionStore } from "@/lib/rag/sessionStore";
 import { runAgent, buildAgentAuditSteps, AgentAbortedError } from "@/lib/rag/agent";
@@ -223,13 +223,21 @@ async function runTurn(p: RunTurnParams): Promise<void> {
 
       track(EVENTS.RESEARCH_ASKED, {
         userId: user.id,
+        insertId: `research_ask:${turn.messageId}`,
         properties: {
-          // Length only — never the question itself (see analytics/events.ts).
+          question: preview(userMessage),
           message_length: userMessage.length,
+          session_id: sessionId,
+          message_id: turn.messageId,
+          is_first_question_in_session: isFirstUserMessage,
           history_turns: Math.min(conversationHistory.length, 10),
-          has_filters: Boolean(sessionFilters),
+          session_cases_count: sessionStoreForTurn.caseSummaries.length,
+          // Replaces has_filters, which was Boolean({}) — true on every turn.
+          ...filterProperties(sessionFilters),
         },
       });
+      increment(user.id, { research_questions_asked: 1 });
+      setOnce(user.id, { first_research_question_at: new Date() });
 
       // Meter the whole agent turn: withMeter establishes the usage context
       // here, inside the detached task, so every Claude + Voyage call nested in
@@ -382,9 +390,29 @@ async function runTurn(p: RunTurnParams): Promise<void> {
     // One event per completed turn, whatever the outcome — `status` already
     // distinguishes success / degraded / error, and splitting them into
     // separate events would make the funnel harder to read, not easier.
-    track(status === "error" ? EVENTS.RESEARCH_FAILED : EVENTS.RESEARCH_ANSWERED, {
+    const cancelled = errorMsg === "cancelled";
+    track(
+      cancelled
+        ? EVENTS.RESEARCH_STOPPED
+        : status === "error"
+          ? EVENTS.RESEARCH_FAILED
+          : EVENTS.RESEARCH_ANSWERED,
+      {
       userId: user.id,
+      insertId: `research_settle:${turn.messageId}`,
       properties: {
+        question: preview(userMessage),
+        answer_preview: preview(assistantContent),
+        answer_length: assistantContent.length,
+        error: cancelled ? null : preview(errorMsg),
+        session_id: sessionId,
+        message_id: turn.messageId,
+        model,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cited_case_titles: citedCasesForDb.map((c) => c.title),
+        cited_case_citations: citedCasesForDb.map((c) => c.citation ?? ""),
+        cited_case_ids: citedCasesForDb.map((c) => `${c.source_table}:${c.id}`),
         status,
         response_time_ms: responseTimeMs,
         steps_used: agentResult?.stepsUsed ?? 0,
@@ -403,8 +431,14 @@ async function runTurn(p: RunTurnParams): Promise<void> {
         // interpretable after the fact.
         budget_hit: agentResult?.budgetHit ?? false,
         credit_budget: agentResult?.creditBudget ?? null,
+        faithfulness_checked: faithfulness?.checked ?? null,
+        faithfulness_unsupported: faithfulness?.unsupported ?? null,
+        faithfulness_uncertain: faithfulness?.uncertain ?? null,
+        tools_used: (agentResult?.toolTrace ?? []).map((t) => t.tool),
       },
-    });
+      }
+    );
+    if (turnMeter?.credits) increment(user.id, { credits_spent: turnMeter.credits });
 
     // Compose rag_trace with agent-shape metadata.
     const ragTrace: Record<string, unknown> = {

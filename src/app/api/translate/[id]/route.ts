@@ -4,6 +4,8 @@ import pool from "@/lib/db";
 import { getSignedObjectUrl, deleteFromR2 } from "@/lib/r2";
 import { expireStaleTranslations } from "@/lib/translate/expire";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 // GET /api/translate/[id] — job status; includes download URLs (DOCX + PDF) when ready
 export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -73,12 +75,22 @@ export async function DELETE(request: NextRequest, ctx: { params: Promise<{ id: 
     const { rows } = await pool.query(
       `DELETE FROM translation_jobs
         WHERE id = $1 AND user_id = $2
-        RETURNING source_r2_key, output_r2_key, output_pdf_r2_key`,
+        RETURNING source_r2_key, output_r2_key, output_pdf_r2_key,
+                  source_filename, target_language, status`,
       [id, user.id]
     );
     if (rows.length === 0) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     await deleteFromR2([rows[0].source_r2_key, rows[0].output_r2_key, rows[0].output_pdf_r2_key]);
+    track(EVENTS.TRANSLATE_DELETED, {
+      userId: user.id,
+      properties: {
+        job_id: id,
+        filename: rows[0].source_filename,
+        target_language: rows[0].target_language,
+        job_status: rows[0].status,
+      },
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     logError({

@@ -3,6 +3,8 @@ import { verifyAuth, getRequestUser } from "@/lib/auth";
 import pool from "@/lib/db";
 import { deleteFromR2 } from "@/lib/r2";
 import { logError } from "@/lib/error-logger";
+import { track } from "@/lib/analytics/server";
+import { EVENTS } from "@/lib/analytics/events";
 
 /**
  * DELETE /api/workspace/[id]/documents/[docId]
@@ -32,7 +34,7 @@ export async function DELETE(
         USING workspaces w
         WHERE d.workspace_id = w.id
           AND d.id = $1 AND d.workspace_id = $2 AND w.user_id = $3
-      RETURNING d.r2_key`,
+      RETURNING d.r2_key, d.filename, d.mime, d.page_count, d.status`,
       [docId, workspaceId, user.id]
     );
     if (rows.length === 0) {
@@ -40,6 +42,17 @@ export async function DELETE(
     }
 
     await deleteFromR2([rows[0].r2_key]);
+    track(EVENTS.DOCUMENT_DELETED, {
+      userId: user.id,
+      properties: {
+        workspace_id: workspaceId,
+        document_id: docId,
+        filename: rows[0].filename,
+        mime: rows[0].mime,
+        page_count: rows[0].page_count,
+        document_status: rows[0].status,
+      },
+    });
     await pool.query(`UPDATE workspaces SET updated_at = NOW() WHERE id = $1`, [workspaceId]);
     return NextResponse.json({ ok: true });
   } catch (err) {

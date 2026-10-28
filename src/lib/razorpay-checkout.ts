@@ -12,6 +12,8 @@
 
 import { loadRazorpay } from "./loadRazorpay";
 import { reportError } from "./report-error";
+import { trackClick } from "./analytics/client";
+import { EVENTS } from "./analytics/events";
 
 /** Shape Razorpay hands back on `payment.failed`. All fields are optional. */
 interface RazorpayFailure {
@@ -38,8 +40,8 @@ export interface OpenCheckoutParams<T extends object> {
    * the Razorpay dialog.
    */
   onFailure: (message: string) => void;
-  /** Extra context stored alongside the reported error (plan, tier, …). */
-  context?: Record<string, unknown>;
+  /** Extra context stored alongside the reported error and analytics (plan, tier, …). */
+  context?: Record<string, string | number | boolean>;
 }
 
 export async function openRazorpayCheckout<T extends object>({
@@ -52,7 +54,22 @@ export async function openRazorpayCheckout<T extends object>({
   const Ctor = (window as unknown as {
     Razorpay: new (opts: T) => RazorpayInstance;
   }).Razorpay;
-  const rzp = new Ctor(options);
+  // Razorpay calls ondismiss only when the user closes the dialog themselves —
+  // a successful payment closes it without firing — so this is "walked away
+  // at the payment step", the drop-off between checkout_started and paying.
+  let failedAttempts = 0;
+  const withDismiss = {
+    ...options,
+    modal: {
+      ...((options as { modal?: Record<string, unknown> }).modal ?? {}),
+      ondismiss: () => {
+        trackClick(EVENTS.CHECKOUT_DISMISSED, { ...context, failed_attempts: failedAttempts });
+        const prior = (options as { modal?: { ondismiss?: () => void } }).modal?.ondismiss;
+        prior?.();
+      },
+    },
+  } as T;
+  const rzp = new Ctor(withDismiss);
 
   // Guarded: this is the checkout path. If a Razorpay build ever ships without
   // `.on`, an unguarded call would throw here and stop the dialog from opening
@@ -61,6 +78,18 @@ export async function openRazorpayCheckout<T extends object>({
   rzp.on?.("payment.failed", (payload) => {
     const description = payload?.error?.description;
     const reason = payload?.error?.reason;
+    failedAttempts++;
+    trackClick(EVENTS.CHECKOUT_PAYMENT_FAILED, {
+      ...context,
+      razorpay_code: payload?.error?.code ?? "",
+      razorpay_reason: reason ?? "",
+      razorpay_step: payload?.error?.step ?? "",
+      razorpay_source: payload?.error?.source ?? "",
+      razorpay_order_id: payload?.error?.metadata?.order_id ?? "",
+      razorpay_payment_id: payload?.error?.metadata?.payment_id ?? "",
+      description: description ?? "",
+      attempt: failedAttempts,
+    });
     // Razorpay's `description` is written for end users ("Your card was
     // declined by the issuing bank"), so prefer it verbatim over a generic line.
     onFailure(

@@ -6,6 +6,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useJobStatusPush } from "@/hooks/useJobStatusPush";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
+import { trackClick } from "@/lib/analytics/client";
+import { EVENTS } from "@/lib/analytics/events";
 
 interface TranscribedSegment {
   source: string;
@@ -144,12 +146,18 @@ export default function OcrViewerPage({
               {job.status === "ready" && (
                 <div className="flex-shrink-0 flex items-center gap-2">
                   {pdfUrl && (
-                    <Button size="sm" variant="outline" onClick={() => window.open(pdfUrl, "_blank")}>
+                    <Button size="sm" variant="outline" onClick={() => {
+                        trackClick(EVENTS.OCR_RESULT_DOWNLOADED, { job_id: id, format: "pdf", filename: job.source_filename ?? "" });
+                        window.open(pdfUrl, "_blank");
+                      }}>
                       Download PDF
                     </Button>
                   )}
                   {docxUrl && (
-                    <Button size="sm" variant="ghost" onClick={() => window.open(docxUrl, "_blank")}>
+                    <Button size="sm" variant="ghost" onClick={() => {
+                        trackClick(EVENTS.OCR_RESULT_DOWNLOADED, { job_id: id, format: "docx", filename: job.source_filename ?? "" });
+                        window.open(docxUrl, "_blank");
+                      }}>
                       .docx
                     </Button>
                   )}

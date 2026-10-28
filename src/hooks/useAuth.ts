@@ -82,7 +82,9 @@ export function useAuth() {
       const auth = getAuth();
       const result = await createUserWithEmailAndPassword(auth, email, password);
       await updateProfile(result.user, { displayName });
-      const token = await result.user.getIdToken();
+      // Force a fresh token: the cached one was minted before updateProfile and
+      // has no `name` claim, which is the only way the server learns the name.
+      const token = await result.user.getIdToken(true);
       await syncSessionCookie(token);
       setState({ user: result.user, loading: false, token });
       return result.user;

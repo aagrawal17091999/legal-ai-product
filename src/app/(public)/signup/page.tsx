@@ -6,6 +6,7 @@ import { useAuth } from "@/hooks/useAuth";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import {
+  REFERRALS_ENABLED,
   normalizeReferralCode,
   readReferralCookie,
   writeReferralCookie,
@@ -35,6 +36,7 @@ export default function SignupPage() {
   }, [authLoading, user]);
 
   useEffect(() => {
+    if (!REFERRALS_ENABLED) return;
     const fromUrl = normalizeReferralCode(
       new URLSearchParams(window.location.search).get("ref")
     );
@@ -67,6 +69,7 @@ export default function SignupPage() {
 
   // Before either signup path: what's in the field is what gets claimed.
   const rememberReferral = () => {
+    if (!REFERRALS_ENABLED) return;
     writeReferralCookie(normalizeReferralCode(referralCode));
   };
 
@@ -169,15 +172,17 @@ export default function SignupPage() {
             required
             minLength={8}
           />
-          <Input
-            label="Referral code (optional)"
-            type="text"
-            value={referralCode}
-            onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
-            placeholder="e.g. PRIYA7KQ"
-            autoComplete="off"
-            maxLength={16}
-          />
+          {REFERRALS_ENABLED && (
+            <Input
+              label="Referral code (optional)"
+              type="text"
+              value={referralCode}
+              onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+              placeholder="e.g. PRIYA7KQ"
+              autoComplete="off"
+              maxLength={16}
+            />
+          )}
 
           {error && (
             <p className="text-sm text-burgundy-700">{error}</p>

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getOrCreateUser } from "@/lib/auth";
 import { getReferralSummary } from "@/lib/referrals";
 import { logError } from "@/lib/error-logger";
+import { REFERRALS_ENABLED } from "@/lib/referrals/shared";
 
 /**
  * GET /api/referrals — the caller's own referral link, progress toward the next
@@ -9,6 +10,7 @@ import { logError } from "@/lib/error-logger";
  * Allocates their code on first call.
  */
 export async function GET(request: NextRequest) {
+  if (!REFERRALS_ENABLED) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const decoded = await verifyAuth(request);
   if (!decoded) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

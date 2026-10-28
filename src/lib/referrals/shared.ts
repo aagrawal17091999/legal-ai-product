@@ -4,6 +4,16 @@
  * ./rewards.ts (turning earned months into skipped renewals).
  */
 
+/**
+ * Master switch for everything a user can see or reach: the "Refer & earn"
+ * card and sidebar link, the signup/onboarding code fields, /r/ links, the
+ * user-facing /api/referrals routes, the terms clause, and the hourly cron.
+ * Off unless NEXT_PUBLIC_REFERRALS_ENABLED=on. NEXT_PUBLIC so the same value is
+ * inlined into the browser bundle — flipping it needs a rebuild, not a reload.
+ * Staff pages (/admin/referrals) stay reachable either way, for testing.
+ */
+export const REFERRALS_ENABLED = process.env.NEXT_PUBLIC_REFERRALS_ENABLED === "on";
+
 /** Qualified referrals per free month. */
 export const REFERRALS_PER_FREE_MONTH = 5;
 

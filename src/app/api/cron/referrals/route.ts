@@ -7,6 +7,7 @@ import {
   runDueRewardWork,
 } from "@/lib/referrals/rewards";
 import { logError } from "@/lib/error-logger";
+import { REFERRALS_ENABLED } from "@/lib/referrals/shared";
 
 /**
  * Referral program tick. Hourly (deploy/systemd/nyayasearch-referrals.timer).
@@ -40,6 +41,9 @@ export async function GET(request: NextRequest) {
   if (request.headers.get("Authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // Nothing can be claimed while the program is off, so there is nothing to do.
+  if (!REFERRALS_ENABLED) return NextResponse.json({ status: "disabled" });
 
   try {
     const qualification = await qualifyDueReferrals();

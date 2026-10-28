@@ -12,6 +12,7 @@ import {
   type ReferralSource,
 } from "@/lib/onboarding";
 import {
+  REFERRALS_ENABLED,
   normalizeReferralCode,
   readReferralCookie,
   writeReferralCookie,
@@ -64,6 +65,7 @@ export default function OnboardingModal() {
   // Claim a code carried over from the /r/ link or the signup form. Any definite
   // answer clears the cookie, so a refused code isn't retried on every page.
   useEffect(() => {
+    if (!REFERRALS_ENABLED) return;
     const code = readReferralCookie();
     if (!code) return;
     (async () => {
@@ -212,7 +214,7 @@ export default function OnboardingModal() {
           )}
         </fieldset>
 
-        {referredBy ? (
+        {!REFERRALS_ENABLED ? null : referredBy ? (
           <p className="mt-6 text-[13px] text-charcoal-600">
             Referred by <span className="font-medium text-charcoal-900">{referredBy}</span>.
           </p>

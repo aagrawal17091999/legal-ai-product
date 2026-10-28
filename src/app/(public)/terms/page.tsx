@@ -15,6 +15,8 @@
 //      wording below must match what you will actually honour.
 //   4. Whether you want a liability cap other than "fees paid in the last 12
 //      months".
+import { REFERRALS_ENABLED } from "@/lib/referrals/shared";
+
 const LAST_UPDATED = "11 August 2026";
 const REVIEW_PENDING = true;
 
@@ -121,23 +123,25 @@ export default function TermsPage() {
             </p>
           </div>
 
-          <div>
-            <h2 className="font-serif text-2xl text-charcoal-900 mb-3">Referrals</h2>
-            <p>
-              You can share your referral link with as many people as you like.
-              A referral counts when the person you referred signs up with your
-              code and their first Pro subscription payment has gone 7 days
-              without being refunded. Every 5 referrals that count earn you one
-              free month of your current plan, applied by skipping your next
-              renewal (for an annual plan, the renewal date moves one month
-              later). Free months have no cash value and can&apos;t be transferred.
-              If you cancel your subscription, every free month you haven&apos;t
-              used is lost — including one in progress, in which case Pro ends
-              when you cancel. Referring
-              yourself, or referrals we reasonably believe are not genuine,
-              don&apos;t count, and we may withdraw months earned that way.
-            </p>
-          </div>
+          {REFERRALS_ENABLED && (
+            <div>
+              <h2 className="font-serif text-2xl text-charcoal-900 mb-3">Referrals</h2>
+              <p>
+                You can share your referral link with as many people as you like.
+                A referral counts when the person you referred signs up with your
+                code and their first Pro subscription payment has gone 7 days
+                without being refunded. Every 5 referrals that count earn you one
+                free month of your current plan, applied by skipping your next
+                renewal (for an annual plan, the renewal date moves one month
+                later). Free months have no cash value and can&apos;t be transferred.
+                If you cancel your subscription, every free month you haven&apos;t
+                used is lost — including one in progress, in which case Pro ends
+                when you cancel. Referring
+                yourself, or referrals we reasonably believe are not genuine,
+                don&apos;t count, and we may withdraw months earned that way.
+              </p>
+            </div>
+          )}
 
           <div>
             <h2 className="font-serif text-2xl text-charcoal-900 mb-3">

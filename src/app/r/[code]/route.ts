@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  REFERRALS_ENABLED,
   REFERRAL_COOKIE,
   REFERRAL_COOKIE_MAX_AGE,
   normalizeReferralCode,
@@ -18,9 +19,13 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
 ) {
+  const target = new URL("/signup", request.url);
+  // Program switched off: the link still lands somewhere useful, but carries
+  // nothing — no code in the URL, no cookie.
+  if (!REFERRALS_ENABLED) return NextResponse.redirect(target);
+
   const { code: raw } = await params;
   const code = normalizeReferralCode(raw);
-  const target = new URL("/signup", request.url);
   if (code) target.searchParams.set("ref", code);
 
   const res = NextResponse.redirect(target);

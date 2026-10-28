@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyAuth, getOrCreateUser, invalidateUserCache } from "@/lib/auth";
 import { claimReferral } from "@/lib/referrals";
-import { CLAIM_ERRORS } from "@/lib/referrals/shared";
 import { logError } from "@/lib/error-logger";
+import { CLAIM_ERRORS, REFERRALS_ENABLED } from "@/lib/referrals/shared";
 
 /**
  * POST /api/referrals/claim { code } — attach a referral code to the caller's
@@ -13,6 +13,7 @@ import { logError } from "@/lib/error-logger";
  * cookie on any definite answer so a dead code isn't retried on every page load.
  */
 export async function POST(request: NextRequest) {
+  if (!REFERRALS_ENABLED) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const decoded = await verifyAuth(request);
   if (!decoded) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

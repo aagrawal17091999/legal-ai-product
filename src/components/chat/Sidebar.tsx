@@ -6,6 +6,7 @@ import Image from "next/image";
 import { useAuth } from "@/hooks/useAuth";
 import type { ChatSession } from "@/types";
 import { TRANSLATION_ENABLED } from "@/lib/translate/enabled";
+import { REFERRALS_ENABLED } from "@/lib/referrals/shared";
 
 interface SidebarProps {
   sessions: ChatSession[];
@@ -219,15 +220,17 @@ export default function Sidebar({
               </svg>
               Upgrade Plan
             </Link>
-            <Link
-              href="/account#refer"
-              className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
-            >
-              <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7" />
-              </svg>
-              Refer &amp; earn
-            </Link>
+            {REFERRALS_ENABLED && (
+              <Link
+                href="/account#refer"
+                className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"
+              >
+                <svg className="w-4 h-4 text-charcoal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7" />
+                </svg>
+                Refer &amp; earn
+              </Link>
+            )}
             <Link
               href="/account"
               className="flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] text-charcoal-600 hover:bg-ivory-200 hover:text-charcoal-900 transition-colors"

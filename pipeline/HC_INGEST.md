@@ -37,6 +37,15 @@ text layer from a real one.
    often). The shared Supreme Court prompt gets a High Court note (no "List of
    Acts" box; a citation only if the judgment prints its own), and a citation
    is kept only if it is a neutral citation found near the top of the text.
+   The extractor reads the whole judgment (up to 240,000 characters: the
+   first 200k and the last 40k; `HC_EXTRACT_HEAD_CHARS` / `HC_EXTRACT_TAIL_CHARS`).
+   Graded by Opus on 50 Delhi judgments, fields were 81% right reading only
+   the first 12,000 characters and 96% reading the whole judgment.
+
+   After a prompt, model or input change, re-read the fields of everything
+   already loaded (this also re-embeds, since chunk headers carry the fields):
+   `bash scripts/hc-ingest.sh refields --before '<ISO time of the change>'`.
+   Rerun with the same `--before` to resume a stopped run.
 5. **Embed** voyage-law-2 chunks for every document with ≥ `HC_EMBED_MIN_CHARS`
    (500) characters of text — short orders included, since a one-page bail or
    quashing order carries reasoning. Only ~2.4% of documents fall below 500

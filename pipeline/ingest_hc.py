@@ -85,6 +85,16 @@ RATES = {
 # this is plain extraction, so thinking is turned off for it.
 EXTRACT_MODEL_ID = os.getenv('HC_EXTRACT_MODEL', 'claude-haiku-4-5-20251001')
 EXTRACT_EXTRA = {'thinking': {'type': 'disabled'}} if EXTRACT_MODEL_ID.startswith('claude-haiku-5') else {}
+# What the extractor reads. The first 12,000 characters alone missed the
+# result on over half of long judgments (it is at the end). Graded on 50 Delhi
+# judgments: first 12k 81% of fields right, first 12k + last 8k 92%, whole
+# judgment 96%, for ~$0.03 more per 1,000 loaded documents on Haiku 5.5. The
+# default reads the whole judgment up to 240,000 characters (under Haiku 5.5's
+# 100k-token price step), then keeps the end; e.g. HEAD 12000 / TAIL 8000
+# reads only the start and the end.
+EXTRACT_HEAD_CHARS = int(os.getenv('HC_EXTRACT_HEAD_CHARS', '200000'))
+EXTRACT_TAIL_CHARS = int(os.getenv('HC_EXTRACT_TAIL_CHARS', '40000'))
+OMITTED = '\n\n[... middle of the judgment omitted ...]\n\n'
 # Every Claude call goes through Message Batches (claude_batch): half price.
 LLM_BATCH_TIMEOUT_S = 24 * 3600
 BATCH_DISCOUNT = 0.5
@@ -380,8 +390,19 @@ def message_text(msg) -> str:
 HC_PROMPT_NOTE = """
 
 THIS IS A HIGH COURT JUDGMENT. These rules override the ones above where they differ:
-- acts_cited: High Court judgments have no "List of Acts" box. List the acts, codes and statutes the court applies, interprets or relies on (including the Constitution of India), each as a full name with year. Do not list an act that is only mentioned in passing.
-- extracted_citation: this judgment's own neutral citation, copied exactly, only if it is printed at the top of this judgment. Never a case number, and never the citation of another judgment cited inside it. If none is printed, null."""
+- acts_cited: High Court judgments have no "List of Acts" box. List the acts, codes and statutes the court applies, interprets or relies on, each as a full name with year. List only acts the judgment itself names; do not list an act that is only mentioned in passing, in a case title, or inside a quoted passage.
+- extracted_citation: this judgment's own neutral citation, copied exactly, only if it is printed at the top of this judgment. Never a case number, and never the citation of another judgment cited inside it. If none is printed, null.
+- extracted_petitioner / extracted_respondent: keep "& Anr." / "& Ors." / "and Others" when the cause title has it.
+- BNS is the Bharatiya Nyaya Sanhita, 2023 and BNSS is the Bharatiya Nagarik Suraksha Sanhita, 2023: different acts. Name each act the way the judgment does, and never add one it does not name.
+- author_judge_name: only a judge the judgment names as its author (by the judgment heading or "per"). An order of a bench signed by all its judges, with no author named, has none: null. Never use the presiding judge as a stand-in.
+- The text of a long judgment may skip its middle, marked "[... middle of the judgment omitted ...]". The final order is at the end."""
+
+
+def extraction_input(text: str) -> str:
+    if len(text) <= EXTRACT_HEAD_CHARS + EXTRACT_TAIL_CHARS:
+        return text
+    tail = text[-EXTRACT_TAIL_CHARS:] if EXTRACT_TAIL_CHARS else ''
+    return text[:EXTRACT_HEAD_CHARS] + (OMITTED + tail if tail else '')
 
 NEUTRAL_CITATION = re.compile(r'(19|20)\d{2}\s*:\s*[A-Z]{2,6}\s*:\s*\d+')
 
@@ -400,7 +421,7 @@ def haiku_fields(rows: list[dict], stats: dict) -> dict[int, dict]:
     HC_EXTRACT_MODEL, through claude_batch. A request that
     fails or returns unparseable JSON gets one more try in a follow-up batch;
     after that the document keeps its metadata fields."""
-    from extraction_llm import EXTRACTION_SYSTEM_PROMPT, MAX_INPUT_CHARS, _parse_json_response, _validate_result
+    from extraction_llm import EXTRACTION_SYSTEM_PROMPT, _parse_json_response, _validate_result
 
     text_of = {r['id']: r['judgment_text'] for r in rows}
     results: dict[int, dict] = {}
@@ -412,7 +433,7 @@ def haiku_fields(rows: list[dict], stats: dict) -> dict[int, dict]:
                 'model': EXTRACT_MODEL_ID, **EXTRACT_EXTRA, 'max_tokens': 4096,
                 'system': EXTRACTION_SYSTEM_PROMPT + HC_PROMPT_NOTE,
                 'messages': [{'role': 'user', 'content': 'Extract structured fields from this Indian court '
-                              f"judgment.\n\nJUDGMENT TEXT:\n{r['judgment_text'][:MAX_INPUT_CHARS]}"}],
+                              f"judgment.\n\nJUDGMENT TEXT:\n{extraction_input(r['judgment_text'])}"}],
             },
         } for r in todo], f'fields (try {attempt})')
         stats['claude_in'] += in_tok
@@ -434,14 +455,17 @@ def haiku_fields(rows: list[dict], stats: dict) -> dict[int, dict]:
     return results
 
 
-def extract_fields_for(conn, ids: list[int], use_llm: bool, stats: dict) -> None:
+def extract_fields_for(conn, ids: list[int], use_llm: bool, stats: dict, refresh: bool = False) -> None:
+    """refresh: the rows already have Claude fields (refields); one whose
+    request fails again keeps them rather than dropping to metadata only."""
     from extract_fields import write_results
 
     if not ids:
         return
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cur.execute(f"""SELECT id, title, judge, disposal_nature, judgment_text, page_count, duplicate_of
-                    FROM {TABLE} WHERE id = ANY(%s) AND extraction_status = 'pending'""", (ids,))
+                    FROM {TABLE} WHERE id = ANY(%s) AND extraction_status = 'pending'
+                    ORDER BY duplicate_of IS NOT NULL, id""", (ids,))
     rows = [dict(r) for r in cur.fetchall()]
     cur.close()
     if not rows:
@@ -449,6 +473,7 @@ def extract_fields_for(conn, ids: list[int], use_llm: bool, stats: dict) -> None
 
     llm_rows = [r for r in rows if use_llm and r['judgment_text'] and r['duplicate_of'] is None
                 and (r['page_count'] or 0) >= LLM_MIN_PAGES]
+    llm_ids = {r['id'] for r in llm_rows}
     llm_results: dict[int, dict] = {}
     if llm_rows:
         log(f'fields: Haiku on {len(llm_rows)} documents of >= {LLM_MIN_PAGES} pages')
@@ -456,6 +481,12 @@ def extract_fields_for(conn, ids: list[int], use_llm: bool, stats: dict) -> None
     stats['llm_docs'] += len(llm_results)
 
     for r in rows:
+        if refresh and r['id'] in llm_ids and r['id'] not in llm_results:
+            c = conn.cursor()
+            c.execute(f"UPDATE {TABLE} SET extraction_status = 'completed' WHERE id = %s", (r['id'],))
+            conn.commit()
+            c.close()
+            continue
         base = fields_from_metadata(r)
         if r['id'] in llm_results:
             fields = merge_fields(base, llm_results[r['id']])
@@ -755,6 +786,65 @@ def cmd_sync(args) -> int:
     return run_batch('sync', args.max_docs, None, since, not args.no_llm, args.dry_run)
 
 
+def cmd_refields(args) -> int:
+    """Re-read Claude fields for documents already loaded (after a prompt,
+    model or input change), and re-embed them, since every chunk header
+    carries these fields. Takes Claude-extracted originals last extracted
+    before --before, plus any whose chunks were dropped and not yet rebuilt,
+    so rerunning with the same --before resumes a stopped run. Copies of a
+    judgment take the new fields from it."""
+    lock = acquire_lock()
+    if lock is None:
+        log('another ingest_hc run holds the lock; exiting')
+        return 2
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute(
+        f"""SELECT c.id FROM {TABLE} c
+            WHERE c.extraction_method = 'hc_metadata+llm_haiku' AND c.duplicate_of IS NULL
+              AND (c.extraction_updated_at < %s
+                   OR (length(c.judgment_text) >= %s AND NOT EXISTS (
+                         SELECT 1 FROM reembed_progress p WHERE p.source_table = %s AND p.source_id = c.id)))
+            ORDER BY c.id LIMIT %s""",
+        (args.before, EMBED_MIN_CHARS, TABLE, args.limit))
+    ids = [r[0] for r in cur.fetchall()]
+    log(f'refields: {len(ids)} documents extracted before {args.before}')
+    if args.dry_run or not ids:
+        conn.close()
+        return 0
+    bid = start_batch(conn, 'refields', {'before': args.before, 'limit': args.limit, 'extract_model': EXTRACT_MODEL_ID,
+                                         'head_chars': EXTRACT_HEAD_CHARS, 'tail_chars': EXTRACT_TAIL_CHARS})
+    stats = new_stats()
+    stats['selected'] = len(ids)
+    status = 'failed'
+    try:
+        for i in range(0, len(ids), args.chunk):
+            part = ids[i:i + args.chunk]
+            cur.execute(f'SELECT id FROM {TABLE} WHERE duplicate_of = ANY(%s)', (part,))
+            todo = part + [r[0] for r in cur.fetchall()]
+            cur.execute(f"UPDATE {TABLE} SET extraction_status = 'pending' WHERE id = ANY(%s)", (todo,))
+            conn.commit()
+            extract_fields_for(conn, todo, True, stats, refresh=True)
+            cur.execute('DELETE FROM case_chunks WHERE source_table = %s AND source_id = ANY(%s)', (TABLE, part))
+            cur.execute('DELETE FROM reembed_progress WHERE source_table = %s AND source_id = ANY(%s)', (TABLE, part))
+            conn.commit()
+            embed_for(conn, part, stats)
+            stats['unsearchable'] += unsearchable(conn, part)
+            stats['inserted'] += len(part)
+            cost = stats['cost_extract'] + stats['cost_embed']
+            log(f'refields {bid}: {i + len(part)}/{len(ids)} done, ${cost:.2f} so far')
+        status = 'done'
+    except Exception as e:
+        conn.rollback()
+        stats['errors'].append(f'{type(e).__name__}: {e}'[:500])
+        log(f'refields {bid}: FAILED: {e} (rerun with the same --before to resume)')
+        log_error('pipeline', f'ingest_hc refields {bid} failed: {e}', error=e, severity='critical')
+    finish_batch(conn, bid, stats, status)
+    print_report(conn, bid)
+    conn.close()
+    return 0 if status == 'done' and not stats['unsearchable'] else 1
+
+
 def cmd_second_pass(args) -> int:
     """Paid OCR for the pages the free pass could not read, in one Message
     Batch (half price). Plans pages until the estimated cost reaches
@@ -1046,6 +1136,12 @@ def main() -> int:
     p.add_argument('--max-cost-usd', type=float, default=5.0)
     p.add_argument('--no-llm', action='store_true')
 
+    f = sub.add_parser('refields', help='re-read Claude fields (and re-embed) for loaded documents')
+    f.add_argument('--before', required=True, help='documents extracted before this time (ISO timestamp)')
+    f.add_argument('--limit', type=int, default=100000)
+    f.add_argument('--chunk', type=int, default=500, help='documents per Claude batch')
+    f.add_argument('--dry-run', action='store_true')
+
     c = sub.add_parser('calibrate', help='measure free-OCR error rate against clean text layers')
     c.add_argument('--n', type=int, default=40)
 
@@ -1057,7 +1153,7 @@ def main() -> int:
     args = ap.parse_args()
     return {
         'manifest': cmd_manifest, 'batch': cmd_batch, 'sync': cmd_sync,
-        'second-pass': cmd_second_pass, 'calibrate': cmd_calibrate,
+        'second-pass': cmd_second_pass, 'refields': cmd_refields, 'calibrate': cmd_calibrate,
         'status': cmd_status, 'report': cmd_report,
     }[args.cmd](args)
 

@@ -32,6 +32,11 @@ BUCKET = 'indian-high-court-judgments'
 REGION = 'ap-south-1'
 BASE_URL = f'https://{BUCKET}.s3.{REGION}.amazonaws.com/'
 
+# Courts the pipeline may load. Delhi only until its batches are reviewed;
+# HC_COURTS=7_26,29_3 widens it, HC_COURTS=all lifts it.
+_courts = os.getenv('HC_COURTS', '7_26').strip()
+ALLOWED_COURTS = None if _courts == 'all' else [c.strip() for c in _courts.split(',') if c.strip()]
+
 # court_key (the court= folder) -> the name stored in high_court_cases.court_name.
 # Upstream spells some of these inconsistently ('High Court Of Rajasthan',
 # 'High Court  for State of Telangana'); the filter dropdown shows these values.
@@ -222,9 +227,14 @@ def select_queue(db: sqlite3.Connection, limit: int, court: str | None = None,
     """
     sql = 'SELECT source_file, folder_year, court_key, bench, decision_date FROM files WHERE status = ?'
     params: list = ['todo']
+    if court and ALLOWED_COURTS is not None and court not in ALLOWED_COURTS:
+        raise ValueError(f'court {court} is not in HC_COURTS ({",".join(ALLOWED_COURTS)})')
     if court:
         sql += ' AND court_key = ?'
         params.append(court)
+    elif ALLOWED_COURTS is not None:
+        sql += f' AND court_key IN ({",".join("?" * len(ALLOWED_COURTS))})'
+        params += ALLOWED_COURTS
     if since:
         sql += ' AND decision_date >= ?'
         params.append(since)

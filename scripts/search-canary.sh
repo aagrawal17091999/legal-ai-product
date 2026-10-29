@@ -160,7 +160,9 @@ PY
 # (a 10-row result read as 561). One row per line keeps the row check honest and
 # gives the rerank step whole chunks rather than fragments.
 {
-  printf "select regexp_replace(ch.chunk_text, '\\\\s+', ' ', 'g') from case_chunks ch order by ch.embedding <=> '"
+  # Supreme Court only: that partition has the HNSW index (migration 038). An
+  # unfiltered query would also brute-force every High Court chunk.
+  printf "select regexp_replace(ch.chunk_text, '\\\\s+', ' ', 'g') from case_chunks ch where ch.source_table = 'supreme_court_cases' order by ch.embedding <=> '"
   cat "$WORK/vec.txt"
   printf "'::vector limit 10;\n"
 } > "$WORK/q.sql"

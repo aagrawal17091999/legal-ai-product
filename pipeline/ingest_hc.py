@@ -636,7 +636,10 @@ def run_batch(kind: str, size: int, court: str | None, since: str | None,
     resumed = interrupted_batch_ids(conn)     # before start_batch: it would count itself
     stats = new_stats()
     stats['selected'] = len(picked)
-    bid = start_batch(conn, kind, {'size': size, 'court': court, 'since': since, 'until': until, 'llm': use_llm,
+    # Record the allowlist as the court so `status` treats the run as targeted
+    # and doesn't project a Delhi-only rate onto every court.
+    scope = court or (','.join(hc_source.ALLOWED_COURTS) if hc_source.ALLOWED_COURTS else None)
+    bid = start_batch(conn, kind, {'size': size, 'court': scope, 'since': since, 'until': until, 'llm': use_llm,
                                    'llm_min_pages': LLM_MIN_PAGES, 'embed_min_chars': EMBED_MIN_CHARS})
     log(f'batch {bid}: fetching metadata')
     meta = hc_source.fetch_metadata(picked, log=log)

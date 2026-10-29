@@ -43,7 +43,9 @@ TS="$(date +%Y%m%d-%H%M%S)"
 OUT="reference-data-${TS}.dump"
 
 TABLE_ARGS=()
-for t in "${REFERENCE_TABLES[@]}"; do TABLE_ARGS+=("-t" "$t"); done
+# --table-and-children (pg_dump 16+): case_chunks is partitioned per court
+# (migration 038), and plain -t would dump the parent without its partitions.
+for t in "${REFERENCE_TABLES[@]}"; do TABLE_ARGS+=("--table-and-children=$t"); done
 
 echo "Dumping reference tables (${REFERENCE_TABLES[*]}) -> ${OUT}"
 # -Fc = custom compressed format (restorable with pg_restore, table-selectable).

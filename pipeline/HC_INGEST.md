@@ -126,6 +126,25 @@ conflict: until the backfill reaches the present, sync is just "the next batch".
 
 ## Making it visible
 
+### Before enabling High Court search
+
+`case_chunks` is partitioned per court (migration 038), and the High Court
+partition `case_chunks_hc` is loaded without search indexes, so a bulk load
+never competes with the Supreme Court index for RAM. Build them once, after
+the backfill and before switching search on (with `HC_SEARCH_ENABLED` on and
+no index, every High Court vector query reads every High Court chunk):
+
+```sql
+SET maintenance_work_mem = '2GB';   -- an HNSW build is far slower once the graph outgrows this
+CREATE INDEX CONCURRENTLY idx_chunks_hc_embedding ON case_chunks_hc USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX CONCURRENTLY idx_chunks_hc_text_fts ON case_chunks_hc USING gin (to_tsvector('english', chunk_text));
+```
+
+The High Court HNSW index is ~7.8 KB per chunk, and it only stays fast in
+RAM next to the Supreme Court one (6.2 GB). Size the box for both first.
+
+### Switching it on
+
 `HC_SEARCH_ENABLED=on` in `.env.production.local`, then
 `pm2 reload nyayasearch --update-env`. Until then High Court rows stay out of
 search, chat retrieval and the filter dropdowns. Change the "Supreme Court
@@ -189,7 +208,9 @@ running rate from untargeted runs only.
 
 ## Capacity
 
-Each 1,000 loaded documents adds ~90 MB to Postgres (mostly chunks). Every run
+Each 1,000 loaded documents adds ~90 MB to Postgres (mostly chunks); Delhi
+measured ~4,100 chunks per 1,000 documents: ~23 MB of chunks (5.5 KB each) plus
+~12 MB of case rows before the search indexes, which add ~8 KB per chunk. Every run
 refuses to start below `HC_MIN_FREE_GB` (15) free on `/`. 100k documents is
 ~9 GB; the whole corpus does not fit the current box, so plan a bigger disk
 before going past a few hundred thousand documents.

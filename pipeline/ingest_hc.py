@@ -77,11 +77,14 @@ MIN_FREE_GB = float(os.getenv('HC_MIN_FREE_GB', '15'))
 # USD per token. Costs are recorded from reported token counts at these rates.
 RATES = {
     'claude-haiku-4-5': (1.00 / 1e6, 5.00 / 1e6),
+    'claude-haiku-5-5': (0.10 / 1e6, 0.50 / 1e6),     # prompts up to 100k tokens
     'claude-sonnet-4-6': (3.00 / 1e6, 15.00 / 1e6),
     'voyage-law-2': 0.12 / 1e6,
 }
-EXTRACT_MODEL = 'claude-haiku-4-5'        # extraction_llm.extract_via_haiku pins this
-EXTRACT_MODEL_ID = 'claude-haiku-4-5-20251001'
+# Field-extraction model. Haiku 5.5 thinks by default and bills it as output;
+# this is plain extraction, so thinking is turned off for it.
+EXTRACT_MODEL_ID = os.getenv('HC_EXTRACT_MODEL', 'claude-haiku-4-5-20251001')
+EXTRACT_EXTRA = {'thinking': {'type': 'disabled'}} if EXTRACT_MODEL_ID.startswith('claude-haiku-5') else {}
 # Every Claude call goes through Message Batches (claude_batch): half price.
 LLM_BATCH_TIMEOUT_S = 24 * 3600
 BATCH_DISCOUNT = 0.5
@@ -370,31 +373,57 @@ def message_text(msg) -> str:
     return ''.join(b.text for b in msg.content if getattr(b, 'type', None) == 'text')
 
 
+# The shared prompt is written for Supreme Court reports. High Court judgments
+# have no "List of Acts" box (read literally, that rule leaves acts_cited
+# empty), and models put case numbers or invented citations into
+# extracted_citation.
+HC_PROMPT_NOTE = """
+
+THIS IS A HIGH COURT JUDGMENT. These rules override the ones above where they differ:
+- acts_cited: High Court judgments have no "List of Acts" box. List the acts, codes and statutes the court applies, interprets or relies on (including the Constitution of India), each as a full name with year. Do not list an act that is only mentioned in passing.
+- extracted_citation: this judgment's own neutral citation, copied exactly, only if it is printed at the top of this judgment. Never a case number, and never the citation of another judgment cited inside it. If none is printed, null."""
+
+NEUTRAL_CITATION = re.compile(r'(19|20)\d{2}\s*:\s*[A-Z]{2,6}\s*:\s*\d+')
+
+
+def own_citation(cited: str | None, text: str) -> str | None:
+    """Keep a citation only if it is a neutral citation printed near the top
+    of this judgment (0.5% of Delhi judgments print one there)."""
+    if not cited or not NEUTRAL_CITATION.fullmatch(cited.strip()):
+        return None
+    squash = lambda t: re.sub(r'\s+', '', t)
+    return cited.strip() if squash(cited) in squash(text[:3000]) else None
+
+
 def haiku_fields(rows: list[dict], stats: dict) -> dict[int, dict]:
-    """Field extraction with the same prompt and model as
-    extraction_llm.extract_via_haiku, through claude_batch. A request that
+    """Field extraction with extraction_llm's prompt plus HC_PROMPT_NOTE, on
+    HC_EXTRACT_MODEL, through claude_batch. A request that
     fails or returns unparseable JSON gets one more try in a follow-up batch;
     after that the document keeps its metadata fields."""
     from extraction_llm import EXTRACTION_SYSTEM_PROMPT, MAX_INPUT_CHARS, _parse_json_response, _validate_result
 
+    text_of = {r['id']: r['judgment_text'] for r in rows}
     results: dict[int, dict] = {}
     todo = rows
     for attempt in (1, 2):
         msgs, in_tok, out_tok = claude_batch([{
             'custom_id': str(r['id']),
             'params': {
-                'model': EXTRACT_MODEL_ID, 'max_tokens': 4096, 'system': EXTRACTION_SYSTEM_PROMPT,
+                'model': EXTRACT_MODEL_ID, **EXTRACT_EXTRA, 'max_tokens': 4096,
+                'system': EXTRACTION_SYSTEM_PROMPT + HC_PROMPT_NOTE,
                 'messages': [{'role': 'user', 'content': 'Extract structured fields from this Indian court '
                               f"judgment.\n\nJUDGMENT TEXT:\n{r['judgment_text'][:MAX_INPUT_CHARS]}"}],
             },
         } for r in todo], f'fields (try {attempt})')
         stats['claude_in'] += in_tok
         stats['claude_out'] += out_tok
-        rate_in, rate_out = claude_rate(EXTRACT_MODEL)
+        rate_in, rate_out = claude_rate(EXTRACT_MODEL_ID)
         stats['cost_extract'] += (in_tok * rate_in + out_tok * rate_out) * BATCH_DISCOUNT
         for cid, msg in msgs.items():
             try:
-                results[int(cid)] = _validate_result(_parse_json_response(message_text(msg)))
+                res = _validate_result(_parse_json_response(message_text(msg)))
+                res['extracted_citation'] = own_citation(res.get('extracted_citation'), text_of[int(cid)])
+                results[int(cid)] = res
             except Exception as e:
                 log(f'  ! unparseable extraction for id {cid}: {e}')
         todo = [r for r in todo if r['id'] not in results]
@@ -640,7 +669,8 @@ def run_batch(kind: str, size: int, court: str | None, since: str | None,
     # and doesn't project a Delhi-only rate onto every court.
     scope = court or (','.join(hc_source.ALLOWED_COURTS) if hc_source.ALLOWED_COURTS else None)
     bid = start_batch(conn, kind, {'size': size, 'court': scope, 'since': since, 'until': until, 'llm': use_llm,
-                                   'llm_min_pages': LLM_MIN_PAGES, 'embed_min_chars': EMBED_MIN_CHARS})
+                                   'llm_min_pages': LLM_MIN_PAGES, 'embed_min_chars': EMBED_MIN_CHARS,
+                                   'extract_model': EXTRACT_MODEL_ID})
     log(f'batch {bid}: fetching metadata')
     meta = hc_source.fetch_metadata(picked, log=log)
     log(f'batch {bid}: metadata for {len(meta)}/{len(picked)}; extracting text with {WORKERS} workers')

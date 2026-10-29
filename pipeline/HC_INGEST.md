@@ -31,7 +31,12 @@ text layer from a real one.
    upstream URL (no R2 copy of 1.5 TB).
 4. **Fields**: from upstream metadata for every row (case number, parties,
    judges, outcome — free); Claude Haiku for documents of ≥ `HC_LLM_MIN_PAGES`
-   (5) pages.
+   (5) pages. The model is `HC_EXTRACT_MODEL` (default Haiku 4.5; production
+   runs `claude-haiku-5-5`, ~8x cheaper per document — on 300 Delhi judgments
+   it matched 4.5 on parties, judges and cited cases, and filled acts more
+   often). The shared Supreme Court prompt gets a High Court note (no "List of
+   Acts" box; a citation only if the judgment prints its own), and a citation
+   is kept only if it is a neutral citation found near the top of the text.
 5. **Embed** voyage-law-2 chunks for every document with ≥ `HC_EMBED_MIN_CHARS`
    (500) characters of text — short orders included, since a one-page bail or
    quashing order carries reasoning. Only ~2.4% of documents fall below 500

@@ -499,11 +499,15 @@ def extract_fields_for(conn, ids: list[int], use_llm: bool, stats: dict, refresh
             fields = base
             write_results(conn, TABLE, r['id'], fields, 'hc_metadata')
         if r['duplicate_of'] is not None:
-            # Same judgment as another case: share what was read from its text.
-            # Case number, parties and bench stay this case's own (metadata).
+            # Same judgment as another case: share what was read from its text,
+            # including the result (one common order decides them all; Delhi
+            # metadata has none). Case number, parties and bench stay this
+            # case's own (metadata).
             c = conn.cursor()
             c.execute(f"""UPDATE {TABLE} d SET case_category = o.case_category,
                                issue_for_consideration = o.issue_for_consideration,
+                               result_of_case = o.result_of_case,
+                               author_judge_name = COALESCE(o.author_judge_name, d.author_judge_name),
                                headnotes = o.headnotes, acts_cited = o.acts_cited,
                                cases_cited = o.cases_cited, keywords = o.keywords,
                                extracted_citation = o.extracted_citation,

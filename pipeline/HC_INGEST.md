@@ -30,8 +30,9 @@ text layer from a real one.
    `text_class`, `ocr_confidence`, `page_count`. `pdf_url` is the public
    upstream URL (no R2 copy of 1.5 TB).
 4. **Fields**: from upstream metadata for every row (case number, parties,
-   judges, outcome — free); Claude Haiku for documents of ≥ `HC_LLM_MIN_PAGES`
-   (5) pages. The model is `HC_EXTRACT_MODEL` (default Haiku 4.5; production
+   judges, outcome — free); Claude Haiku for every document with text (`HC_LLM_MIN_PAGES`, default 1;
+   it was 5 under Haiku 4.5, which left three quarters of documents with no
+   result, category, issue, acts or keywords: upstream metadata has none). The model is `HC_EXTRACT_MODEL` (default Haiku 4.5; production
    runs `claude-haiku-5-5`, ~8x cheaper per document — on 300 Delhi judgments
    it matched 4.5 on parties, judges and cited cases, and filled acts more
    often). The shared Supreme Court prompt gets a High Court note (no "List of

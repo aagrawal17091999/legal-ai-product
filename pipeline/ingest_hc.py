@@ -10,7 +10,7 @@ next. One batch = the N newest documents not yet loaded:
               free Tesseract OCR per page where it is not (hc_text.py)
   3. load     one high_court_cases row per PDF, with text provenance
   4. fields   from upstream metadata for every row (free); Claude Haiku for
-              documents of >= HC_LLM_MIN_PAGES pages, via Message Batches
+              documents of >= HC_LLM_MIN_PAGES pages (default: all), via Message Batches
   5. embed    voyage-law-2 chunks for every document with >= HC_EMBED_MIN_CHARS
               characters of text (copies of an already-loaded judgment skipped)
   6. record   counts, OCR quality and exact API cost in hc_ingest_batches
@@ -68,7 +68,11 @@ TABLE = 'high_court_cases'
 MANIFEST = os.path.join(HC_DATA_DIR, 'manifest.sqlite')
 
 WORKERS = int(os.getenv('HC_WORKERS', '2'))                 # parallel PDFs (OCR is 1 core each)
-LLM_MIN_PAGES = int(os.getenv('HC_LLM_MIN_PAGES', '5'))     # Haiku field extraction
+# Every judgment with text goes to Claude. Metadata gives parties, case number
+# and bench, but never the result, category, issue, acts or keywords: on 40
+# short Delhi orders Haiku 5.5 got the result right 95% of the time, metadata
+# 0%, at ~$0.0003 an order. (Was 5 pages under Haiku 4.5.)
+LLM_MIN_PAGES = int(os.getenv('HC_LLM_MIN_PAGES', '1'))
 # Embed every document with real text, short orders included (a one-page bail
 # or quashing order carries reasoning). Below this it is "list after two weeks".
 EMBED_MIN_CHARS = int(os.getenv('HC_EMBED_MIN_CHARS', '500'))
@@ -789,8 +793,9 @@ def cmd_sync(args) -> int:
 def cmd_refields(args) -> int:
     """Re-read Claude fields for documents already loaded (after a prompt,
     model or input change), and re-embed them, since every chunk header
-    carries these fields. Takes Claude-extracted originals last extracted
-    before --before, plus any whose chunks were dropped and not yet rebuilt,
+    carries these fields. Takes Claude-extracted originals (with
+    --with-metadata-only, also metadata-only ones) last extracted before
+    --before, plus any whose chunks were dropped and not yet rebuilt,
     so rerunning with the same --before resumes a stopped run. Copies of a
     judgment take the new fields from it."""
     lock = acquire_lock()
@@ -799,20 +804,22 @@ def cmd_refields(args) -> int:
         return 2
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
+    methods = ['hc_metadata+llm_haiku'] + (['hc_metadata'] if args.with_metadata_only else [])
     cur.execute(
         f"""SELECT c.id FROM {TABLE} c
-            WHERE c.extraction_method = 'hc_metadata+llm_haiku' AND c.duplicate_of IS NULL
+            WHERE c.extraction_method = ANY(%s) AND c.duplicate_of IS NULL AND c.judgment_text <> ''
               AND (c.extraction_updated_at < %s
                    OR (length(c.judgment_text) >= %s AND NOT EXISTS (
                          SELECT 1 FROM reembed_progress p WHERE p.source_table = %s AND p.source_id = c.id)))
             ORDER BY c.id LIMIT %s""",
-        (args.before, EMBED_MIN_CHARS, TABLE, args.limit))
+        (methods, args.before, EMBED_MIN_CHARS, TABLE, args.limit))
     ids = [r[0] for r in cur.fetchall()]
     log(f'refields: {len(ids)} documents extracted before {args.before}')
     if args.dry_run or not ids:
         conn.close()
         return 0
     bid = start_batch(conn, 'refields', {'before': args.before, 'limit': args.limit, 'extract_model': EXTRACT_MODEL_ID,
+                                         'with_metadata_only': args.with_metadata_only, 'llm_min_pages': LLM_MIN_PAGES,
                                          'head_chars': EXTRACT_HEAD_CHARS, 'tail_chars': EXTRACT_TAIL_CHARS})
     stats = new_stats()
     stats['selected'] = len(ids)
@@ -1140,6 +1147,8 @@ def main() -> int:
     f.add_argument('--before', required=True, help='documents extracted before this time (ISO timestamp)')
     f.add_argument('--limit', type=int, default=100000)
     f.add_argument('--chunk', type=int, default=500, help='documents per Claude batch')
+    f.add_argument('--with-metadata-only', action='store_true',
+                   help='also documents whose fields came from metadata alone')
     f.add_argument('--dry-run', action='store_true')
 
     c = sub.add_parser('calibrate', help='measure free-OCR error rate against clean text layers')

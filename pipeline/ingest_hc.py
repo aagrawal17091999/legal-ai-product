@@ -395,7 +395,7 @@ HC_PROMPT_NOTE = """
 
 THIS IS A HIGH COURT JUDGMENT. These rules override the ones above where they differ:
 - acts_cited: High Court judgments have no "List of Acts" box. List the acts, codes and statutes the court applies, interprets or relies on, each as a full name with year. List only acts the judgment itself names; do not list an act that is only mentioned in passing, in a case title, or inside a quoted passage.
-- extracted_citation: this judgment's own neutral citation, copied exactly, only if it is printed at the top of this judgment. Never a case number, and never the citation of another judgment cited inside it. If none is printed, null.
+- extracted_citation: this judgment's own neutral citation, copied exactly, only if it is printed at the top or at the very end of this judgment (not in its body). Never a case number, and never the citation of another judgment cited inside it. If none is printed, null.
 - extracted_petitioner / extracted_respondent: keep "& Anr." / "& Ors." / "and Others" when the cause title has it.
 - BNS is the Bharatiya Nyaya Sanhita, 2023 and BNSS is the Bharatiya Nagarik Suraksha Sanhita, 2023: different acts. Name each act the way the judgment does, and never add one it does not name.
 - author_judge_name: only a judge the judgment names as its author (by the judgment heading or "per"). An order of a bench signed by all its judges, with no author named, has none: null. Never use the presiding judge as a stand-in.
@@ -408,16 +408,18 @@ def extraction_input(text: str) -> str:
     tail = text[-EXTRACT_TAIL_CHARS:] if EXTRACT_TAIL_CHARS else ''
     return text[:EXTRACT_HEAD_CHARS] + (OMITTED + tail if tail else '')
 
-NEUTRAL_CITATION = re.compile(r'(19|20)\d{2}\s*:\s*[A-Z]{2,6}\s*:\s*\d+')
+# e.g. YEAR:DHC:NUMBER, with a bench suffix (-DB, -FB) on Division Bench ones.
+NEUTRAL_CITATION = re.compile(r'(19|20)\d{2}\s*:\s*[A-Z]{2,6}\s*:\s*\d+(\s*-\s*[A-Z]{1,3})?')
 
 
 def own_citation(cited: str | None, text: str) -> str | None:
-    """Keep a citation only if it is a neutral citation printed near the top
-    of this judgment (0.5% of Delhi judgments print one there)."""
+    """Keep a citation only if it is a neutral citation printed at the top
+    or the end of this judgment, where Delhi prints its own (~1% do). Most
+    neutral citations in the body are other judgments being cited."""
     if not cited or not NEUTRAL_CITATION.fullmatch(cited.strip()):
         return None
     squash = lambda t: re.sub(r'\s+', '', t)
-    return cited.strip() if squash(cited) in squash(text[:3000]) else None
+    return cited.strip() if squash(cited) in squash(text[:3000] + text[-3000:]) else None
 
 
 def haiku_fields(rows: list[dict], stats: dict) -> dict[int, dict]:
@@ -808,6 +810,9 @@ def cmd_refields(args) -> int:
         return 2
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
+    only = None
+    if args.ids_file:
+        only = [int(x) for x in open(args.ids_file).read().split()]
     methods = ['hc_metadata+llm_haiku'] + (['hc_metadata'] if args.with_metadata_only else [])
     cur.execute(
         f"""SELECT c.id FROM {TABLE} c
@@ -815,8 +820,9 @@ def cmd_refields(args) -> int:
               AND (c.extraction_updated_at < %s
                    OR (length(c.judgment_text) >= %s AND NOT EXISTS (
                          SELECT 1 FROM reembed_progress p WHERE p.source_table = %s AND p.source_id = c.id)))
+              AND (%s::int[] IS NULL OR c.id = ANY(%s::int[]))
             ORDER BY c.id LIMIT %s""",
-        (methods, args.before, EMBED_MIN_CHARS, TABLE, args.limit))
+        (methods, args.before, EMBED_MIN_CHARS, TABLE, only, only, args.limit))
     ids = [r[0] for r in cur.fetchall()]
     log(f'refields: {len(ids)} documents extracted before {args.before}')
     if args.dry_run or not ids:
@@ -824,6 +830,7 @@ def cmd_refields(args) -> int:
         return 0
     bid = start_batch(conn, 'refields', {'before': args.before, 'limit': args.limit, 'extract_model': EXTRACT_MODEL_ID,
                                          'with_metadata_only': args.with_metadata_only, 'llm_min_pages': LLM_MIN_PAGES,
+                                         'ids_file': args.ids_file,
                                          'head_chars': EXTRACT_HEAD_CHARS, 'tail_chars': EXTRACT_TAIL_CHARS})
     stats = new_stats()
     stats['selected'] = len(ids)
@@ -1151,6 +1158,7 @@ def main() -> int:
     f.add_argument('--before', required=True, help='documents extracted before this time (ISO timestamp)')
     f.add_argument('--limit', type=int, default=100000)
     f.add_argument('--chunk', type=int, default=500, help='documents per Claude batch')
+    f.add_argument('--ids-file', help='only these document ids (whitespace-separated)')
     f.add_argument('--with-metadata-only', action='store_true',
                    help='also documents whose fields came from metadata alone')
     f.add_argument('--dry-run', action='store_true')

@@ -1,5 +1,4 @@
 import pool from "../db";
-import { getSignedPdfUrl } from "../r2";
 import type { RetrievedChunk, RetrievedCaseMeta } from "../search";
 import type { CitedCase } from "@/types";
 
@@ -195,18 +194,17 @@ export async function buildContext(
       break;
     }
 
-    // Resolve PDF URL. SC needs presigning; HC already has direct URLs.
+    // Resolve PDF URL. HC already has direct URLs. SC points at the download
+    // endpoint, which presigns on click: a URL presigned here has a 1-hour TTL
+    // and would be dead by the time a user opens a citation from a chat left
+    // open (R2 answers with raw ExpiredRequest XML).
     let pdf_url: string | null = c.meta.pdf_url;
     let pdf_path: string | null = null;
     let pdfSigned = false;
     if (c.source_table === "supreme_court_cases" && c.meta.path && c.meta.year) {
       pdf_path = `supreme-court/${c.meta.year}/${c.meta.path}_EN.pdf`;
-      try {
-        pdf_url = await getSignedPdfUrl(pdf_path);
-        pdfSigned = true;
-      } catch {
-        // Non-fatal; keep any existing pdf_url.
-      }
+      pdf_url = `/api/judgments/download?source=supreme_court_cases&id=${c.source_id}&redirect=1`;
+      pdfSigned = true;
     }
 
     const caseIndex = assembled.length + 1;

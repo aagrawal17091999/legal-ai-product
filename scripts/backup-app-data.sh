@@ -35,7 +35,9 @@ TS="$(date +%Y%m%d-%H%M%S)"
 OUT="app-data-${TS}.dump"
 
 EXCL_ARGS=()
-for t in "${EXCLUDE_DATA[@]}"; do EXCL_ARGS+=("--exclude-table-data=$t"); done
+# -and-children: case_chunks is partitioned per court, and plain
+# --exclude-table-data on the parent still dumps every partition's rows.
+for t in "${EXCLUDE_DATA[@]}"; do EXCL_ARGS+=("--exclude-table-data-and-children=$t"); done
 
 echo "Backing up application data (excluding reference table data) -> ${OUT}"
 pg_dump "$DATABASE_URL" -Fc --no-owner --no-privileges "${EXCL_ARGS[@]}" -f "$OUT"

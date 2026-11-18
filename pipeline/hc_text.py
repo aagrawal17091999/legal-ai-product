@@ -17,6 +17,9 @@ OCRs one page, not fifty.
 """
 
 import base64
+import collections
+import dataclasses
+import hashlib
 import os
 import re
 import subprocess
@@ -186,14 +189,41 @@ def regional_lang(court_key: str) -> str | None:
     return '+'.join(parts) or None
 
 
+# Pages already OCR'd in this process, by rendered image. Connected matters
+# share one judgment: 495 PDFs of one 74-page Delhi Land Acquisition judgment
+# (Aug 2011) differed only in their cover page, the other 74 pages rendering
+# to byte-identical images. Tesseract is deterministic, so a repeat image
+# takes the stored reading — the text is exactly what OCR would give again.
+# The duplicate check on the whole text runs only after extraction, and those
+# copies don't match there anyway. ~3 KB a page; the cap bounds a worker's RAM.
+OCR_CACHE_PAGES = int(os.getenv('HC_OCR_CACHE_PAGES', '20000'))
+_ocr_cache: 'collections.OrderedDict[tuple, OcrPage]' = collections.OrderedDict()
+
+
 def ocr_page(page, court_key: str, hint: str) -> OcrPage:
     """Free OCR for one page. `hint` is the page's classification."""
     png = render_page(page).tobytes('png')
+    key = (hashlib.sha256(png).digest(), court_key, hint)
+    hit = _ocr_cache.get(key)
+    if hit is not None:
+        _ocr_cache.move_to_end(key)
+        return dataclasses.replace(hit, seconds=0.0)
+    o = _ocr_png(png, court_key, hint)
+    _ocr_cache[key] = o
+    if len(_ocr_cache) > OCR_CACHE_PAGES:
+        _ocr_cache.popitem(last=False)
+    return dataclasses.replace(o)
+
+
+def _ocr_png(png: bytes, court_key: str, hint: str) -> OcrPage:
     if hint == 'hindi_broken' and 'hin' in tesseract_langs():
         return tesseract_png(png, 'hin+eng')
     first = tesseract_png(png, 'eng')
     regional = regional_lang(court_key)
-    if regional and first.conf < RETRY_CONF:
+    # No regional retry on a scan whose hidden layer already reads as English
+    # (image_text): on a Delhi file the hin+eng pass ran on 12 such pages, took
+    # 3x as long as English (7.5 s vs 2.6 s a page) and won none.
+    if regional and first.conf < RETRY_CONF and hint != 'image_text':
         second = tesseract_png(png, f'{regional}+eng')
         first.seconds += second.seconds
         # Confidence alone is not enough: on a noisy English scan the mixed
